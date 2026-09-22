@@ -1,0 +1,22 @@
+.{
+    .name = .zcaml,
+    .version = "0.0.1",
+    .dependencies = .{
+        .ocaml = .{
+            .url = "https://github.com/ocaml/ocaml/releases/download/5.5.1/ocaml-5.5.1.tar.gz",
+            .hash = "N-V-__8AAN6LfwEXSAd8pDJD2HFaj68plGGg7XaWz8xi4xBo",
+        },
+        .flexdll = .{
+            .url = "https://github.com/ocaml/flexdll/archive/refs/tags/0.44.tar.gz",
+            .hash = "N-V-__8AAN_RAwAoZlxPjQUGiWRFb-Y88NwZiNL02OkCoW7L",
+            .lazy = true,
+        },
+        .zstd = .{
+            .url = "git+https://github.com/allyourcodebase/zstd.git#4ccb01e6fceae86fb9fe36c60b8a103cdc058155",
+            .hash = "zstd-1.5.7-2-KEItkAMwAADNhCbGaImKrjXjnSA51jcqEbGCA3RasVZ9",
+        },
+    },
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0x8191ce1066e27999,
+}
