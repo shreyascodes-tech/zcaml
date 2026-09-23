@@ -23,13 +23,15 @@ fn createState(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
 
 /// assumes the passed in b is from executing the current build script.
 /// i.e dependencies are resolved relative to the ./build.zig.zon
-fn createStateInner(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, step: *std.Build.Step) !State {
+fn createStateInner(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, step: *std.Build.Step) !*State {
     const ocaml_dep = b.dependency("ocaml", .{});
-    return State{
+    const state = try b.allocator.create(State);
+    state.* = .{
         .b = b,
         .ocaml_dep = ocaml_dep,
         .target = target,
         .optimize = optimize,
         .step = step,
     };
+    return state;
 }
