@@ -33,8 +33,8 @@ pub const Substitution = struct {
 ///     input_file_path,
 ///     "some-file-name",
 ///     &.{
-///         .once("some-pattern", .lit("some-replacement")),
-///         .all("another-pattern", .lit("some-replacement")),
+///         .once("some-pattern", .str("some-replacement")),
+///         .all("another-pattern", .str("some-replacement")),
 ///     },
 /// );
 /// ```

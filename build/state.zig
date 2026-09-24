@@ -1,5 +1,5 @@
 //! State required for building ocaml.
-//! Only util methods. No build logic happens here.
+//! Shared build and configuration utilities live here.
 
 const std = @import("std");
 
@@ -10,6 +10,10 @@ const LazyPath = std.Build.LazyPath;
 b: *std.Build,
 
 ocaml_dep: *std.Build.Dependency,
+
+/// The vendored zstd artifact shared by the configuration and later build
+/// stages.  Its emitted binary and include tree remain lazy build paths.
+zstd: *std.Build.Step.Compile,
 
 /// the output target of exes final ocaml will produce
 target: std.Build.ResolvedTarget,
@@ -43,4 +47,23 @@ pub fn installFile(
     );
 }
 
+pub fn requireLinuxTarget(module: []const u8, target: *const std.Target) void {
+    const pointer_bits = target.ptrBitWidth();
+    if (target.os.tag != .linux or
+        !(target.isGnuLibC() or target.isMuslLibC()) or
+        target.ofmt != .elf or
+        (pointer_bits != 32 and pointer_bits != 64))
+    {
+        std.debug.panic(
+            "{s}: unsupported target {s}-{s}-{s} (object format {s}, {d}-bit pointers); expected Linux GNU/musl ELF with 32- or 64-bit pointers",
+            .{
+                module,
+                @tagName(target.cpu.arch),
+                @tagName(target.os.tag),
+                @tagName(target.abi),
+                @tagName(target.ofmt),
+                pointer_bits,
+            },
+        );
+    }
 }
