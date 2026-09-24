@@ -141,7 +141,7 @@ pub const Value = union(enum) {
             .string => |s| jws.write(s),
             .boolean => jws.write(if (self.boolean) "true" else "false"),
             .boolean_or_null => |b| jws.write(if (b orelse false) "true" else "false"),
-            .integer => jws.print("{d}", .{self.integer}),
+            .integer => jws.print("\"{d}\"", .{self.integer}),
         };
     }
 };
