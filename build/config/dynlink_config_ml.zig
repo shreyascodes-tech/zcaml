@@ -7,10 +7,11 @@ const tools = @import("../tools.zig");
 const LazyPath = std.Build.LazyPath;
 
 pub fn generate(state: *State) LazyPath {
-    const target = &state.target.result;
+    const ctx = state.ctx;
+    const target = state.result();
     return tools.replaceAll(
-        state.b,
-        state.ocamlRel("otherlibs/dynlink/dynlink_config.ml.in"),
+        ctx,
+        ctx.ocamlRel("otherlibs/dynlink/dynlink_config.ml.in"),
         "dynlink_config.ml",
         &.{
             .once("@configure_input@", .str(Config.input.dynlink)),
@@ -20,8 +21,8 @@ pub fn generate(state: *State) LazyPath {
             .once("@CMO_MAGIC_NUMBER@", .str(Config.magic.cmo)),
             .once("@CMA_MAGIC_NUMBER@", .str(Config.magic.cma)),
             .once("@CMXS_MAGIC_NUMBER@", .str(Config.magic.cmxs)),
-            .once("@bytecode_runtime_id@", .str(Config.bytecodeRuntimeId(state.target.result))),
-            .once("@target@", .str(TargetConfig.ocamlTriple(state.b.allocator, target.*))),
+            .once("@bytecode_runtime_id@", .str(Config.bytecodeRuntimeId(target.*))),
+            .once("@target@", .str(TargetConfig.ocamlTriple(ctx.b.allocator, target.*))),
         },
     );
 }

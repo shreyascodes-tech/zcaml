@@ -7,8 +7,10 @@ const tools = @import("../tools.zig");
 const LazyPath = std.Build.LazyPath;
 
 pub fn generate(state: *State) LazyPath {
-    const target_info = targetInfo(state, state.target.result);
-    const host_triple = TargetConfig.ocamlTriple(state.b.allocator, state.b.graph.host.result);
+    const ctx = state.ctx;
+    const target = state.result();
+    const target_info = targetInfo(state, target.*);
+    const host_triple = TargetConfig.ocamlTriple(ctx.b.allocator, ctx.host().result().*);
     const bytecode_cppflags = if (target_info.is_unix)
         Config.config.file_offset_bits
     else
@@ -28,8 +30,8 @@ pub fn generate(state: *State) LazyPath {
     const zstd_libs = zstdLibrary(state);
 
     return tools.replaceAll(
-        state.b,
-        state.ocamlRel("utils/config.generated.ml.in"),
+        ctx,
+        ctx.ocamlRel("utils/config.generated.ml.in"),
         "config.generated.ml",
         &.{
             .once("@configure_input@", .str(Config.input.common)),
@@ -70,8 +72,8 @@ pub fn generate(state: *State) LazyPath {
             .once("@align_int64@", .str(if (target_info.align_int64) Config.config.yes else Config.config.no)),
             .once("@function_sections@", .str(if (target_info.is_elf) Config.config.yes else Config.config.no)),
             .once("@afl@", .str(Config.config.no)),
-            .once("@bytecode_runtime_id@", .str(Config.bytecodeRuntimeId(state.target.result))),
-            .once("@native_runtime_id@", .str(if (state.target.result.ptrBitWidth() == 64)
+            .once("@bytecode_runtime_id@", .str(Config.bytecodeRuntimeId(target.*))),
+            .once("@native_runtime_id@", .str(if (target.ptrBitWidth() == 64)
                 Config.runtime_ids.native_64
             else
                 Config.runtime_ids.native_32)),
@@ -109,8 +111,8 @@ pub fn generate(state: *State) LazyPath {
 fn zstdLibrary(state: *const State) []const u8 {
     // The install directory contains the target-built static archive, so this
     // does not ask the linker to discover a system zstd installation.
-    return state.b.fmt("-L{s} {s}", .{
-        state.b.getInstallPath(.lib, ""),
+    return state.ctx.b.fmt("-L{s} {s}", .{
+        state.ctx.b.getInstallPath(.lib, ""),
         Config.config.zstd_libs,
     });
 }
@@ -147,7 +149,7 @@ fn targetInfo(state: *const State, target: std.Target) TargetInfo {
     const architecture = targetArchitecture(arch);
     const model = targetModel(target);
     const system = targetSystem(target);
-    const target_triple = TargetConfig.ocamlTriple(state.b.allocator, target);
+    const target_triple = TargetConfig.ocamlTriple(state.ctx.b.allocator, target);
     const native_cppflags = if (is_unix)
         Config.config.file_offset_bits
     else

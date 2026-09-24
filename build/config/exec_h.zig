@@ -1,14 +1,14 @@
 const std = @import("std");
-const State = @import("../state.zig");
+const Context = @import("../context.zig");
 const Config = @import("static.zig");
 const tools = @import("../tools.zig");
 
 const LazyPath = std.Build.LazyPath;
 
-pub fn generate(state: *State) LazyPath {
+pub fn generate(ctx: *Context) LazyPath {
     return tools.configHeader(
-        state.b,
-        state.ocamlRel("runtime/caml/exec.h.in"),
+        ctx.b,
+        ctx.ocamlRel("runtime/caml/exec.h.in"),
         &.{
             .{ "EXEC_MAGIC_LENGTH", .int(Config.magic_length) },
             .{ "MAGIC_NUMBER_PREFIX", .str(Config.magic_prefix) },

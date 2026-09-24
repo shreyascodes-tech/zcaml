@@ -1,4 +1,5 @@
 const std = @import("std");
+const Context = @import("context.zig");
 const LazyPath = std.Build.LazyPath;
 
 pub const Substitution = struct {
@@ -26,10 +27,10 @@ pub const Substitution = struct {
 };
 
 /// Replaces occurances of patterns with the given values in a file.
-/// Examp le:
+/// Example:
 /// ```zig
 /// tools.replaceAll(
-///     builder,
+///     ctx,
 ///     input_file_path,
 ///     "some-file-name",
 ///     &.{
@@ -39,23 +40,15 @@ pub const Substitution = struct {
 /// );
 /// ```
 pub fn replaceAll(
-    builder: *std.Build,
+    ctx: *Context,
     input_file_path: LazyPath,
     output_file_basename: []const u8,
     substitutions: []const Substitution,
 ) LazyPath {
-    const replace_exe = struct {
-        var exe: ?RunZigFile = null;
-        fn get(b: *std.Build) *const RunZigFile {
-            if (exe) |*e| return e;
-            exe = RunZigFile.init(b, "replace-all", b.path("tools/replace-all.zig"));
-            return &exe.?;
-        }
-    };
+    const b = ctx.b;
+    const substitutions_json = std.json.Stringify.valueAlloc(b.allocator, substitutions, .{}) catch @panic("OOM");
 
-    const substitutions_json = std.json.Stringify.valueAlloc(builder.allocator, substitutions, .{}) catch @panic("oom");
-
-    return replace_exe.get(builder).run(builder)
+    return ctx.tool("tools/replace-all.zig").cmd(b)
         .inFile(input_file_path)
         .outFile(output_file_basename)
         .arg(substitutions_json)
@@ -137,25 +130,22 @@ pub const Value = union(enum) {
     }
 };
 
-/// A convenience wrapper for creating a Zig executable and running it.
+/// A Zig program from ./tools compiled for the host, to be run at build time.
 ///
 /// Example:
 /// ```zig
-/// const run_zig = tools.RunZigFile.init(b, "my-zig-exe", my_zig_file);
-/// const run = run_zig.run(b)
+/// const gen = tools.ZigTool.init(b, "my-zig-exe", b.path("tools/my-tool.zig"));
+/// const output_file = gen.cmd(b)
 ///     .inFile(some_input_file)
 ///     .outFile("output.txt")
-///     .str("some-arg");
-/// const output_file = run.outFileAt(0);
+///     .arg("some-arg")
+///     .popOutFile();
 /// ```
-pub fn addZigRun(b: *std.Build, name: []const u8, src_path: LazyPath) RunZigFile {
-    return RunZigFile.init(b, name, src_path);
-}
-
-pub const RunZigFile = struct {
+/// Prefer `ctx.tool("tools/my-tool.zig")`, which caches the compiled tool.
+pub const ZigTool = struct {
     exe: *std.Build.Step.Compile,
 
-    pub fn init(b: *std.Build, name: []const u8, src_path: LazyPath) RunZigFile {
+    pub fn init(b: *std.Build, name: []const u8, src_path: LazyPath) ZigTool {
         const module = b.createModule(.{
             .root_source_file = src_path,
             .target = b.graph.host,
@@ -170,66 +160,68 @@ pub const RunZigFile = struct {
         return .{ .exe = exe };
     }
 
-    pub fn run(self: *const RunZigFile, b: *std.Build) *Run {
-        return Run.init(b, self.exe);
+    pub fn cmd(self: *const ZigTool, b: *std.Build) *Cmd {
+        return Cmd.init(b, self.exe);
+    }
+};
+
+/// Fluent wrapper around `std.Build.Step.Run` for any compiled executable.
+/// Arguments are appended in call order.
+pub const Cmd = struct {
+    b: *std.Build,
+    run: *std.Build.Step.Run,
+    outfiles: std.ArrayList(LazyPath),
+
+    pub fn init(b: *std.Build, exe: *std.Build.Step.Compile) *Cmd {
+        const self = b.allocator.create(Cmd) catch @panic("OOM");
+        self.* = .{
+            .b = b,
+            .run = b.addRunArtifact(exe),
+            .outfiles = .empty,
+        };
+        return self;
     }
 
-    pub const Run = struct {
-        b: *std.Build,
-        run: *std.Build.Step.Run,
-        outfiles: std.ArrayList(LazyPath),
+    pub fn arg(self: *Cmd, s: []const u8) *Cmd {
+        self.run.addArg(s);
+        return self;
+    }
 
-        pub fn init(b: *std.Build, exe: *std.Build.Step.Compile) *Run {
-            const self = b.allocator.create(Run) catch @panic("OOM");
-            self.* = .{
-                .b = b,
-                .run = b.addRunArtifact(exe),
-                .outfiles = .empty,
-            };
-            return self;
-        }
+    pub fn args(self: *Cmd, a: []const []const u8) *Cmd {
+        self.run.addArgs(a);
+        return self;
+    }
 
-        pub fn arg(self: *Run, s: []const u8) *Run {
-            self.run.addArg(s);
-            return self;
-        }
+    pub fn inFile(self: *Cmd, s: LazyPath) *Cmd {
+        self.run.addFileArg(s);
+        return self;
+    }
 
-        pub fn args(self: *Run, a: []const []const u8) *Run {
-            self.run.addArgs(a);
-            return self;
-        }
+    pub fn outFile(self: *Cmd, s: []const u8) *Cmd {
+        const outfile = self.run.addOutputFileArg(s);
+        self.outfiles.append(self.b.allocator, outfile) catch @panic("OOM");
+        return self;
+    }
 
-        pub fn inFile(self: *Run, s: LazyPath) *Run {
-            self.run.addFileArg(s);
-            return self;
-        }
+    pub fn cwd(self: *Cmd, s: LazyPath) *Cmd {
+        self.run.setCwd(s);
+        return self;
+    }
 
-        pub fn outFile(self: *Run, s: []const u8) *Run {
-            const outfile = self.run.addOutputFileArg(s);
-            self.outfiles.append(self.b.allocator, outfile) catch @panic("OOM");
-            return self;
-        }
+    pub fn dependOn(self: *Cmd, step: *std.Build.Step) *Cmd {
+        self.run.step.dependOn(step);
+        return self;
+    }
 
-        pub fn cwd(self: *Run, s: LazyPath) *Run {
-            self.run.setCwd(s);
-            return self;
-        }
+    pub fn popOutFile(self: *Cmd) LazyPath {
+        return self.outfiles.pop().?;
+    }
 
-        pub fn dependOn(self: *Run, step: *std.Build.Step) *Run {
-            self.run.step.dependOn(step);
-            return self;
-        }
+    pub fn outFileAt(self: *Cmd, i: usize) LazyPath {
+        return self.outfiles.items[i];
+    }
 
-        pub fn popOutFile(self: *Run) LazyPath {
-            return self.outfiles.pop().?;
-        }
-
-        pub fn outFileAt(self: *Run, i: usize) LazyPath {
-            return self.outfiles.items[i];
-        }
-
-        pub fn stdout(self: *Run) LazyPath {
-            return self.run.captureStdOut(.{});
-        }
-    };
+    pub fn stdout(self: *Cmd) LazyPath {
+        return self.run.captureStdOut(.{});
+    }
 };

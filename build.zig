@@ -1,6 +1,5 @@
 const std = @import("std");
-const State = @import("build/state.zig");
-const bootstrap = @import("build/bootstrap.zig");
+const Context = @import("build/context.zig");
 
 pub fn build(b: *std.Build) !void {
     if (b.option(bool, "__internal_skip_build", "INTERNAL ONLY, DO NOT USE") orelse false) return;
@@ -8,41 +7,29 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const state = try createStateInner(b, target, optimize, b.getInstallStep());
-    const ocamlrun = try bootstrap.bootstrapOcamlrun(state);
+    const ctx = Context.create(b, b.getInstallStep(), optimize);
 
-    state.installFile(.bin, ocamlrun.exe.getEmittedBin(), "ocamlrun");
+    // Bootstrap: always runs on the build machine.
+    const boot_ocamlrun = ctx.host().bytecodeRuntime();
+    const ocamlc_help = boot_ocamlrun.cmd()
+        .inFile(ctx.ocamlRel("boot/ocamlc"))
+        .arg("--help")
+        .stdout();
+    ctx.installFile(.prefix, ocamlc_help, "ocamlc_help");
+
+    // The runtime that ships, built for the target.  When the target matches
+    // the host this is the same State as `ctx.host()`, so it's built once.
+    const rt = ctx.forTarget(target).bytecodeRuntime();
+    ctx.installFile(.bin, rt.exe.getEmittedBin(), "ocamlrun");
+    ctx.installFile(.lib, rt.lib.getEmittedBin(), "ocaml/libcamlrun.a");
 }
 
-// assumes this is called from a build fn that has zcaml as a dependency
-// must never be called from build fn above, or the build script fails
-// usefule for eventual public api for zcaml
-fn createState(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, step: *std.Build.Step) !*State {
+/// Creates a zcaml Context for a build fn that has zcaml as a dependency.
+/// Must never be called from the build fn above, or the build script fails.
+/// Useful for the eventual public API of zcaml.
+pub fn createContext(b: *std.Build, step: *std.Build.Step, optimize: std.builtin.OptimizeMode) *Context {
     const self = b.dependencyFromBuildZig(@This(), .{
         .__internal_skip_build = true,
     });
-    return createStateInner(self.builder, target, optimize, step);
-}
-
-/// assumes the passed in b is from executing the current build script.
-/// i.e dependencies are resolved relative to the ./build.zig.zon
-fn createStateInner(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, step: *std.Build.Step) !*State {
-    const ocaml_dep = b.dependency("ocaml", .{});
-    const zstd_dep = b.dependency("zstd", .{
-        .target = target,
-        .optimize = optimize,
-        .linkage = .static,
-    });
-    const zstd = zstd_dep.artifact("zstd");
-    const state = try b.allocator.create(State);
-    state.* = .{
-        .b = b,
-        .ocaml_dep = ocaml_dep,
-        .zstd = zstd,
-        .target = target,
-        .optimize = optimize,
-        .step = step,
-    };
-
-    return state;
+    return Context.create(self.builder, step, optimize);
 }

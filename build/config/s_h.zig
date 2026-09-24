@@ -6,7 +6,7 @@ const tools = @import("../tools.zig");
 const LazyPath = std.Build.LazyPath;
 
 pub fn generate(state: *State) LazyPath {
-    const target = &state.target.result;
+    const target = state.result();
     State.requireLinuxTarget("s_h.zig", target);
 
     const is_gnu = target.isGnuLibC();
@@ -45,8 +45,8 @@ pub fn generate(state: *State) LazyPath {
     // set of configure probes.  Keep APIs that depend on a target-specific
     // probe (for example huge pages) off; zstd is supplied by the build.
     return tools.configHeader(
-        state.b,
-        state.ocamlRel("runtime/caml/s.h.in"),
+        state.ctx.b,
+        state.ctx.ocamlRel("runtime/caml/s.h.in"),
         &.{
             .{ "OCAML_OS_TYPE", .str(Config.config.os_type_unix) },
             .{ "POSIX_SIGNALS", .flagOrNull(true) },

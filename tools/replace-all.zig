@@ -9,71 +9,64 @@ pub fn main(init: std.process.Init) !void {
     _ = args.skip();
 
     const input_file_path = args.next() orelse {
-        std.log.err("missing input file path", .{});
-        return;
+        std.log.err("usage: replace-all <input> <output> <substitutions-json>", .{});
+        return error.InvalidArguments;
     };
     const output_file_path = args.next() orelse {
         std.log.err("missing output file path", .{});
-        return;
+        return error.InvalidArguments;
     };
     const substitutions = args.next() orelse {
         std.log.err("missing substitutions array", .{});
-        return;
+        return error.InvalidArguments;
     };
 
     const input_file = try Io.Dir.cwd().readFileAlloc(io, input_file_path, gpa, .unlimited);
     defer gpa.free(input_file);
 
-    const output_file = try Io.Dir.cwd().createFile(io, output_file_path, .{});
-    defer output_file.close(io);
-
-    const substitutions_array_parsed = std.json.parseFromSlice([]Substitution, gpa, substitutions, .{
+    const substitutions_parsed = std.json.parseFromSlice([]Substitution, gpa, substitutions, .{
         .ignore_unknown_fields = true,
     }) catch {
         std.log.err("Invalid substitution input, it must be of type  Array<{{ literal_pattern: string, replacement: string, occurances?: number }}>", .{});
         return error.InvalidSubstitution;
     };
-    defer substitutions_array_parsed.deinit();
-    const substitutions_array = substitutions_array_parsed.value;
+    defer substitutions_parsed.deinit();
+    const subs = substitutions_parsed.value;
 
-    var write_buf: [1024 * 1024]u8 = undefined;
+    const remaining = try gpa.alloc(u32, subs.len);
+    defer gpa.free(remaining);
+    for (subs, remaining) |sub, *r| r.* = sub.occurances;
+
+    const output_file = try Io.Dir.cwd().createFile(io, output_file_path, .{});
+    defer output_file.close(io);
+
+    var write_buf: [64 * 1024]u8 = undefined;
     var file_writer = output_file.writer(io, &write_buf);
     const writer = &file_writer.interface;
 
-    var read_slice = input_file;
-
-    var occurances_map = std.AutoHashMap(usize, u32).init(gpa);
-    defer occurances_map.deinit();
-
-    if (substitutions.len > 0) while (read_slice.len > 0) {
-        var next_idx: usize = read_slice.len;
-        var sub: ?Substitution = null;
-        for (substitutions_array, 0..) |substitution, i| {
-            const pattern = substitution.literal_pattern;
-            if (pattern.len == 0 or pattern.len > next_idx) continue;
-
-            const idx = std.mem.indexOf(u8, read_slice[0..next_idx], pattern) orelse continue;
-
-            const occurances_gop = try occurances_map.getOrPut(i);
-            const occurances = if (occurances_gop.found_existing) occurances_gop.value_ptr.* else blk: {
-                occurances_gop.value_ptr.* = 0;
-                break :blk 0;
-            };
-            const max_occurances = substitution.occurances;
-            if (occurances >= max_occurances) continue;
-            occurances_gop.value_ptr.* += 1;
-
-            next_idx = idx;
-            sub = substitution;
+    var rest: []const u8 = input_file;
+    while (true) {
+        // Find the earliest match among substitutions that still have budget.
+        // Ties go to the substitution listed first.  Only the substitution
+        // that is actually applied consumes one of its occurances.
+        var best_idx: usize = rest.len;
+        var best: ?usize = null;
+        for (subs, remaining, 0..) |sub, r, i| {
+            if (r == 0 or sub.literal_pattern.len == 0) continue;
+            const idx = std.mem.indexOf(u8, rest, sub.literal_pattern) orelse continue;
+            if (idx < best_idx) {
+                best_idx = idx;
+                best = i;
+            }
         }
 
-        try writer.writeAll(read_slice[0..next_idx]);
-        if (sub) |substitution| {
-            try writer.writeAll(substitution.replacement);
-            read_slice = read_slice[next_idx + substitution.literal_pattern.len ..];
-        } else break;
-    };
-
+        const i = best orelse break;
+        try writer.writeAll(rest[0..best_idx]);
+        try writer.writeAll(subs[i].replacement);
+        rest = rest[best_idx + subs[i].literal_pattern.len ..];
+        remaining[i] -= 1;
+    }
+    try writer.writeAll(rest);
     try writer.flush();
 }
 

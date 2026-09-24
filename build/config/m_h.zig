@@ -6,7 +6,7 @@ const tools = @import("../tools.zig");
 const LazyPath = std.Build.LazyPath;
 
 pub fn generate(state: *State) LazyPath {
-    const target = &state.target.result;
+    const target = state.result();
     State.requireLinuxTarget("m_h.zig", target);
 
     const pointer_bits = target.ptrBitWidth();
@@ -46,8 +46,8 @@ pub fn generate(state: *State) LazyPath {
     const has_code32 = is_64 and target.cpu.arch == .x86_64;
 
     return tools.configHeader(
-        state.b,
-        state.ocamlRel("runtime/caml/m.h.in"),
+        state.ctx.b,
+        state.ctx.ocamlRel("runtime/caml/m.h.in"),
         &.{
             .{ "ARCH_SIXTYFOUR", .flagOrNull(is_64) },
             .{ "ARCH_BIG_ENDIAN", .flagOrNull(is_big_endian) },

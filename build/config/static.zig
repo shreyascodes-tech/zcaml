@@ -14,6 +14,13 @@ pub const version_number = version_major * 10000 + version_minor * 100 + version
 pub const release_number = 21;
 pub const version_extra = "";
 
+/// Location of the standard library as baked into the runtime
+/// (`OCAML_STDLIB_DIR`).  A path starting with `.` is resolved relative to the
+/// directory containing the executable (see `caml_locate_standard_library`),
+/// which is what upstream's `--with-relative-libdir` produces.  This keeps the
+/// install relocatable: `<prefix>/bin/ocamlrun` finds `<prefix>/lib/ocaml`.
+pub const stdlib_dir = "../lib/ocaml";
+
 pub const magic_prefix = "Caml1999";
 pub const magic_version = "037";
 pub const magic_length = 12;

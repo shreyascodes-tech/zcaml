@@ -1,14 +1,14 @@
 const std = @import("std");
-const State = @import("../state.zig");
+const Context = @import("../context.zig");
 const Config = @import("static.zig");
 const tools = @import("../tools.zig");
 
 const LazyPath = std.Build.LazyPath;
 
-pub fn generate(state: *State) LazyPath {
+pub fn generate(ctx: *Context) LazyPath {
     return tools.replaceAll(
-        state.b,
-        state.ocamlRel("stdlib/sys.ml.in"),
+        ctx,
+        ctx.ocamlRel("stdlib/sys.ml.in"),
         "sys.ml",
         &.{
             .once("@configure_input@", .str(Config.input.sys)),

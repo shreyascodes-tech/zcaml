@@ -1,50 +1,59 @@
-//! State required for building ocaml.
-//! Shared build and configuration utilities live here.
+//! Per-target OCaml build state.
+//!
+//! One State exists per target.  Get one from
+//! `Context.forTarget` or `Context.host`, and don't create it directly.
+//! Artifacts built for the target (runtimes, later stdlib/compilers) are
+//! created lazily and cached here, so asking twice builds only once.
 
 const std = @import("std");
+const Context = @import("context.zig");
+const runtime = @import("runtime.zig");
 
 const State = @This();
 
-const LazyPath = std.Build.LazyPath;
+ctx: *Context,
 
-b: *std.Build,
-
-ocaml_dep: *std.Build.Dependency,
-
-/// The vendored zstd artifact shared by the configuration and later build
-/// stages.  Its emitted binary and include tree remain lazy build paths.
-zstd: *std.Build.Step.Compile,
-
-/// the output target of exes final ocaml will produce
 target: std.Build.ResolvedTarget,
 optimize: std.builtin.OptimizeMode,
-/// the step that triggerd this ocaml build
-/// can be used to attach file installations etc to it
-step: *std.Build.Step,
 
-pub fn ocamlRel(self: *const State, sub: []const u8) LazyPath {
-    return self.ocaml_dep.path(sub);
+/// The vendored zstd static library for this target.  Its emitted binary and
+/// include tree remain lazy build paths.
+zstd: *std.Build.Step.Compile,
+
+bytecode_runtime: ?runtime.Bytecode = null,
+
+/// Use `Context.forTarget` instead.
+pub fn create(ctx: *Context, target: std.Build.ResolvedTarget) *State {
+    const optimize = ctx.optimize;
+    const b = ctx.b;
+    const zstd_dep = b.dependency("zstd", .{
+        .target = target,
+        .optimize = optimize,
+        .linkage = .static,
+    });
+    const self = b.allocator.create(State) catch @panic("OOM");
+    self.* = .{
+        .ctx = ctx,
+        .target = target,
+        .optimize = optimize,
+        .zstd = zstd_dep.artifact("zstd"),
+    };
+    return self;
 }
 
-/// Adds a file to the install step.
-/// `dest_rel_path` is relative to the install prefix path.
-/// Example:
-/// ```zig
-/// state.installFile(.prefix, file, "hi"); // installs file to zig-out/hi
-/// state.installFile(.lib, file, "hi"); // installs file to zig-out/lib/hi
-/// state.installFile(.bin, file, "hi"); // installs file to zig-out/bin/hi
-/// state.installFile(.header, file, "hi"); // installs file to zig-out/include/hi
-/// state.installFile(.{ .custom = "foo" }, file, "hi"); // installs file to zig-out/foo/hi
-/// ```
-pub fn installFile(
-    self: *const State,
-    dir: std.Build.InstallDir,
-    src: LazyPath,
-    dest_rel_path: []const u8,
-) void {
-    self.step.dependOn(
-        &self.b.addInstallFileWithDir(src, dir, dest_rel_path).step,
-    );
+pub fn result(self: *const State) *const std.Target {
+    return &self.target.result;
+}
+
+/// Whether this is the State that runs build-time programs.
+pub fn isHost(self: *State) bool {
+    return self == self.ctx.host();
+}
+
+/// The bytecode runtime (`libcamlrun` + `ocamlrun`) for this target.
+pub fn bytecodeRuntime(self: *State) *const runtime.Bytecode {
+    if (self.bytecode_runtime == null) self.bytecode_runtime = runtime.bytecode(self);
+    return &self.bytecode_runtime.?;
 }
 
 pub fn requireLinuxTarget(module: []const u8, target: *const std.Target) void {
