@@ -11,6 +11,10 @@ const TargetConfig = @import("config/target.zig");
 pub const Ocamlrun = struct {
     module: *std.Build.Module,
     exe: *std.Build.Step.Compile,
+
+    pub fn run(self: *const Ocamlrun, b: *std.Build) *tools.RunZigFile.Run {
+        return tools.RunZigFile.Run.init(b, self.exe);
+    }
 };
 
 /// Builds the initial bytecode runtime for the selected target.

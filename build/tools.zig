@@ -179,7 +179,7 @@ pub const RunZigFile = struct {
         run: *std.Build.Step.Run,
         outfiles: std.ArrayList(LazyPath),
 
-        fn init(b: *std.Build, exe: *std.Build.Step.Compile) *Run {
+        pub fn init(b: *std.Build, exe: *std.Build.Step.Compile) *Run {
             const self = b.allocator.create(Run) catch @panic("OOM");
             self.* = .{
                 .b = b,
@@ -216,6 +216,10 @@ pub const RunZigFile = struct {
 
         pub fn outFileAt(self: *Run, i: usize) LazyPath {
             return self.outfiles.items[i];
+        }
+
+        pub fn stdout(self: *Run) LazyPath {
+            return self.run.captureStdOut(.{});
         }
     };
 };
