@@ -14,16 +14,23 @@ pub fn main(init: std.process.Init) !void {
     var names: std.ArrayList([]const u8) = .empty;
     for (args[2..]) |path| {
         const source = try std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(16 * 1024 * 1024));
-        var lines = std.mem.splitScalar(u8, source, '\n');
-        while (lines.next()) |line| {
-            const prefix = "CAMLprim value ";
-            if (!std.mem.startsWith(u8, line, prefix)) continue;
+        const prefix = "CAMLprim value ";
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, prefix)) |start| {
+            var name_start = start + prefix.len;
+            while (name_start < source.len and (source[name_start] == ' ' or source[name_start] == '\t')) {
+                name_start += 1;
+            }
 
-            const rest = std.mem.trimStart(u8, line[prefix.len..], " \t");
-            const end = std.mem.indexOfAny(u8, rest, " \t(") orelse continue;
-            const name = rest[0..end];
-            if (name.len == 0) continue;
-            try names.append(allocator, name);
+            var name_end = name_start;
+            while (name_end < source.len and (source[name_end] == '_' or std.ascii.isAlphanumeric(source[name_end]))) {
+                name_end += 1;
+            }
+
+            if (name_end > name_start) {
+                try names.append(allocator, source[name_start..name_end]);
+            }
+            search_start = name_end;
         }
     }
 
