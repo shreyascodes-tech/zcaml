@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) !void {
 // assumes this is called from a build fn that has zcaml as a dependency
 // must never be called from build fn above, or the build script fails
 // usefule for eventual public api for zcaml
-fn createState(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, step: *std.Build.Step) !State {
+fn createState(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, step: *std.Build.Step) !*State {
     const self = b.dependencyFromBuildZig(@This(), .{
         .__internal_skip_build = true,
     });
