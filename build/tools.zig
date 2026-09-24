@@ -26,7 +26,7 @@ pub const Substitution = struct {
 };
 
 /// Replaces occurances of patterns with the given values in a file.
-/// Example:
+/// Examp le:
 /// ```zig
 /// tools.replaceAll(
 ///     builder,
@@ -45,30 +45,21 @@ pub fn replaceAll(
     substitutions: []const Substitution,
 ) LazyPath {
     const replace_exe = struct {
-        var exe: ?*std.Build.Step.Compile = null;
-        fn get(b: *std.Build) *std.Build.Step.Compile {
+        var exe: ?RunZigFile = null;
+        fn get(b: *std.Build) *const RunZigFile {
             if (exe) |e| return e;
-            exe = b.addExecutable(.{
-                .name = "replace-all",
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path("tools/replace-all.zig"),
-                    .target = b.graph.host,
-                    .optimize = .ReleaseSafe,
-                }),
-            });
+            exe = RunZigFile.init(b, "replace-all", b.path("tools/replace-all.zig"));
             return exe.?;
         }
     };
 
-    const run_replace_exe = builder.addRunArtifact(replace_exe.get(builder));
-    run_replace_exe.addFileArg(input_file_path);
-
-    const output_file_path = run_replace_exe.addOutputFileArg(output_file_basename);
-
     const substitutions_json = std.json.Stringify.valueAlloc(builder.allocator, substitutions, .{}) catch @panic("oom");
-    run_replace_exe.addArg(substitutions_json);
 
-    return output_file_path;
+    return replace_exe.get(builder).run(builder)
+        .inFile(input_file_path)
+        .outFile(output_file_basename)
+        .arg(substitutions_json)
+        .popOutFile();
 }
 
 /// Converts an autoconf undef config header into a C header.
@@ -144,4 +135,87 @@ pub const Value = union(enum) {
             .integer => jws.print("\"{d}\"", .{self.integer}),
         };
     }
+};
+
+/// A convenience wrapper for creating a Zig executable and running it.
+///
+/// Example:
+/// ```zig
+/// const run_zig = tools.RunZigFile.init(b, "my-zig-exe", my_zig_file);
+/// const run = run_zig.run(b)
+///     .inFile(some_input_file)
+///     .outFile("output.txt")
+///     .str("some-arg");
+/// const output_file = run.outFileAt(0);
+/// ```
+pub fn addZigRun(b: *std.Build, name: []const u8, src_path: LazyPath) RunZigFile {
+    return RunZigFile.init(b, name, src_path);
+}
+
+pub const RunZigFile = struct {
+    exe: *std.Build.Step.Compile,
+
+    pub fn init(b: *std.Build, name: []const u8, src_path: LazyPath) RunZigFile {
+        const module = b.createModule(.{
+            .root_source_file = src_path,
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        });
+
+        const exe = b.addExecutable(.{
+            .name = name,
+            .root_module = module,
+        });
+
+        return .{ .exe = exe };
+    }
+
+    pub fn run(self: *const RunZigFile, b: *std.Build) *Run {
+        return Run.init(b, self.exe);
+    }
+
+    pub const Run = struct {
+        b: *std.Build,
+        run: *std.Build.Step.Run,
+        outfiles: std.ArrayList(LazyPath),
+
+        fn init(b: *std.Build, exe: *std.Build.Step.Compile) *Run {
+            const self = b.allocator.create(Run) catch @panic("OOM");
+            self.* = .{
+                .b = b,
+                .run = b.addRunArtifact(exe),
+                .outfiles = .empty,
+            };
+            return self;
+        }
+
+        pub fn arg(self: *Run, s: []const u8) *Run {
+            self.run.addArg(s);
+            return self;
+        }
+
+        pub fn args(self: *Run, a: []const []const u8) *Run {
+            self.run.addArgs(a);
+            return self;
+        }
+
+        pub fn inFile(self: *Run, s: LazyPath) *Run {
+            self.run.addFileArg(s);
+            return self;
+        }
+
+        pub fn outFile(self: *Run, s: []const u8) *Run {
+            const outfile = self.run.addOutputFileArg(s);
+            self.outfiles.append(self.b.allocator, outfile) catch @panic("OOM");
+            return self;
+        }
+
+        pub fn popOutFile(self: *Run) LazyPath {
+            return self.outfiles.pop().?;
+        }
+
+        pub fn outFileAt(self: *Run, i: usize) LazyPath {
+            return self.outfiles.items[i];
+        }
+    };
 };
