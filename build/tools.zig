@@ -47,9 +47,9 @@ pub fn replaceAll(
     const replace_exe = struct {
         var exe: ?RunZigFile = null;
         fn get(b: *std.Build) *const RunZigFile {
-            if (exe) |e| return e;
+            if (exe) |*e| return e;
             exe = RunZigFile.init(b, "replace-all", b.path("tools/replace-all.zig"));
-            return exe.?;
+            return &exe.?;
         }
     };
 
@@ -207,6 +207,16 @@ pub const RunZigFile = struct {
         pub fn outFile(self: *Run, s: []const u8) *Run {
             const outfile = self.run.addOutputFileArg(s);
             self.outfiles.append(self.b.allocator, outfile) catch @panic("OOM");
+            return self;
+        }
+
+        pub fn cwd(self: *Run, s: LazyPath) *Run {
+            self.run.setCwd(s);
+            return self;
+        }
+
+        pub fn dependOn(self: *Run, step: *std.Build.Step) *Run {
+            self.run.step.dependOn(step);
             return self;
         }
 
