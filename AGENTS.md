@@ -9,4 +9,6 @@ look at `./tools/example_transform.zig` for a good idea of the basic Io and juic
 we use ./tools/* for transforming and/or working with lazy transforms.
 eg. if we want to transform a LazyPath file we prefer to never run getPath() eagerly. we use a RunZigFile to let the zig build system schedule running the transform if/when needed.
 
+Prioritize readable code: separate logical operations with blank lines, use multiline initializers and long expressions, avoid dense one-line condition chains, and introduce explanatory locals when they clarify intent.
+
 NEVER commit without explicit user confirmation.
