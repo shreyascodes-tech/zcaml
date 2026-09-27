@@ -8,3 +8,5 @@ look at `./tools/example_transform.zig` for a good idea of the basic Io and juic
 
 we use ./tools/* for transforming and/or working with lazy transforms.
 eg. if we want to transform a LazyPath file we prefer to never run getPath() eagerly. we use a RunZigFile to let the zig build system schedule running the transform if/when needed.
+
+NEVER commit without explicit user confirmation.
