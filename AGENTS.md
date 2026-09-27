@@ -2,7 +2,7 @@ This is a zig 0.16 project. And the APIs may not be the same as your training da
 
 use zig env to get the lib dir and look into the source for new apis.
 
-look at `./tools/replace-all.zig` for a good idea of the basic Io and juicy main with init arg patterns.
+look at `./tools/example_transform.zig` for a good idea of the basic Io and juicy main with init arg patterns.
 
 ./zig-pkg/ is the new place where zig puts the extracted dependencies.
 
