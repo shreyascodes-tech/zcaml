@@ -11,9 +11,27 @@ backend_sources: []const BackendSources,
 generated_files: []const GeneratedFile,
 dependencies: []const Dependency,
 
+/// Ordered bytecode archive members; flags are the relevant Compflags cases.
+stdlib_modules: []const StdlibModule,
+
+pub const StdlibModule = struct {
+    output: []const u8,
+    source: []const u8,
+    interface: []const u8,
+
+    /// StdlibModules members are archived in order; std_exit is built separately.
+    archive_member: bool,
+
+    interface_flags: []const []const u8 = &.{},
+    implementation_flags: []const []const u8 = &.{},
+    expand_interface_aliases: bool = false,
+    expand_implementation_aliases: bool = false,
+};
+
 /// Source groups linked into the bootstrap bytecode interpreter.
 pub fn isBytecodeRuntimeGroup(name: []const u8) bool {
     const std = @import("std");
+
     return std.mem.eql(u8, name, "runtime_common") or
         std.mem.eql(u8, name, "runtime_bytecode_only") or
         std.mem.eql(u8, name, "runtime_platform_unix");

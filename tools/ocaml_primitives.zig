@@ -17,8 +17,8 @@ pub fn main(init: std.process.Init) !void {
         return error.InvalidArguments;
     }
 
-    const zon = try Io.Dir.cwd().readFileAlloc(io, argv[1], gpa, .unlimited);
-    const manifest = try std.zon.parse.fromSliceAlloc(Manifest, gpa, try gpa.dupeZ(u8, zon), null, .{});
+    const zon = try Io.Dir.cwd().readFileAllocOptions(io, argv[1], gpa, .unlimited, .of(u8), 0);
+    const manifest = try std.zon.parse.fromSliceAlloc(Manifest, gpa, zon, null, .{});
     const primitives = try collectPrimitives(gpa, io, argv[2], manifest.source_groups);
     try writePrimitives(io, argv[3], primitives.names);
     try writePrimsC(io, argv[4], primitives);

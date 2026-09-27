@@ -17,6 +17,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const root = argv[1];
+    try verifyCompflags(gpa, io, root);
+
     const version_file = try readSource(gpa, io, root, "VERSION");
     const version = std.mem.trim(u8, std.mem.sliceTo(version_file, '\n'), " \t\r");
     const version_macros = try readSource(gpa, io, root, "build-aux/ocaml_version.m4");
@@ -26,11 +28,17 @@ pub fn main(init: std.process.Init) !void {
     const sources = try collectSourceGroups(gpa, io, root, &make_vars);
     const backends = try collectBackends(gpa, io, root, &make_vars);
     const dependencies = try collectDependencies(gpa, io, root);
+    const stdlib_modules = try collectStdlibModules(gpa, io, root);
     const generated = try collectGeneratedFiles(gpa, io, root, sources, backends);
 
+    const release_number = try std.fmt.parseInt(
+        u32,
+        try m4Define(version_macros, "OCAML__RELEASE_NUMBER"),
+        10,
+    );
     const manifest: Manifest = .{
         .ocaml_version = version,
-        .release_number = try std.fmt.parseInt(u32, try m4Define(version_macros, "OCAML__RELEASE_NUMBER"), 10),
+        .release_number = release_number,
         .magic_prefix = try m4Define(version_macros, "MAGIC_NUMBER__PREFIX"),
         .magic_version = try m4Define(version_macros, "MAGIC_NUMBER__VERSION"),
         .exec_format = try m4Define(version_macros, "EXEC__FORMAT"),
@@ -39,11 +47,29 @@ pub fn main(init: std.process.Init) !void {
         .backend_sources = backends,
         .generated_files = generated,
         .dependencies = dependencies,
+        .stdlib_modules = stdlib_modules,
     };
+
     try writeManifest(io, argv[3], manifest);
     std.log.info("prepared OCaml {s}: {d} source groups, {d} dependency rules, {d} generated-file rules", .{
         version, sources.len, dependencies.len, generated.len,
     });
+}
+
+/// Reviewed bytecode cases of stdlib/Compflags for OCaml 5.5.1. This is
+/// deliberately not a shell-case interpreter: a changed upstream file must be
+/// reviewed alongside collectStdlibModules and this fingerprint.
+fn verifyCompflags(gpa: Allocator, io: Io, root: []const u8) !void {
+    const source = try readSource(gpa, io, root, "stdlib/Compflags");
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(source, &digest, .{});
+
+    const reviewed_digest = "005b2361cf9befdad4e1d4136cbec050a9be51c97e5aa387c077e3a2e8185a1f";
+    const actual_digest = std.fmt.bytesToHex(digest, .lower);
+    if (!std.mem.eql(u8, &actual_digest, reviewed_digest)) {
+        std.log.err("stdlib/Compflags changed: review bytecode flag rules in tools/prepare.zig before regenerating manifest", .{});
+        return error.UnreviewedStdlibCompflags;
+    }
 }
 
 fn m4Define(source: []const u8, name: []const u8) ![]const u8 {
@@ -64,14 +90,24 @@ fn m4Define(source: []const u8, name: []const u8) ![]const u8 {
     return error.MissingVersionMacro;
 }
 
-fn collectSourceGroups(gpa: Allocator, io: Io, root: []const u8, make_vars: *std.StringHashMap([]const u8)) ![]const SourceGroup {
+fn collectSourceGroups(
+    gpa: Allocator,
+    io: Io,
+    root: []const u8,
+    make_vars: *std.StringHashMap([]const u8),
+) ![]const SourceGroup {
     // These sources are supplied by the target profile, not the common groups.
     try make_vars.put("arch_specific_SOURCES", "");
     try make_vars.put("TSAN_NATIVE_RUNTIME_C_SOURCES", "");
     try make_vars.put("UNIX_OR_WIN32", "");
 
     var sources: std.ArrayList(SourceGroup) = .empty;
-    const source_vars = [_]struct { name: []const u8, variable: []const u8, c_prefix: ?[]const u8 = null }{
+    const SourceVariable = struct {
+        name: []const u8,
+        variable: []const u8,
+        c_prefix: ?[]const u8 = null,
+    };
+    const source_vars = [_]SourceVariable{
         .{ .name = "ocamlcommon", .variable = "ocamlcommon_SOURCES" },
         .{ .name = "ocamlbytecomp", .variable = "ocamlbytecomp_SOURCES" },
         .{ .name = "ocamlmiddleend", .variable = "ocamlmiddleend_SOURCES" },
@@ -105,7 +141,10 @@ fn collectSourceGroups(gpa: Allocator, io: Io, root: []const u8, make_vars: *std
                 token;
             try files.append(gpa, path);
         }
-        if (files.items.len == 0) return error.EmptySourceGroup;
+        if (files.items.len == 0) {
+            return error.EmptySourceGroup;
+        }
+
         try sources.append(gpa, .{ .name = entry.name, .files = try files.toOwnedSlice(gpa) });
     }
     try sources.append(gpa, .{ .name = "runtime_platform_unix", .files = &.{"runtime/unix.c"} });
@@ -121,16 +160,25 @@ fn collectSourceGroups(gpa: Allocator, io: Io, root: []const u8, make_vars: *std
         const ml = try std.fmt.allocPrint(gpa, "stdlib/{s}.ml", .{name});
         const mli = try std.fmt.allocPrint(gpa, "stdlib/{s}.mli", .{name});
         const template = try std.fmt.allocPrint(gpa, "{s}.in", .{ml});
-        if (try existsSource(gpa, io, root, mli)) try stdlib_files.append(gpa, mli);
+        if (try existsSource(gpa, io, root, mli)) {
+            try stdlib_files.append(gpa, mli);
+        }
         if (try existsSource(gpa, io, root, ml) or try existsSource(gpa, io, root, template)) {
             try stdlib_files.append(gpa, ml);
-        } else return error.MissingStdlibSource;
+        } else {
+            return error.MissingStdlibSource;
+        }
     }
     try sources.append(gpa, .{ .name = "stdlib", .files = try stdlib_files.toOwnedSlice(gpa) });
     return sources.toOwnedSlice(gpa);
 }
 
-fn collectBackends(gpa: Allocator, io: Io, root: []const u8, make_vars: *const std.StringHashMap([]const u8)) ![]const BackendSources {
+fn collectBackends(
+    gpa: Allocator,
+    io: Io,
+    root: []const u8,
+    make_vars: *const std.StringHashMap([]const u8),
+) ![]const BackendSources {
     var backends: std.ArrayList(BackendSources) = .empty;
     const backend_files = [_][]const u8{
         "arch.mli",      "arch.ml",   "proc.ml",       "CSE.ml",   "selection.ml",
@@ -142,14 +190,18 @@ fn collectBackends(gpa: Allocator, io: Io, root: []const u8, make_vars: *const s
         var paths: std.ArrayList([]const u8) = .empty;
         for (backend_files) |file| {
             const path = try std.fmt.allocPrint(gpa, "asmcomp/{s}/{s}", .{ arch, file });
-            if (!try existsSource(gpa, io, root, path)) return error.MissingBackendSource;
+            if (!try existsSource(gpa, io, root, path)) {
+                return error.MissingBackendSource;
+            }
             try paths.append(gpa, path);
         }
         var assembly: std.ArrayList([]const u8) = .empty;
         const asm_path = try std.fmt.allocPrint(gpa, "runtime/{s}.S", .{arch});
         if (try existsSource(gpa, io, root, asm_path)) try assembly.append(gpa, asm_path);
         if (std.mem.eql(u8, arch, "amd64")) {
-            if (!try existsSource(gpa, io, root, "runtime/amd64nt.asm")) return error.MissingBackendSource;
+            if (!try existsSource(gpa, io, root, "runtime/amd64nt.asm")) {
+                return error.MissingBackendSource;
+            }
             try assembly.append(gpa, "runtime/amd64nt.asm");
         }
         try backends.append(gpa, .{
@@ -164,14 +216,159 @@ fn collectBackends(gpa: Allocator, io: Io, root: []const u8, make_vars: *const s
 fn collectDependencies(gpa: Allocator, io: Io, root: []const u8) ![]const Dependency {
     var dependencies: std.ArrayList(Dependency) = .empty;
     const dependency_files = [_][]const u8{
-        ".depend",                      "stdlib/.depend",         "otherlibs/str/.depend",
-        "otherlibs/systhreads/.depend", "otherlibs/unix/.depend", "otherlibs/runtime_events/.depend",
+        ".depend",
+        "stdlib/.depend",
+        "otherlibs/str/.depend",
+        "otherlibs/systhreads/.depend",
+        "otherlibs/unix/.depend",
+        "otherlibs/runtime_events/.depend",
     };
     for (dependency_files) |path| {
         const content = try readSource(gpa, io, root, path);
         try parseDependencyRules(gpa, content, path, &dependencies);
     }
+
+    // Upstream stdlib/Makefile: implicit dependencies not tracked by ocamlc -depend.
+    const stdlib_modules = try collectStdlibModules(gpa, io, root);
+    var lazy_interface_available = false;
+
+    for (stdlib_modules) |module| {
+        const bootstrap_module = std.mem.eql(u8, module.output, "stdlib") or
+            std.mem.eql(u8, module.output, "camlinternalFormatBasics");
+
+        for ([_][]const u8{ ".cmi", ".cmo" }) |ext| {
+            const output = try std.fmt.allocPrint(gpa, "stdlib/{s}{s}", .{ module.output, ext });
+            var implicit: std.ArrayList([]const u8) = .empty;
+
+            if (!bootstrap_module) {
+                try implicit.append(gpa, "stdlib/stdlib.cmi");
+            }
+
+            // The bootstrap compiler loads these predefined interfaces when
+            // resolving OCaml builtins, even when .depend omits their names.
+            if (!bootstrap_module) {
+                try implicit.append(gpa, "stdlib/camlinternalFormatBasics.cmi");
+            }
+            if (lazy_interface_available) {
+                try implicit.append(gpa, "stdlib/camlinternalLazy.cmi");
+            }
+
+            if (implicit.items.len != 0) {
+                try dependencies.append(gpa, .{
+                    .output = output,
+                    .prerequisites = try implicit.toOwnedSlice(gpa),
+                });
+            }
+        }
+
+        // StdlibModules is dependency-ordered; requiring the Lazy interface
+        // only after its declaration avoids introducing a bootstrap cycle.
+        if (std.mem.eql(u8, module.output, "camlinternalLazy")) {
+            lazy_interface_available = true;
+        }
+    }
+
     return dependencies.toOwnedSlice(gpa);
+}
+
+fn collectStdlibModules(gpa: Allocator, io: Io, root: []const u8) ![]const Manifest.StdlibModule {
+    const text = try readSource(gpa, io, root, "stdlib/StdlibModules");
+    const vars = try parseMakeVariables(gpa, text);
+    const basenames = vars.get("STDLIB_MODULE_BASENAMES") orelse return error.MissingStdlibModules;
+
+    var modules: std.ArrayList(Manifest.StdlibModule) = .empty;
+    var it = std.mem.tokenizeAny(u8, basenames, " \t\r\n");
+    while (it.next()) |name| {
+        const ml = try std.fmt.allocPrint(gpa, "stdlib/{s}.ml", .{name});
+        const mli = try std.fmt.allocPrint(gpa, "stdlib/{s}.mli", .{name});
+
+        const template = try std.fmt.allocPrint(gpa, "{s}.in", .{ml});
+        const has_interface = try existsSource(gpa, io, root, mli);
+        const has_implementation = try existsSource(gpa, io, root, ml) or
+            try existsSource(gpa, io, root, template);
+        if (!has_interface or !has_implementation) {
+            return error.MissingStdlibSource;
+        }
+
+        const plain = std.mem.eql(u8, name, "stdlib") or std.mem.startsWith(u8, name, "camlinternal");
+        const output = if (plain)
+            try gpa.dupe(u8, name)
+        else
+            try std.fmt.allocPrint(gpa, "stdlib__{c}{s}", .{
+                std.ascii.toUpper(name[0]), name[1..],
+            });
+        const labels = std.mem.endsWith(u8, name, "Labels");
+
+        try modules.append(gpa, .{
+            .output = output,
+            .source = ml,
+            .interface = mli,
+            .archive_member = true,
+            .interface_flags = stdlibInterfaceFlags(name),
+            .implementation_flags = stdlibImplementationFlags(name),
+            .expand_interface_aliases = std.mem.eql(u8, name, "stdlib") or labels,
+            .expand_implementation_aliases = std.mem.eql(u8, name, "stdlib"),
+        });
+    }
+
+    const has_exit_source = try existsSource(gpa, io, root, "stdlib/std_exit.ml");
+    const has_exit_interface = try existsSource(gpa, io, root, "stdlib/std_exit.mli");
+    if (!has_exit_source or !has_exit_interface) {
+        return error.MissingStdlibSource;
+    }
+
+    try modules.append(gpa, .{
+        .output = "std_exit",
+        .source = "stdlib/std_exit.ml",
+        .interface = "stdlib/std_exit.mli",
+        .archive_member = false,
+    });
+    return modules.toOwnedSlice(gpa);
+}
+
+fn stdlibInterfaceFlags(name: []const u8) []const []const u8 {
+    if (std.mem.eql(u8, name, "stdlib")) {
+        return &.{ "-nopervasives", "-no-alias-deps", "-w", "-49" };
+    }
+    if (std.mem.eql(u8, name, "camlinternalFormatBasics")) {
+        return &.{"-nopervasives"};
+    }
+    if (std.mem.eql(u8, name, "oo")) {
+        return &.{"-no-principal"};
+    }
+    if (std.mem.eql(u8, name, "buffer")) {
+        return &.{ "-w", "+A" };
+    }
+    if (hasFormatWarnings(name)) {
+        return &.{ "-w", "+A", "-w", "-fragile-match" };
+    }
+    return &.{};
+}
+
+fn stdlibImplementationFlags(name: []const u8) []const []const u8 {
+    if (std.mem.eql(u8, name, "stdlib")) {
+        return &.{ "-nopervasives", "-no-alias-deps", "-w", "-49" };
+    }
+    if (std.mem.eql(u8, name, "camlinternalFormatBasics")) {
+        return &.{"-nopervasives"};
+    }
+    if (std.mem.endsWith(u8, name, "Labels") or std.mem.eql(u8, name, "float")) {
+        return &.{ "-nolabels", "-no-alias-deps" };
+    }
+    if (std.mem.eql(u8, name, "buffer")) {
+        return &.{ "-w", "+A" };
+    }
+    if (hasFormatWarnings(name)) {
+        return &.{ "-w", "+A", "-w", "-fragile-match" };
+    }
+    return &.{};
+}
+
+fn hasFormatWarnings(name: []const u8) bool {
+    return std.mem.eql(u8, name, "camlinternalFormat") or
+        std.mem.eql(u8, name, "printf") or
+        std.mem.eql(u8, name, "format") or
+        std.mem.eql(u8, name, "scanf");
 }
 
 fn collectGeneratedFiles(gpa: Allocator, io: Io, root: []const u8, sources: []const SourceGroup, backends: []const BackendSources) ![]const GeneratedFile {
