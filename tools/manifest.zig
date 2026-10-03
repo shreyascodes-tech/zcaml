@@ -13,6 +13,22 @@ dependencies: []const Dependency,
 
 /// Ordered bytecode archive members; flags are the relevant Compflags cases.
 stdlib_modules: []const StdlibModule,
+compiler_modules: []const CompilerModule,
+archives: []const Archive,
+
+pub const CompilerModule = struct {
+    stem: []const u8,
+    implementation: ?[]const u8,
+    interface: ?[]const u8,
+    archive: ?[]const u8,
+    install_interface: bool,
+};
+
+pub const Archive = struct {
+    name: []const u8,
+    members: []const []const u8,
+    link_all: bool = false,
+};
 
 pub const StdlibModule = struct {
     output: []const u8,

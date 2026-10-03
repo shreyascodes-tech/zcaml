@@ -30,6 +30,8 @@ pub fn main(init: std.process.Init) !void {
     const dependencies = try collectDependencies(gpa, io, root);
     const stdlib_modules = try collectStdlibModules(gpa, io, root);
     const generated = try collectGeneratedFiles(gpa, io, root, sources, backends);
+    const compiler_modules = try collectCompilerModules(gpa, sources, generated);
+    const archives = try collectArchives(gpa, stdlib_modules, compiler_modules);
 
     const release_number = try std.fmt.parseInt(
         u32,
@@ -48,12 +50,112 @@ pub fn main(init: std.process.Init) !void {
         .generated_files = generated,
         .dependencies = dependencies,
         .stdlib_modules = stdlib_modules,
+        .compiler_modules = compiler_modules,
+        .archives = archives,
     };
 
     try writeManifest(io, argv[3], manifest);
     std.log.info("prepared OCaml {s}: {d} source groups, {d} dependency rules, {d} generated-file rules", .{
         version, sources.len, dependencies.len, generated.len,
     });
+}
+
+fn collectCompilerModules(
+    allocator: Allocator,
+    groups: []const SourceGroup,
+    generated: []const GeneratedFile,
+) ![]const Manifest.CompilerModule {
+    var modules: std.ArrayList(Manifest.CompilerModule) = .empty;
+
+    for ([_][]const u8{ "ocamlcommon", "ocamlbytecomp", "ocamlc", "ocamlmiddleend" }) |group_name| {
+        const files = sourceGroupFiles(groups, group_name);
+
+        for (files) |file| {
+            const suffix = std.fs.path.extension(file);
+            if (!std.mem.eql(u8, suffix, ".ml") and
+                !std.mem.eql(u8, suffix, ".mll") and
+                !std.mem.eql(u8, suffix, ".mly") and
+                !std.mem.eql(u8, suffix, ".mli")) continue;
+
+            const stem = file[0 .. file.len - suffix.len];
+            if (std.mem.eql(u8, suffix, ".mli")) {
+                var has_implementation = false;
+                for (files) |candidate| {
+                    if (std.mem.startsWith(u8, candidate, stem) and
+                        (std.mem.eql(u8, candidate[stem.len..], ".ml") or
+                            std.mem.eql(u8, candidate[stem.len..], ".mll") or
+                            std.mem.eql(u8, candidate[stem.len..], ".mly")))
+                    {
+                        has_implementation = true;
+                        break;
+                    }
+                }
+                if (has_implementation) continue;
+            }
+
+            const implementation: ?[]const u8 = if (std.mem.eql(u8, suffix, ".mli"))
+                null
+            else
+                try std.fmt.allocPrint(allocator, "{s}.ml", .{stem});
+            const interface_path = try std.fmt.allocPrint(allocator, "{s}.mli", .{stem});
+            var has_interface = std.mem.eql(u8, suffix, ".mli");
+            for (files) |candidate| {
+                if (std.mem.eql(u8, candidate, interface_path)) has_interface = true;
+            }
+            for (generated) |rule| {
+                if (std.mem.eql(u8, rule.output, interface_path)) has_interface = true;
+            }
+
+            try modules.append(allocator, .{
+                .stem = stem,
+                .implementation = implementation,
+                .interface = if (has_interface) interface_path else null,
+                .archive = if (std.mem.eql(u8, group_name, "ocamlcommon") or
+                    std.mem.eql(u8, group_name, "ocamlbytecomp")) group_name else null,
+                .install_interface = std.mem.eql(u8, group_name, "ocamlcommon") or
+                    std.mem.eql(u8, group_name, "ocamlbytecomp"),
+            });
+        }
+    }
+
+    return modules.toOwnedSlice(allocator);
+}
+
+fn collectArchives(
+    allocator: Allocator,
+    stdlib: []const Manifest.StdlibModule,
+    compiler: []const Manifest.CompilerModule,
+) ![]const Manifest.Archive {
+    var archives: std.ArrayList(Manifest.Archive) = .empty;
+    var stdlib_members: std.ArrayList([]const u8) = .empty;
+    for (stdlib) |module| {
+        if (module.archive_member) {
+            const stem = try std.fmt.allocPrint(allocator, "stdlib/{s}", .{module.output});
+            try stdlib_members.append(allocator, stem);
+        }
+    }
+    try archives.append(allocator, .{
+        .name = "stdlib",
+        .members = try stdlib_members.toOwnedSlice(allocator),
+    });
+
+    for ([_][]const u8{ "ocamlcommon", "ocamlbytecomp" }) |name| {
+        var members: std.ArrayList([]const u8) = .empty;
+        for (compiler) |module| {
+            if (module.archive) |archive| {
+                if (std.mem.eql(u8, archive, name) and module.implementation != null) {
+                    try members.append(allocator, module.stem);
+                }
+            }
+        }
+        try archives.append(allocator, .{
+            .name = name,
+            .members = try members.toOwnedSlice(allocator),
+            .link_all = std.mem.eql(u8, name, "ocamlcommon"),
+        });
+    }
+
+    return archives.toOwnedSlice(allocator);
 }
 
 /// Reviewed bytecode cases of stdlib/Compflags for OCaml 5.5.1. This is
@@ -511,13 +613,13 @@ fn collectGeneratedFiles(gpa: Allocator, io: Io, root: []const u8, sources: []co
         },
         .{
             .output = "bytecomp/opcodes.ml",
-            .inputs = &.{ "runtime/caml/instruct.h", "tools/make_opcodes.mll" },
-            .transform = "make_opcodes",
+            .inputs = &.{"runtime/caml/instruct.h"},
+            .transform = "bootstrap_opcodes",
         },
         .{
             .output = "bytecomp/opcodes.mli",
-            .inputs = &.{"bytecomp/opcodes.ml"},
-            .transform = "ocamlc_interface",
+            .inputs = &.{"runtime/caml/instruct.h"},
+            .transform = "bootstrap_opcodes_interface",
         },
     });
     for ([_][]const u8{
@@ -871,4 +973,42 @@ test "generated emit rules keep each backend's input array" {
         emit_count += 1;
     }
     try std.testing.expectEqual(backends.len, emit_count);
+}
+
+test "compiler archive membership follows upstream source order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const groups = [_]SourceGroup{
+        .{ .name = "ocamlcommon", .files = &.{ "a/first.mli", "a/first.ml", "a/second.ml", "a/only.mli" } },
+        .{ .name = "ocamlbytecomp", .files = &.{"b/third.ml"} },
+        .{ .name = "ocamlc", .files = &.{"driver/main.ml"} },
+        .{ .name = "ocamlmiddleend", .files = &.{} },
+    };
+    const modules = try collectCompilerModules(allocator, &groups, &.{});
+    const stdlib = [_]Manifest.StdlibModule{
+        .{
+            .output = "stdlib",
+            .source = "stdlib/stdlib.ml",
+            .interface = "stdlib/stdlib.mli",
+            .archive_member = true,
+        },
+        .{
+            .output = "std_exit",
+            .source = "stdlib/std_exit.ml",
+            .interface = "stdlib/std_exit.mli",
+            .archive_member = false,
+        },
+    };
+    const archives = try collectArchives(allocator, &stdlib, modules);
+
+    try std.testing.expectEqual(@as(usize, 5), modules.len);
+    try std.testing.expectEqualStrings("a/first", modules[0].stem);
+    try std.testing.expect(modules[0].interface != null);
+    try std.testing.expect(modules[2].implementation == null);
+    try std.testing.expectEqualStrings("stdlib/stdlib", archives[0].members[0]);
+    try std.testing.expectEqual(@as(usize, 2), archives[1].members.len);
+    try std.testing.expectEqualStrings("a/first", archives[1].members[0]);
+    try std.testing.expectEqualStrings("a/second", archives[1].members[1]);
+    try std.testing.expectEqualStrings("b/third", archives[2].members[0]);
 }

@@ -4,9 +4,11 @@ const Io = std.Io;
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
     const args = try init.minimal.args.toSlice(gpa);
-    if (args.len < 10) return error.InvalidArguments;
+    if (args.len < 11) return error.InvalidArguments;
 
-    // Arguments precede the two flag lists and their dependency directories.
+    // runtime compiler name interface-source implementation-source output-dir mode
+    // own-cmi-or-"-" interface-flags -- implementation-flags -- include-dirs...
+    // The own CMI is an input file, never an implicit first include directory.
     const runtime = args[1];
     const compiler = args[2];
     const module_name = args[3];
@@ -14,19 +16,27 @@ pub fn main(init: std.process.Init) !void {
     const implementation_source = args[5];
     const dir = args[6];
     const mode = args[7];
+    const own_interface = args[8];
+    const is_interface = std.mem.eql(u8, mode, "interface");
+    const is_implementation = std.mem.eql(u8, mode, "implementation");
+    const is_standalone = std.mem.eql(u8, mode, "standalone");
+    if (!is_interface and !is_implementation and !is_standalone) {
+        return error.InvalidArguments;
+    }
+    const has_own_interface = !std.mem.eql(u8, own_interface, "-");
+    if (is_implementation != has_own_interface) {
+        return error.InvalidArguments;
+    }
     try Io.Dir.cwd().createDirPath(init.io, dir);
 
-    var position: usize = 8;
-    const intf_flags = flags(args, &position);
-    const impl_flags = flags(args, &position);
-    var deps = args[position..];
+    var position: usize = 9;
+    const intf_flags = try flags(args, &position);
+    const impl_flags = try flags(args, &position);
+    const deps = args[position..];
 
     if (std.mem.eql(u8, mode, "implementation")) {
-        if (deps.len == 0) return error.MissingInterface;
-
         const output = try std.fmt.allocPrint(gpa, "{s}/{s}.cmi", .{ dir, module_name });
-        try Io.Dir.cwd().copyFile(deps[0], Io.Dir.cwd(), output, init.io, .{});
-        deps = deps[1..];
+        try Io.Dir.cwd().copyFile(own_interface, Io.Dir.cwd(), output, init.io, .{});
 
         // ocamlc only reuses a prebuilt .cmi when the .mli sits next to the
         // .ml it compiles. Put both sources into this isolated output directory.
@@ -93,12 +103,13 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn flags(args: []const []const u8, position: *usize) []const []const u8 {
+fn flags(args: []const []const u8, position: *usize) ![]const []const u8 {
     const start = position.*;
     while (position.* < args.len and !std.mem.eql(u8, args[position.*], "--")) {
         position.* += 1;
     }
 
+    if (position.* == args.len) return error.InvalidArguments;
     const result = args[start..position.*];
     position.* += 1;
     return result;

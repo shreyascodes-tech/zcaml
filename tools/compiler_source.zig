@@ -76,11 +76,13 @@ pub fn main(init: std.process.Init) !void {
         }
         try substitute(out, input, &substitutions);
     } else if (std.mem.eql(u8, mode, "config-generated")) {
-        if (args.len != 5) return error.InvalidArguments;
+        if (args.len < 5) return error.InvalidArguments;
         var substitutions = std.StringHashMap([]const u8).init(gpa);
-        for (config_values) |entry| try substitutions.put(entry.key, entry.value);
-        try substitutions.put("ocaml_bindir", args[3]);
-        try substitutions.put("TARGET_BINDIR", args[3]);
+        for (args[3 .. args.len - 1]) |pair| {
+            const equal = std.mem.indexOfScalar(u8, pair, '=') orelse return error.InvalidArguments;
+            if (equal == 0) return error.InvalidArguments;
+            try substitutions.put(pair[0..equal], pair[equal + 1 ..]);
+        }
         try substitute(out, input, &substitutions);
     } else {
         return error.InvalidArguments;
@@ -115,75 +117,3 @@ fn substitute(out: *Io.Writer, input: []const u8, values: *const std.StringHashM
     }
     try out.writeAll(rest);
 }
-
-const ConfigValue = struct { key: []const u8, value: []const u8 };
-// Linux x86_64 bytecode-only target. Values describing unavailable native
-// compilation or unconfigured external tools must not imply their presence.
-const config_values = [_]ConfigValue{
-    .{ .key = "configure_input", .value = "Generated from config.generated.ml.in" },
-    .{ .key = "QS", .value = "" },
-    .{ .key = "ocaml_bindir", .value = "bin" },
-    .{ .key = "TARGET_BINDIR", .value = "bin" },
-    .{ .key = "ccomp_type", .value = "cc" },
-    .{ .key = "CC", .value = "zig cc" },
-    .{ .key = "ocaml_cc_vendor", .value = "clang" },
-    .{ .key = "outputobj", .value = "-o " },
-    .{ .key = "cc_has_debug_prefix_map", .value = "true" },
-    .{ .key = "ocaml_cv_prog_as_debug_prefix_map", .value = "false" },
-    .{ .key = "as_is_cc", .value = "true" },
-    .{ .key = "bytecode_cflags", .value = "-std=gnu11 -fwrapv" },
-    .{ .key = "bytecode_cppflags", .value = "" },
-    .{ .key = "native_cflags", .value = "" },
-    .{ .key = "native_cppflags", .value = "" },
-    .{ .key = "zstd_libs", .value = "" },
-    .{ .key = "cclibs", .value = "-lm -lpthread -ldl" },
-    .{ .key = "native_ldflags", .value = "" },
-    .{ .key = "with_nonexecstack_note", .value = "false" },
-    .{ .key = "PACKLD", .value = "" },
-    .{ .key = "rpath", .value = "" },
-    .{ .key = "mksharedlibrpath", .value = "" },
-    .{ .key = "AR", .value = "zig ar" },
-    .{ .key = "supports_shared_libraries", .value = "false" },
-    .{ .key = "natdynlink", .value = "false" },
-    .{ .key = "mkdll_exp", .value = "" },
-    .{ .key = "mkexe_exp", .value = "" },
-    .{ .key = "mkmaindll_exp", .value = "" },
-    .{ .key = "flambda", .value = "false" },
-    .{ .key = "flambda_invariants", .value = "false" },
-    .{ .key = "cmm_invariants", .value = "false" },
-    .{ .key = "codegen_invariants", .value = "false" },
-    .{ .key = "windows_unicode", .value = "0" },
-    .{ .key = "flat_float_array", .value = "true" },
-    .{ .key = "align_double", .value = "true" },
-    .{ .key = "align_int64", .value = "true" },
-    .{ .key = "function_sections", .value = "false" },
-    .{ .key = "afl", .value = "false" },
-    .{ .key = "bytecode_runtime_id", .value = "" },
-    .{ .key = "native_runtime_id", .value = "" },
-    .{ .key = "native_compiler", .value = "false" },
-    .{ .key = "arch", .value = "none" },
-    .{ .key = "model", .value = "default" },
-    .{ .key = "system", .value = "linux" },
-    .{ .key = "target_os_type", .value = "Unix" },
-    .{ .key = "AS", .value = "zig cc" },
-    .{ .key = "asm_cfi_supported", .value = "false" },
-    .{ .key = "asm_size_type_directives", .value = "false" },
-    .{ .key = "asm_dwarf_version", .value = "None" },
-    .{ .key = "frame_pointers", .value = "false" },
-    .{ .key = "reserved_header_bits", .value = "0" },
-    .{ .key = "EXEEXT", .value = "" },
-    .{ .key = "OBJEXT", .value = "o" },
-    .{ .key = "S", .value = "s" },
-    .{ .key = "libext", .value = "a" },
-    .{ .key = "SO", .value = "so" },
-    .{ .key = "host", .value = "x86_64-unknown-linux-gnu" },
-    .{ .key = "target", .value = "x86_64-unknown-linux-gnu" },
-    .{ .key = "systhread_support", .value = "true" },
-    .{ .key = "flexdll_dir", .value = "" },
-    .{ .key = "ar_supports_response_files", .value = "true" },
-    .{ .key = "tsan", .value = "false" },
-    .{ .key = "shebangscripts", .value = "true" },
-    .{ .key = "suffixing", .value = "false" },
-    .{ .key = "launch_method_target", .value = "sh" },
-    .{ .key = "runtime_search_target", .value = "disable" },
-};
