@@ -1,14 +1,94 @@
-This is a zig 0.16 project. And the APIs may not be the same as your training data.
+This is a zig 0.16+ project. And the APIs may not be the same as your training data.
 
 use zig env to get the lib dir and look into the source for new apis.
 
-look at `./tools/example_transform.zig` for a good idea of the basic Io and juicy main with init arg patterns.
-
 ./zig-pkg/ is the new place where zig puts the extracted dependencies.
 
-we use ./tools/* for transforming and/or working with lazy transforms.
-eg. if we want to transform a LazyPath file we prefer to never run getPath() eagerly. we use a RunZigFile to let the zig build system schedule running the transform if/when needed.
+Zig now uses the new std.Io interface, std.process.Init (juicy main) for basic Io and argument/env access respectively.
 
-Prioritize readable code: separate logical operations with blank lines, use multiline initializers and long expressions, avoid dense one-line condition chains, and introduce explanatory locals when they clarify intent.
+example code showcasing the new APIs (please read the src for more info):
+```zig
+const std = @import("std");
+
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
+    // allocators
+    const gpa = init.gpa;
+    const arena_alloc = init.arena.allocator();
+    _ = arena_alloc;
+
+    // args
+    var args = try init.minimal.args.iterateAllocator(gpa);
+    defer args.deinit();
+    _ = args.skip(); // skip the program name
+
+    // reading files (a)
+    const input_file = blk: {
+        const input_file_path = args.next() orelse {
+            std.log.err("missing input file", .{});
+            return error.MissingInputFile;
+        };
+
+        if (std.mem.eql(u8, input_file_path, "-")) {
+            break :blk std.Io.File.stdin();
+        }
+
+        break :blk try std.Io.Dir.cwd().openFile(io, input_file_path, .{});
+    };
+    defer input_file.close(io);
+
+    const input_file_contents = blk: {
+        var reader = input_file.reader(io, &.{});
+        const input_file_contents = try reader.interface.allocRemaining(gpa, .unlimited);
+        break :blk input_file_contents;
+    };
+    defer gpa.free(input_file_contents);
+
+    // reading files (b)
+    const another_input_file = blk: {
+        const another_input_file_path = args.next() orelse {
+            std.log.err("missing another input file", .{});
+            return error.MissingAnotherInputFile;
+        };
+
+        // checkout readFileAllocOptions for more advanced options or reading with a sentinel etc
+        break :blk try std.Io.Dir.cwd().readFileAlloc(io, another_input_file_path, gpa, .unlimited);
+    };
+    defer gpa.free(another_input_file);
+
+    const output_file = blk: {
+        const output_file_path = args.next() orelse {
+            std.log.err("missing output file", .{});
+            return error.MissingOutputFile;
+        };
+
+        if (std.mem.eql(u8, output_file_path, "-")) {
+            break :blk std.Io.File.stdout();
+        }
+
+        break :blk try std.Io.Dir.cwd().createFile(io, output_file_path, .{});
+    };
+    defer output_file.close(io);
+
+    // writing files (basic)
+    try output_file.writeStreamingAll(io, "Another simple case\n");
+
+    // writing files (streaming)
+    var write_buffer: [1024]u8 = undefined;
+    var file_writer = output_file.writer(io, &write_buffer);
+    const writer = &file_writer.interface;
+
+    try writer.writeAll("hello world\n");
+    try writer.print("hello {s}\n", .{"world"});
+
+    // more advanced stuff
+    var input_file_reader = input_file.reader(io, &.{});
+    _ = try writer.sendFileAll(&input_file_reader, .unlimited);
+
+    // must flush at the end
+    try file_writer.flush();
+}
+```
 
 NEVER commit without explicit user confirmation.
