@@ -1,16 +1,16 @@
-//! Replacement for OCaml's `./configure`: computes the values configure
-//! would substitute and renders the `*.in` templates with them.
-//!
-//! Each template has a struct with one field per variable; the renderers
-//! reject templates that don't match their struct in either direction.
+//! The values OCaml's `./configure` would substitute into the `*.in`
+//! templates: one struct per template, one field per variable.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
 
-const Target = @import("Target.zig");
+const Target = @import("Target");
 const Version = @import("Version.zig");
+const template = @import("template.zig");
+const Quoted = template.Quoted;
+const Join = template.Join;
+const Qs = template.Qs;
 
-/// External tools that end up baked into the compiler's `Config` module.
 pub const Tools = struct {
     cc: []const u8,
     ar: []const u8,
@@ -18,14 +18,31 @@ pub const Tools = struct {
     /// Default: `<cc> -r -o ` (configure finds the system `ld`, which is
     /// wrong when cross-compiling).
     packld: ?[]const u8 = null,
+    cc_vendor: []const u8 = default_cc_vendor,
+
     /// Matches the clang bundled with zig 0.16.
-    cc_vendor: []const u8 = "clang-21-1",
+    pub const default_cc_vendor = "clang-21-1";
 };
 
 pub const Layout = union(enum) {
     absolute: struct { bindir: []const u8, libdir: []const u8 },
     /// `--with-relative-libdir`: relocatable.
     relative: struct { bindir_to_libdir: []const u8 = "../lib/ocaml" },
+};
+
+/// Must agree between `m.h`, `config.ml` and the runtime ID in
+/// `build_config.h`, so everything reads them from here.
+pub const Features = struct {
+    flat_float_array: bool = true,
+    frame_pointers: bool = false,
+    reserved_header_bits: u8 = 0,
+    tsan: bool = false,
+    /// Linker flags for compressed marshalling; `null` disables `HAS_ZSTD`.
+    zstd_libs: ?[]const u8 = null,
+
+    pub fn zstd(f: Features) bool {
+        return f.zstd_libs != null;
+    }
 };
 
 pub const Options = struct {
@@ -35,8 +52,7 @@ pub const Options = struct {
     target: *const Target,
     tools: Tools,
     layout: Layout,
-    zstd: bool = false,
-    zstd_libs: []const u8 = "",
+    features: Features = .{},
     /// configure enables this by default; it only slows down a shipped compiler.
     codegen_invariants: bool = false,
 };
@@ -77,12 +93,12 @@ pub const MH = struct {
             .SIZEOF_SHORT = t.zig.cTypeByteSize(.short),
             .SIZEOF_LONGLONG = t.zig.cTypeByteSize(.longlong),
             .ARCH_ALIGN_INT64 = t.alignInt64(),
-            .HEADER_RESERVED_BITS = 0,
+            .HEADER_RESERVED_BITS = o.features.reserved_header_bits,
             .ASM_CFI_SUPPORTED = t.asmCfiSupported(),
             .ASM_SIZE_TYPE_DIRECTIVES = t.asmSizeTypeDirectives(),
-            .WITH_FRAME_POINTERS = false,
+            .WITH_FRAME_POINTERS = o.features.frame_pointers,
             .CAML_WITH_FPIC = false,
-            .FLAT_FLOAT_ARRAY = true,
+            .FLAT_FLOAT_ARRAY = o.features.flat_float_array,
             .FUNCTION_SECTIONS = t.functionSections(),
             .SUPPORTS_ALIGNED_ATTRIBUTE = false,
             // gcc-only `__attribute__((optimize("tree-vectorize")))`.
@@ -194,8 +210,7 @@ pub const SH = struct {
     HAVE___TSAN_FUNC_EXIT_VOID_VOID_P: bool,
     HAVE___TSAN_FUNC_EXIT_VOID_VOID: bool,
 
-    /// configure probes these; with zig's bundled libc the answers are
-    /// fixed per libc family.
+    /// With zig's bundled libcs the answers are fixed per libc family.
     pub fn init(o: Options) SH {
         const t = o.target;
         const darwin = t.libc == .darwin;
@@ -203,10 +218,10 @@ pub const SH = struct {
         const linux = t.zig.os.tag == .linux;
         const bsd_like = darwin or freebsd;
         return .{
-            .OCAML_OS_TYPE = .{ .v = @tagName(t.os_type) },
+            .OCAML_OS_TYPE = .{ .v = Target.os_type },
             .POSIX_SIGNALS = true,
             .BSD_SIGNALS = false,
-            .SUPPORT_DYNAMIC_LINKING = t.supportsSharedLibraries(),
+            .SUPPORT_DYNAMIC_LINKING = Target.supports_shared_libraries,
             // macOS and MinGW-w64 have problems with TLS accessed from DLLs.
             .HAS_FULL_THREAD_VARIABLES = !darwin,
             .HAS_C99_FLOAT_OPS = true,
@@ -298,7 +313,7 @@ pub const SH = struct {
             .HAS_CLOCK_GETTIME_NSEC_NP = darwin,
             .HAS_GNU_GETAFFINITY_NP = !darwin,
             .HAS_BSD_GETAFFINITY_NP = false,
-            .HAS_ZSTD = o.zstd,
+            .HAS_ZSTD = o.features.zstd(),
             .HAVE_MAX_ALIGN_T = true,
             .HAVE_GETGRNAM_R = true,
             .HAVE_GETGRGID_R = true,
@@ -500,7 +515,7 @@ pub const Substs = struct {
             .bytecode_cppflags = cppflags,
             .native_cflags = cflags_,
             .native_cppflags = cppflags,
-            .zstd_libs = o.zstd_libs,
+            .zstd_libs = o.features.zstd_libs orelse "",
             .cclibs = "-lpthread",
             .native_ldflags = "",
             .with_nonexecstack_note = t.nonexecstackNote(),
@@ -508,7 +523,7 @@ pub const Substs = struct {
             .rpath = if (darwin) "" else "-Wl,-rpath,",
             .mksharedlibrpath = if (darwin) "" else "-Wl,-rpath,",
             .AR = tools.ar,
-            .supports_shared_libraries = t.supportsSharedLibraries(),
+            .supports_shared_libraries = Target.supports_shared_libraries,
             .natdynlink = t.natdynlink(),
             .mkdll_exp = .{ .parts = .{ tools.cc, mkdllFlags(t) } },
             .mkexe_exp = .{ .parts = .{ tools.cc, mkexeFlags(t) } },
@@ -519,7 +534,7 @@ pub const Substs = struct {
             .cmm_invariants = false,
             .codegen_invariants = o.codegen_invariants,
             .windows_unicode = 0,
-            .flat_float_array = true,
+            .flat_float_array = o.features.flat_float_array,
             .align_double = t.alignDouble(),
             .align_int64 = t.alignInt64(),
             .function_sections = t.functionSections(),
@@ -530,7 +545,7 @@ pub const Substs = struct {
             .arch = @tagName(t.arch),
             .model = t.model,
             .system = t.system,
-            .target_os_type = @tagName(t.os_type),
+            .target_os_type = Target.os_type,
             .AS = if (tools.asm_) |a|
                 .{ .parts = .{ a, "" } }
             else
@@ -538,8 +553,8 @@ pub const Substs = struct {
             .asm_cfi_supported = t.asmCfiSupported(),
             .asm_size_type_directives = t.asmSizeTypeDirectives(),
             .asm_dwarf_version = "Some 4",
-            .frame_pointers = false,
-            .reserved_header_bits = 0,
+            .frame_pointers = o.features.frame_pointers,
+            .reserved_header_bits = o.features.reserved_header_bits,
             .EXEEXT = e.exe,
             .OBJEXT = e.obj,
             .S = e.asm_,
@@ -550,7 +565,7 @@ pub const Substs = struct {
             .systhread_support = true,
             .flexdll_dir = "",
             .ar_supports_response_files = true,
-            .tsan = false,
+            .tsan = o.features.tsan,
             .shebangscripts = true,
             .suffixing = true,
             .launch_method_target = "sh",
@@ -558,7 +573,7 @@ pub const Substs = struct {
 
             .QS = .{ .n = 0 },
         };
-        s.QS = try quotedStringId(Substs, &s);
+        s.QS = try template.quotedStringId(Substs, &s);
         return s;
     }
 };
@@ -572,14 +587,15 @@ pub const BuildConfigH = struct {
     pub fn init(o: Options) BuildConfigH {
         return .{
             .stdlib_dir = stdlibDir(o),
-            .host = o.target.triple(),
+            // `$(HOST)` in the Makefile.
+            .host = o.host.triple(),
             .bytecode_runtime_id = runtimeIds(o).bytecode,
         };
     }
 
     pub fn format(h: BuildConfigH, w: *Writer) Writer.Error!void {
         try w.writeAll("/* Generated by zcaml */\n#define OCAML_STDLIB_DIR ");
-        try writeCLiteral(w, h.stdlib_dir);
+        try template.writeCLiteral(w, h.stdlib_dir);
         try w.print("\n#define HOST \"{s}\"\n#define BYTECODE_RUNTIME_ID \"{s}\"\n", .{ h.host, &h.bytecode_runtime_id });
     }
 };
@@ -588,7 +604,8 @@ pub const LdConf = struct {
     shared_libs: bool,
 
     pub fn init(o: Options) LdConf {
-        return .{ .shared_libs = o.target.supportsSharedLibraries() };
+        _ = o;
+        return .{ .shared_libs = Target.supports_shared_libraries };
     }
 
     pub fn format(c: LdConf, w: *Writer) Writer.Error!void {
@@ -596,17 +613,17 @@ pub const LdConf = struct {
     }
 };
 
-pub fn stdlibDir(o: Options) []const u8 {
+fn stdlibDir(o: Options) []const u8 {
     return switch (o.layout) {
         .absolute => |a| a.libdir,
         .relative => |r| r.bindir_to_libdir,
     };
 }
 
-pub const CFlags = Join(4);
+const CFlags = Join(4);
 
 /// `$common_cflags $sharedlib_cflags $PTHREAD_CFLAGS`.
-pub fn cflags(t: *const Target) CFlags {
+fn cflags(t: *const Target) CFlags {
     return .{ .parts = .{
         if (t.needsNoPie()) "-no-pie" else "",
         "-O2 -fno-strict-aliasing -fwrapv",
@@ -615,14 +632,14 @@ pub fn cflags(t: *const Target) CFlags {
     } };
 }
 
-pub fn mkexeFlags(t: *const Target) []const u8 {
+fn mkexeFlags(t: *const Target) []const u8 {
     return switch (t.zig.os.tag) {
         .macos => if (t.arch == .amd64) "-Wl,-no_compact_unwind" else "",
         else => "-Wl,-E",
     };
 }
 
-pub fn mkdllFlags(t: *const Target) []const u8 {
+fn mkdllFlags(t: *const Target) []const u8 {
     return switch (t.zig.os.tag) {
         .macos => if (t.arch == .amd64)
             "-shared -undefined dynamic_lookup -Wl,-no_compact_unwind -Wl,-w"
@@ -633,15 +650,15 @@ pub fn mkdllFlags(t: *const Target) []const u8 {
     };
 }
 
-pub const RuntimeIds = struct { zinc: [4]u8, bytecode: [4]u8, native: [4]u8 };
+const RuntimeIds = struct { zinc: [4]u8, bytecode: [4]u8, native: [4]u8 };
 
-pub fn runtimeIds(o: Options) RuntimeIds {
+/// `OCAML_RUNTIME_ID` in configure.ac: four base-32 digits encoding the
+/// options that make runtimes ABI-incompatible with each other.
+fn runtimeIds(o: Options) RuntimeIds {
     const alphabet = "0123456789abcdefghijklmnopqrstuv";
     const t = o.target;
-    const reserved_header_bits: u32 = 0;
-    const flat_float_array = true;
-    const frame_pointers = false;
-    const tsan = false;
+    const f = o.features;
+    const reserved_header_bits: u32 = f.reserved_header_bits;
     const windows_ansi = false;
 
     const id_version: u32 = (o.version.release_number << 1) + @intFromBool(o.version.development);
@@ -650,16 +667,16 @@ pub fn runtimeIds(o: Options) RuntimeIds {
     const q1 = q1_zinc + (reserved_header_bits * 4) % 32;
     var q2_byte = reserved_header_bits / 8;
     var q2_zinc: u32 = 0;
-    if (!flat_float_array) {
+    if (!f.flat_float_array) {
         q2_byte += 4;
         q2_zinc = 4;
     }
     var q2_native = q2_byte;
-    if (frame_pointers) q2_native += 8;
-    if (tsan) q2_native += 16;
+    if (f.frame_pointers) q2_native += 8;
+    if (f.tsan) q2_native += 16;
     var q3_zinc: u32 = if (t.is64()) 0 else 1;
-    if (!t.supportsSharedLibraries()) q3_zinc += 2;
-    if (!o.zstd) q3_zinc += 4;
+    if (!Target.supports_shared_libraries) q3_zinc += 2;
+    if (!f.zstd()) q3_zinc += 4;
     const q3 = q3_zinc + if (windows_ansi) @as(u32, 8) else 0;
 
     return .{
@@ -667,221 +684,4 @@ pub fn runtimeIds(o: Options) RuntimeIds {
         .bytecode = .{ q0, alphabet[q1], alphabet[q2_byte], alphabet[q3] },
         .native = .{ q0, alphabet[q1], alphabet[q2_native], alphabet[q3] },
     };
-}
-
-pub const RenderError = Writer.Error || error{
-    UnknownVariable,
-    UnusedVariable,
-};
-
-pub const Diagnostic = struct { name: []const u8 = "" };
-
-pub fn Used(comptime T: type) type {
-    return std.EnumSet(std.meta.FieldEnum(T));
-}
-
-/// `AC_CONFIG_HEADERS`: `values` must have exactly one field per `#undef`.
-/// `false`/`null` fields stay undefined.
-pub fn renderUndef(
-    w: *Writer,
-    template: []const u8,
-    values: anytype,
-    input_name: []const u8,
-    diag: ?*Diagnostic,
-) RenderError!void {
-    const Field = std.meta.FieldEnum(@TypeOf(values));
-    var used: Used(@TypeOf(values)) = .initEmpty();
-
-    try w.print("/* Generated by zcaml from {s}. */\n", .{input_name});
-    var lines = std.mem.splitScalar(u8, template, '\n');
-    var first = true;
-    while (lines.next()) |line| {
-        if (!first) try w.writeByte('\n');
-        first = false;
-        const name = undefName(line) orelse {
-            try w.writeAll(line);
-            continue;
-        };
-        const field = std.meta.stringToEnum(Field, name) orelse {
-            if (diag) |d| d.name = name;
-            return error.UnknownVariable;
-        };
-        used.insert(field);
-        switch (field) {
-            inline else => |f| try writeDefine(w, @tagName(f), @field(values, @tagName(f))),
-        }
-    }
-
-    var unused = used.complement().iterator();
-    if (unused.next()) |f| {
-        if (diag) |d| d.name = @tagName(f);
-        return error.UnusedVariable;
-    }
-}
-
-/// `AC_CONFIG_FILES`: replaces `@NAME@` with `values.NAME`. Templates share
-/// one value set, so unused fields are returned rather than rejected.
-pub fn renderAt(
-    w: *Writer,
-    template: []const u8,
-    values: anytype,
-    input_name: []const u8,
-    diag: ?*Diagnostic,
-) RenderError!Used(@TypeOf(values)) {
-    const Field = std.meta.FieldEnum(@TypeOf(values));
-    var used: Used(@TypeOf(values)) = .initEmpty();
-
-    var i: usize = 0;
-    while (i < template.len) {
-        const at = std.mem.findScalarPos(u8, template, i, '@') orelse {
-            try w.writeAll(template[i..]);
-            break;
-        };
-        try w.writeAll(template[i..at]);
-        var end = at + 1;
-        while (end < template.len and isIdentChar(template[end])) end += 1;
-        if (end == at + 1 or end >= template.len or template[end] != '@') {
-            try w.writeByte('@');
-            i = at + 1;
-            continue;
-        }
-        const name = template[at + 1 .. end];
-        if (std.mem.eql(u8, name, "configure_input")) {
-            try w.print("Generated by zcaml from {s}. Do not edit.", .{input_name});
-        } else {
-            const field = std.meta.stringToEnum(Field, name) orelse {
-                if (diag) |d| d.name = name;
-                return error.UnknownVariable;
-            };
-            used.insert(field);
-            switch (field) {
-                inline else => |f| try writeValue(w, .ocaml, @field(values, @tagName(f))),
-            }
-        }
-        i = end + 1;
-    }
-    return used;
-}
-
-pub fn Quoted(comptime T: type) type {
-    return struct {
-        v: T,
-        pub fn format(q: @This(), w: *Writer) Writer.Error!void {
-            if (T == []const u8) return writeCLiteral(w, q.v);
-            try w.writeByte('"');
-            try w.print("{f}", .{q.v});
-            try w.writeByte('"');
-        }
-    };
-}
-
-/// Non-empty parts joined with single spaces.
-pub fn Join(comptime n: usize) type {
-    return struct {
-        parts: [n][]const u8,
-        pub fn format(j: @This(), w: *Writer) Writer.Error!void {
-            var first = true;
-            for (j.parts) |p| {
-                if (p.len == 0) continue;
-                if (!first) try w.writeByte(' ');
-                first = false;
-                try w.writeAll(p);
-            }
-        }
-    };
-}
-
-pub const Qs = struct {
-    n: u8,
-    pub fn format(q: Qs, w: *Writer) Writer.Error!void {
-        try w.splatByteAll('o', q.n);
-    }
-};
-
-/// `OCAML_QUOTED_STRING_ID`: shortest `o*` such that no value contains `|o*}`.
-fn quotedStringId(comptime T: type, s: *const T) error{ValueTooLong}!Qs {
-    var closer_buf: [16]u8 = undefined;
-    var n: u8 = 0;
-    next: while (n + 2 <= closer_buf.len) : (n += 1) {
-        closer_buf[0] = '|';
-        @memset(closer_buf[1 .. n + 1], 'o');
-        closer_buf[n + 1] = '}';
-        const closer = closer_buf[0 .. n + 2];
-        inline for (@typeInfo(T).@"struct".fields) |f| {
-            if (comptime std.mem.eql(u8, f.name, "QS")) continue;
-            var buf: [4096]u8 = undefined;
-            var w: Writer = .fixed(&buf);
-            writeValue(&w, .ocaml, @field(s, f.name)) catch return error.ValueTooLong;
-            if (std.mem.find(u8, w.buffered(), closer) != null) continue :next;
-        }
-        return .{ .n = n };
-    }
-    return error.ValueTooLong;
-}
-
-/// TODO: Windows needs UTF-16 (`L"..."`), like `sak encode-C-utf16-literal`.
-fn writeCLiteral(w: *Writer, s: []const u8) Writer.Error!void {
-    try w.writeByte('"');
-    for (s) |c| switch (c) {
-        '\\' => try w.writeAll("\\\\"),
-        '"' => try w.writeAll("\\\""),
-        '\n' => try w.writeAll("\\n"),
-        '\r' => try w.writeAll("\\r"),
-        else => try w.writeByte(c),
-    };
-    try w.writeByte('"');
-}
-
-fn undefName(line: []const u8) ?[]const u8 {
-    var rest = std.mem.trimStart(u8, line, " \t");
-    if (!std.mem.startsWith(u8, rest, "#")) return null;
-    rest = std.mem.trimStart(u8, rest[1..], " \t");
-    if (!std.mem.startsWith(u8, rest, "undef")) return null;
-    rest = std.mem.trim(u8, rest["undef".len..], " \t\r");
-    if (rest.len == 0 or std.mem.findAny(u8, rest, " \t") != null) return null;
-    return rest;
-}
-
-fn writeDefine(w: *Writer, name: []const u8, value: anytype) Writer.Error!void {
-    switch (@typeInfo(@TypeOf(value))) {
-        .optional => return if (value) |v| writeDefine(w, name, v) else w.print("/* #undef {s} */", .{name}),
-        .bool => if (!value) return w.print("/* #undef {s} */", .{name}),
-        else => {},
-    }
-    try w.print("#define {s} ", .{name});
-    try writeValue(w, .c, value);
-}
-
-fn isIdentChar(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_';
-}
-
-const Syntax = enum { c, ocaml };
-
-fn writeValue(w: *Writer, comptime syntax: Syntax, value: anytype) Writer.Error!void {
-    const T = @TypeOf(value);
-    switch (@typeInfo(T)) {
-        .bool => try w.writeAll(switch (syntax) {
-            .c => if (value) "1" else "0",
-            .ocaml => if (value) "true" else "false",
-        }),
-        .int, .comptime_int => try w.print("{d}", .{value}),
-        .pointer => |p| switch (p.size) {
-            .slice => {
-                if (p.child != u8) @compileError("unsupported value type " ++ @typeName(T));
-                try w.writeAll(value);
-            },
-            .one => try writeValue(w, syntax, value.*),
-            else => @compileError("unsupported value type " ++ @typeName(T)),
-        },
-        .array => |a| {
-            if (a.child != u8) @compileError("unsupported value type " ++ @typeName(T));
-            try w.writeAll(&value);
-        },
-        .@"struct", .@"union", .@"enum" => {
-            if (!@hasDecl(T, "format")) @compileError(@typeName(T) ++ " has no format method");
-            try w.print("{f}", .{value});
-        },
-        else => @compileError("unsupported value type " ++ @typeName(T)),
-    }
 }

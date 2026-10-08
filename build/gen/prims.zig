@@ -8,7 +8,7 @@ const Writer = std.Io.Writer;
 /// `CAMLprim value ` — the prefix `gen_primitives.sh` matches at line start.
 const prim_prefix = "CAMLprim value ";
 
-pub const ScanError = error{OutOfMemory};
+const ScanError = error{OutOfMemory};
 
 /// Collects primitive names and `CAMLextern` declarations from one `.c` file.
 ///
@@ -95,13 +95,26 @@ fn scanName(rest: []const u8) ?[]const u8 {
 
 /// The `primitives` file: one name per line. Passed to `ocamlc -use-prims` and
 /// read by `lambda/runtimedef.ml`.
-pub fn writePrimitives(w: *Writer, names: []const []const u8) Writer.Error!void {
-    for (names) |name| try w.print("{s}\n", .{name});
-}
+pub const Primitives = struct {
+    names: []const []const u8,
+
+    pub fn format(p: Primitives, w: *Writer) Writer.Error!void {
+        for (p.names) |name| try w.print("{s}\n", .{name});
+    }
+};
 
 /// `runtime/prims.c`: declarations plus the function-pointer and name tables
 /// that `ocamlrun` dispatches through.
-pub fn writePrimsC(w: *Writer, names: []const []const u8, decls: []const u8) Writer.Error!void {
+pub const PrimsC = struct {
+    names: []const []const u8,
+    decls: []const u8,
+
+    pub fn format(p: PrimsC, w: *Writer) Writer.Error!void {
+        return writePrimsC(w, p.names, p.decls);
+    }
+};
+
+fn writePrimsC(w: *Writer, names: []const []const u8, decls: []const u8) Writer.Error!void {
     try w.writeAll(
         \\/* Generated file, do not edit */
         \\
@@ -148,13 +161,30 @@ fn eachLine(header: []const u8) std.mem.SplitIterator(u8, .scalar) {
 
 /// `runtime/caml/opnames.h`: instruction names, used by the debug runtime's
 /// bytecode tracer.
-///
+pub const Opnames = struct {
+    header: []const u8,
+
+    pub fn format(o: Opnames, w: *Writer) Writer.Error!void {
+        return writeOpnames(w, o.header);
+    }
+};
+
+/// `runtime/caml/jumptbl.h`: the computed-goto label table `interp.c` uses
+/// when `THREADED_CODE` is defined.
+pub const Jumptbl = struct {
+    header: []const u8,
+
+    pub fn format(j: Jumptbl, w: *Writer) Writer.Error!void {
+        return writeJumptbl(w, j.header);
+    }
+};
+
 /// Reproduces:
 ///     tr -d '\r' | sed -e '/\/\*/d' -e '/^#/d' \
 ///                      -e 's/enum /static char const * const names_of_/' \
 ///                      -e 's/{$/[] = {/' \
 ///                      -e 's/\([[:upper:]][[:upper:]_0-9]*\)/"\1"/g'
-pub fn writeOpnames(w: *Writer, header: []const u8) Writer.Error!void {
+fn writeOpnames(w: *Writer, header: []const u8) Writer.Error!void {
     var lines = eachLine(header);
     var first = true;
     while (lines.next()) |raw| {
@@ -199,12 +229,9 @@ fn quoteIdents(w: *Writer, line: []const u8) Writer.Error!void {
     }
 }
 
-/// `runtime/caml/jumptbl.h`: the computed-goto label table `interp.c` uses
-/// when `THREADED_CODE` is defined.
-///
 /// Reproduces:
 ///     tr -d '\r' | sed -n -e '/^  /s/ \([A-Z]\)/ \&\&lbl_\1/gp' -e '/^}/q'
-pub fn writeJumptbl(w: *Writer, header: []const u8) Writer.Error!void {
+fn writeJumptbl(w: *Writer, header: []const u8) Writer.Error!void {
     var lines = eachLine(header);
     while (lines.next()) |raw| {
         const line = stripCr(raw);

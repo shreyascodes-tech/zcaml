@@ -11,7 +11,6 @@ triple_len: u8,
 arch: Arch,
 model: []const u8,
 system: []const u8,
-os_type: OsType,
 libc: Libc,
 /// Whether ocamlopt can emit code for this target.
 native: bool,
@@ -25,15 +24,13 @@ pub const Arch = enum {
     i386,
     arm,
 
-    pub fn hasBackend(a: Arch) bool {
+    fn hasBackend(a: Arch) bool {
         return switch (a) {
             .amd64, .arm64, .power, .riscv, .s390x => true,
             .i386, .arm => false,
         };
     }
 };
-
-pub const OsType = enum { Unix, Win32, Cygwin, None };
 
 pub const Libc = union(enum) {
     glibc: std.SemanticVersion,
@@ -42,9 +39,11 @@ pub const Libc = union(enum) {
     freebsd,
 };
 
-pub const ResolveError = error{UnsupportedTarget};
+/// `OCAML_OS_TYPE`. TODO: `Win32`.
+pub const os_type = "Unix";
+pub const supports_shared_libraries = true;
 
-pub fn resolve(t: std.Target) ResolveError!Target {
+pub fn resolve(t: std.Target) error{UnsupportedTarget}!Target {
     const arch: Arch, const model: []const u8 = switch (t.cpu.arch) {
         .x86_64 => .{ .amd64, "default" },
         .aarch64 => .{ .arm64, "default" },
@@ -74,8 +73,7 @@ pub fn resolve(t: std.Target) ResolveError!Target {
 
     const native = arch.hasBackend() and switch (t.os.tag) {
         .linux => true,
-        .macos => arch == .amd64 or arch == .arm64,
-        .freebsd => arch == .amd64 or arch == .arm64,
+        .macos, .freebsd => arch == .amd64 or arch == .arm64,
         else => false,
     };
 
@@ -88,7 +86,6 @@ pub fn resolve(t: std.Target) ResolveError!Target {
         .arch = arch,
         .model = model,
         .system = system,
-        .os_type = .Unix,
         .libc = libc,
         .native = native,
     };
@@ -97,34 +94,6 @@ pub fn resolve(t: std.Target) ResolveError!Target {
 /// What `config.sub` would produce, e.g. `x86_64-pc-linux-gnu`.
 pub fn triple(t: *const Target) []const u8 {
     return t.triple_buf[0..t.triple_len];
-}
-
-fn canonicalTriple(buf: []u8, t: std.Target) std.fmt.BufPrintError![]const u8 {
-    const cpu: []const u8 = switch (t.cpu.arch) {
-        .x86 => "i686",
-        else => @tagName(t.cpu.arch),
-    };
-    return switch (t.os.tag) {
-        .linux => std.fmt.bufPrint(buf, "{s}-{s}-linux-{t}", .{
-            cpu,
-            switch (t.cpu.arch) {
-                .x86, .x86_64 => "pc",
-                .s390x => "ibm",
-                else => "unknown",
-            },
-            t.abi,
-        }),
-        .macos => std.fmt.bufPrint(buf, "{s}-apple-darwin", .{cpu}),
-        .freebsd => blk: {
-            const v = t.os.version_range.semver.min;
-            break :blk std.fmt.bufPrint(buf, "{s}-unknown-freebsd{d}.{d}", .{ cpu, v.major, v.minor });
-        },
-        else => unreachable,
-    };
-}
-
-pub fn eql(a: *const Target, b: *const Target) bool {
-    return std.mem.eql(u8, a.triple(), b.triple());
 }
 
 pub fn isDarwin(t: *const Target) bool {
@@ -143,14 +112,8 @@ pub fn is64(t: *const Target) bool {
     return t.ptrSize() == 8;
 }
 
-/// configure's whitelist covers every target we support.
 pub fn natdynlink(t: *const Target) bool {
-    return t.native and t.supportsSharedLibraries();
-}
-
-pub fn supportsSharedLibraries(t: *const Target) bool {
-    _ = t;
-    return true;
+    return t.native and supports_shared_libraries;
 }
 
 pub fn functionSections(t: *const Target) bool {
@@ -216,4 +179,28 @@ pub fn ext(t: *const Target) Ext {
         .{ .exe = ".exe", .obj = "obj", .asm_ = "asm", .lib = "lib", .dll = "dll" }
     else
         .{ .exe = "", .obj = "o", .asm_ = "s", .lib = "a", .dll = "so" };
+}
+
+fn canonicalTriple(buf: []u8, t: std.Target) error{ NoSpaceLeft, UnsupportedTarget }![]const u8 {
+    const cpu: []const u8 = switch (t.cpu.arch) {
+        .x86 => "i686",
+        else => @tagName(t.cpu.arch),
+    };
+    return switch (t.os.tag) {
+        .linux => std.fmt.bufPrint(buf, "{s}-{s}-linux-{t}", .{
+            cpu,
+            switch (t.cpu.arch) {
+                .x86, .x86_64 => "pc",
+                .s390x => "ibm",
+                else => "unknown",
+            },
+            t.abi,
+        }),
+        .macos => std.fmt.bufPrint(buf, "{s}-apple-darwin", .{cpu}),
+        .freebsd => blk: {
+            const v = t.os.version_range.semver.min;
+            break :blk std.fmt.bufPrint(buf, "{s}-unknown-freebsd{d}.{d}", .{ cpu, v.major, v.minor });
+        },
+        else => error.UnsupportedTarget,
+    };
 }

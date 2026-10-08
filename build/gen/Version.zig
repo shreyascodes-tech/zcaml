@@ -16,7 +16,7 @@ development: bool,
 magic_prefix: []const u8,
 magic_version: []const u8,
 
-pub const ParseError = error{ MissingDefine, InvalidNumber, InvalidBool };
+const ParseError = error{ MissingDefine, InvalidNumber, InvalidBool };
 
 /// The result borrows from `contents`.
 pub fn parse(contents: []const u8) ParseError!Version {
