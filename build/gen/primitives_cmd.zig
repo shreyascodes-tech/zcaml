@@ -7,8 +7,8 @@ const cli = @import("cli.zig");
 const prims = @import("prims.zig");
 
 const Args = struct {
-    src: []const u8 = undefined,
-    out: []const u8 = undefined,
+    src: []const u8,
+    out: []const u8,
     /// `runtime_BYTECODE_C_SOURCES`, relative to `--src`, in Makefile order.
     files: []const []const u8 = &.{},
 };

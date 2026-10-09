@@ -10,9 +10,9 @@ const Makefile = @import("makefile.zig");
 const fail = cli.fail;
 
 const Args = struct {
-    src: []const u8 = undefined,
-    out: []const u8 = undefined,
-    ocaml_hash: []const u8 = undefined,
+    src: []const u8,
+    out: []const u8,
+    ocaml_hash: []const u8,
 };
 
 /// Stand-ins for what `Makefile.build_config` would define; the lists are

@@ -12,12 +12,12 @@ const template = @import("template.zig");
 const fail = cli.fail;
 
 const Args = struct {
-    src: []const u8 = undefined,
-    out: []const u8 = undefined,
-    target: []const u8 = undefined,
+    src: []const u8,
+    out: []const u8,
+    target: []const u8,
     host: ?[]const u8 = null,
-    cc: []const u8 = undefined,
-    ar: []const u8 = undefined,
+    cc: []const u8,
+    ar: []const u8,
     asm_: ?[]const u8 = null,
     packld: ?[]const u8 = null,
     cc_vendor: ?[]const u8 = null,

@@ -11,22 +11,29 @@ pub fn fail(comptime fmt: []const u8, fmt_args: anytype) error{Reported} {
 /// `--name value` parsing driven by the field types of `T`:
 ///
 ///   - `bool`                 flag
-///   - `?[]const u8`          optional
-///   - `[]const u8`           required; declare it `= undefined`
+///   - `[]const u8`/`?[]const u8` option with a value
 ///   - `[]const []const u8`   positional arguments; at most one such field
 ///
+/// Fields without defaults are required. Missing options use their declared
+/// defaults, just like struct fields in std.json.
+///
 /// Field `foo_bar` is `--foo-bar`; a trailing `_` is dropped (`asm_` → `--asm`).
-pub fn parseArgs(
-    comptime T: type,
-    gpa: std.mem.Allocator,
-    args: *std.process.Args.Iterator,
-) (error{ Reported, OutOfMemory })!T {
+pub fn parseArgs(comptime T: type, gpa: std.mem.Allocator, args: *std.process.Args.Iterator) !T {
     const Field = std.meta.FieldEnum(T);
     const fields = @typeInfo(T).@"struct".fields;
-    var result: T = .{};
+    // Only return after every field has been supplied or given its default.
+    var result: T = undefined;
     var seen: std.EnumSet(Field) = .initEmpty();
     var positional: std.ArrayList([]const u8) = .empty;
     defer positional.deinit(gpa);
+
+    comptime {
+        var positional_fields = 0;
+        for (fields) |f| {
+            if (f.type == []const []const u8) positional_fields += 1;
+        }
+        if (positional_fields > 1) @compileError("at most one positional argument field is supported");
+    }
 
     while (args.next()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) {
@@ -52,15 +59,26 @@ pub fn parseArgs(
 
     var has_positional = false;
     inline for (fields) |f| {
-        if (f.type == []const u8 and !seen.contains(@field(Field, f.name)))
-            return fail("missing required option '--{s}'", .{optionName(f.name)});
         if (f.type == []const []const u8) {
-            @field(result, f.name) = try positional.toOwnedSlice(gpa);
             has_positional = true;
+        } else if (!seen.contains(@field(Field, f.name))) {
+            if (comptime f.defaultValue()) |default| {
+                @field(result, f.name) = default;
+            } else {
+                return fail("missing required option '--{s}'", .{optionName(f.name)});
+            }
         }
     }
+
     if (!has_positional and positional.items.len != 0)
         return fail("unexpected argument '{s}'", .{positional.items[0]});
+
+    inline for (fields) |f| {
+        if (f.type == []const []const u8) {
+            @field(result, f.name) = try positional.toOwnedSlice(gpa);
+        }
+    }
+
     return result;
 }
 
