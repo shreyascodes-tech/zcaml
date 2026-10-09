@@ -9,11 +9,13 @@ const cli = @import("cli.zig");
 const configure_cmd = @import("configure_cmd.zig");
 const primitives_cmd = @import("primitives_cmd.zig");
 const sources_cmd = @import("sources_cmd.zig");
+const bootstrap_sources_cmd = @import("bootstrap_sources_cmd.zig");
 
 const Command = enum {
     configure,
     primitives,
     sources,
+    @"bootstrap-sources",
 
     const usage =
         \\usage: ocaml-gen COMMAND [options]
@@ -22,6 +24,7 @@ const Command = enum {
         \\  configure    render the templates ./configure would have rendered
         \\  primitives   derive runtime/primitives, prims.c, opnames.h, jumptbl.h
         \\  sources      extract the source lists from the Makefiles as zon
+        \\  bootstrap-sources  prepare coldstart stdlib sources and launch info
         \\
     ;
 };
@@ -46,5 +49,6 @@ fn run(io: Io, gpa: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
         .configure => try configure_cmd.run(io, gpa, args),
         .primitives => try primitives_cmd.run(io, gpa, args),
         .sources => try sources_cmd.run(io, gpa, args),
+        .@"bootstrap-sources" => try bootstrap_sources_cmd.run(io, gpa, args),
     }
 }

@@ -7,6 +7,7 @@ const Gen = @import("Gen.zig");
 const Runtime = @import("Runtime.zig");
 const Sources = @import("Sources.zig");
 const Toolchain = @import("Toolchain.zig");
+const Bootstrap = @import("Bootstrap.zig");
 
 const OCaml = @This();
 
@@ -18,7 +19,7 @@ sources_manifest_path: []const u8,
 gen: Gen,
 toolchain: Toolchain,
 sources_manifest: ?*const Sources = null,
-bootstrap_runtime: ?*Runtime = null,
+bootstrap: ?Bootstrap = null,
 /// Keyed by resolved target (including CPU settings) and optimization mode.
 runtimes: std.StringArrayHashMapUnmanaged(*Runtime) = .empty,
 
@@ -55,7 +56,16 @@ pub fn build(self: *OCaml, o: BuildOptions) !Artifacts {
 
     const sources = try self.getSourcesManifest();
 
-    self.bootstrap_runtime = try self.getRuntime(sources, build_machine, o.optimize);
+    if (self.bootstrap == null) {
+        const rt = try self.getRuntime(sources, build_machine, o.optimize);
+        self.bootstrap = try Bootstrap.build(self.b, .{
+            .src = self.src,
+            .gen = self.gen,
+            .sources = sources,
+            .runtime = rt,
+        });
+    }
+
     const host_rt = try self.getRuntime(sources, o.host, o.optimize);
     const target_rt = try self.getRuntime(sources, o.target, o.optimize);
 

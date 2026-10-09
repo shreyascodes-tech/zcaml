@@ -100,6 +100,27 @@ pub fn sources(g: Gen, b: *std.Build, ocaml_hash: []const u8) LazyPath {
     return run.addOutputFileArg("sources.g.zon");
 }
 
+pub const BootstrapSourcesOptions = struct {
+    modules: []const []const u8,
+    sys_ml: LazyPath,
+    launcher: LazyPath,
+};
+
+pub fn bootstrapSources(g: Gen, b: *std.Build, o: BootstrapSourcesOptions) LazyPath {
+    const run = b.addRunArtifact(g.exe);
+    run.addArgs(&.{ "bootstrap-sources", "--src" });
+    run.addDirectoryArg(g.src);
+    run.addArg("--sys-ml");
+    run.addFileArg(o.sys_ml);
+    run.addArg("--launcher");
+    run.addFileArg(o.launcher);
+    run.addArg("--out");
+    const out = run.addOutputDirectoryArg("bootstrap-sources");
+    run.addArgs(o.modules);
+    run.addArg("std_exit");
+    return out;
+}
+
 fn resolvedTriple(b: *std.Build, t: std.Build.ResolvedTarget) []const u8 {
     return t.result.zigTriple(b.allocator) catch @panic("OOM");
 }

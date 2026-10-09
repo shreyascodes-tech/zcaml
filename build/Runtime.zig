@@ -90,45 +90,6 @@ pub fn init(b: *std.Build, o: InitOptions) !Runtime {
     };
 }
 
-pub const Artifacts = struct {
-    libcamlrun: *Compile,
-    native: ?Native,
-    libzstd: *Compile,
-    ld_conf: LazyPath,
-    primitives: LazyPath,
-    /// Public header trees, generated ones first.
-    header_dirs: [3]LazyPath,
-
-    pub const Native = struct {
-        libasmrun: *Compile,
-        libcomprmarsh: *Compile,
-    };
-
-    pub fn addInstall(a: Artifacts, b: *std.Build, step: *std.Build.Step, prefix: []const u8) void {
-        const lib = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml", .{prefix}) };
-        const caml = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml/caml", .{prefix}) };
-
-        for ([_]*Compile{ a.libcamlrun, a.libzstd }) |c| {
-            step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
-        }
-        if (a.native) |native| {
-            for ([_]*Compile{ native.libasmrun, native.libcomprmarsh }) |c| {
-                step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
-            }
-        }
-        step.dependOn(&b.addInstallFileWithDir(a.ld_conf, lib, "ld.conf").step);
-        step.dependOn(&b.addInstallFileWithDir(a.primitives, lib, "primitives").step);
-        for (a.header_dirs) |dir| {
-            step.dependOn(&b.addInstallDirectory(.{
-                .source_dir = dir,
-                .install_dir = caml,
-                .install_subdir = "",
-                .include_extensions = &.{".h"},
-            }).step);
-        }
-    }
-};
-
 pub fn artifacts(r: *Runtime) Artifacts {
     const b = r.b;
     return .{
@@ -259,6 +220,45 @@ pub const Lib = struct {
             l.flavor.suffix(),
             if (l.pic) "_pic" else "",
         });
+    }
+};
+
+pub const Artifacts = struct {
+    libcamlrun: *Compile,
+    native: ?Native,
+    libzstd: *Compile,
+    ld_conf: LazyPath,
+    primitives: LazyPath,
+    /// Public header trees, generated ones first.
+    header_dirs: [3]LazyPath,
+
+    pub const Native = struct {
+        libasmrun: *Compile,
+        libcomprmarsh: *Compile,
+    };
+
+    pub fn addInstall(a: Artifacts, b: *std.Build, step: *std.Build.Step, prefix: []const u8) void {
+        const lib = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml", .{prefix}) };
+        const caml = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml/caml", .{prefix}) };
+
+        for ([_]*Compile{ a.libcamlrun, a.libzstd }) |c| {
+            step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
+        }
+        if (a.native) |native| {
+            for ([_]*Compile{ native.libasmrun, native.libcomprmarsh }) |c| {
+                step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
+            }
+        }
+        step.dependOn(&b.addInstallFileWithDir(a.ld_conf, lib, "ld.conf").step);
+        step.dependOn(&b.addInstallFileWithDir(a.primitives, lib, "primitives").step);
+        for (a.header_dirs) |dir| {
+            step.dependOn(&b.addInstallDirectory(.{
+                .source_dir = dir,
+                .install_dir = caml,
+                .install_subdir = "",
+                .include_extensions = &.{".h"},
+            }).step);
+        }
     }
 };
 
