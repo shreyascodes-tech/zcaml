@@ -1,11 +1,8 @@
 //! The C runtime for one target: `libcamlrun`, `libasmrun` and `ocamlrun`.
-//! Each artifact is created on first request and memoised.
 //!
 //! Every module here sets `sanitize_c = .off`: the runtime does deliberate
 //! type punning and pointer arithmetic that UBSan rejects (the interpreter
-//! reconstructs `pc` from a `value` on the OCaml stack, for one), and upstream
-//! never builds it with sanitizers. Leaving them on makes `ocamlrun` trap as
-//! soon as a signal is delivered.
+//! reconstructs `pc` from a `value` on the OCaml stack, for one)
 
 const std = @import("std");
 const LazyPath = std.Build.LazyPath;
@@ -18,6 +15,140 @@ const Target = @import("Target.zig");
 const Runtime = @This();
 
 const Backend = Sources.Backend;
+
+b: *std.Build,
+target: std.Build.ResolvedTarget,
+info: Target,
+optimize: std.builtin.OptimizeMode,
+src: LazyPath,
+/// `caml/{m,s,version,exec}.h` and `build_config.h`.
+generated: LazyPath,
+/// `prims.c` and `caml/{opnames,jumptbl}.h`.
+primitives: LazyPath,
+zstd: *Compile,
+cflags: []const []const u8,
+sources: *const Sources,
+platform: Sources.Platform,
+
+libs: std.AutoArrayHashMapUnmanaged(Lib, *Compile) = .empty,
+runs: std.EnumMap(Flavor, *Compile) = .{},
+comprmarsh_lib: ?*Compile = null,
+
+pub fn init(
+    ocaml: *OCaml,
+    sources: *const Sources,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) !Runtime {
+    const b = ocaml.b;
+    const info = Target.resolve(target.result) catch |err| {
+        std.log.err("unsupported target '{s}'", .{try target.result.zigTriple(b.allocator)});
+        return err;
+    };
+
+    const gen = ocaml.gen;
+    const platform: Sources.Platform = if (info.isWindows()) .win32 else .unix;
+
+    const generated = gen.configure(b, .{
+        .host = target,
+        .target = target,
+        .toolchain = ocaml.toolchain,
+    });
+
+    const primitives = prims: {
+        const runtime_files = try sources.runtimeFiles(b.allocator, .bytecode, platform);
+        break :prims gen.primitives(b, runtime_files);
+    };
+
+    const zstd = b.dependency("zstd", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+        // Only the streaming API is reachable from `runtime/zstd.c`.
+        .dictbuilder = false,
+        .deprecated = false,
+        .@"legacy-support" = @as(usize, 0),
+    }).artifact("zstd");
+
+    return .{
+        .b = b,
+        .target = target,
+        .info = info,
+        .optimize = optimize,
+        .src = ocaml.src,
+        .generated = generated,
+        .primitives = primitives,
+        .zstd = zstd,
+        .cflags = try computeCflags(b, &info),
+        .sources = sources,
+        .platform = platform,
+    };
+}
+
+pub fn library(r: *Runtime, lib: Lib) *Compile {
+    const gop = r.libs.getOrPut(r.b.allocator, lib) catch @panic("OOM");
+    if (!gop.found_existing) gop.value_ptr.* = r.createLibrary(lib);
+    return gop.value_ptr.*;
+}
+
+pub fn ocamlrun(r: *Runtime, flavor: Flavor) *Compile {
+    return r.runs.get(flavor) orelse blk: {
+        const b = r.b;
+
+        const ocamlrun_mod = b.createModule(.{
+            .target = r.target,
+            .optimize = r.optimize,
+            .link_libc = true,
+            .sanitize_c = .off,
+        });
+        r.addCommon(ocamlrun_mod, .bytecode, flavor);
+        ocamlrun_mod.addCSourceFile(.{
+            .file = r.primitives.path(b, "runtime/prims.c"),
+            .flags = r.cflags,
+        });
+        ocamlrun_mod.linkLibrary(r.library(.{ .backend = .bytecode, .flavor = flavor }));
+
+        const ocamlrun_exe = b.addExecutable(.{
+            .name = b.fmt("ocamlrun{s}", .{flavor.suffix()}),
+            .root_module = ocamlrun_mod,
+        });
+        ocamlrun_exe.pie = if (r.info.needsNoPie()) false else null;
+
+        r.runs.put(flavor, ocamlrun_exe);
+        break :blk ocamlrun_exe;
+    };
+}
+
+/// `runtime/zstd.c` alone, linked into native executables separately so that
+/// programs which never marshal avoid the zstd dependency.
+pub fn comprmarsh(r: *Runtime) *Compile {
+    return r.comprmarsh_lib orelse blk: {
+        const b = r.b;
+
+        const comprmarsh_mod = b.createModule(.{
+            .target = r.target,
+            .optimize = r.optimize,
+            .link_libc = true,
+            .sanitize_c = .off,
+            .pic = true,
+        });
+
+        r.addCommon(comprmarsh_mod, .native, .normal);
+        comprmarsh_mod.addCSourceFile(.{
+            .file = r.src.path(b, "runtime/zstd.c"),
+            .flags = r.cflags,
+        });
+        comprmarsh_mod.linkLibrary(r.zstd);
+
+        const comprmarsh_lib = b.addLibrary(.{
+            .name = "comprmarsh",
+            .linkage = .static,
+            .root_module = comprmarsh_mod,
+        });
+
+        r.comprmarsh_lib = comprmarsh_lib;
+        break :blk comprmarsh_lib;
+    };
+}
 
 /// `runtime_*_OBJECTS` in the Makefile: the same objects with different
 /// defines.
@@ -63,119 +194,6 @@ pub const Lib = struct {
     }
 };
 
-b: *std.Build,
-target: std.Build.ResolvedTarget,
-info: Target,
-optimize: std.builtin.OptimizeMode,
-src: LazyPath,
-/// `caml/{m,s,version,exec}.h` and `build_config.h`.
-generated: LazyPath,
-/// `prims.c` and `caml/{opnames,jumptbl}.h`.
-primitives: LazyPath,
-zstd: *Compile,
-cflags: []const []const u8,
-sources: *const Sources,
-platform: Sources.Platform,
-
-libs: std.AutoArrayHashMapUnmanaged(Lib, *Compile) = .empty,
-runs: std.EnumMap(Flavor, *Compile) = .{},
-comprmarsh_lib: ?*Compile = null,
-
-pub fn init(
-    ocaml: *OCaml,
-    sources: *const Sources,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-) error{ OutOfMemory, UnsupportedTarget }!Runtime {
-    const b = ocaml.b;
-    const info = Target.resolve(target.result) catch |err| {
-        std.log.err("unsupported target '{s}'", .{try target.result.zigTriple(b.allocator)});
-        return err;
-    };
-    const platform: Sources.Platform = if (info.isWindows()) .win32 else .unix;
-    return .{
-        .b = b,
-        .target = target,
-        .info = info,
-        .optimize = optimize,
-        .src = ocaml.src,
-        .generated = ocaml.gen.configure(b, .{
-            .host = target,
-            .target = target,
-            .toolchain = ocaml.toolchain,
-        }),
-        .primitives = ocaml.gen.primitives(b, try sources.runtimeFiles(b.allocator, .bytecode, platform)),
-        .zstd = b.dependency("zstd", .{
-            .target = target,
-            .optimize = .ReleaseFast,
-            // Only the streaming API is reachable from `runtime/zstd.c`.
-            .dictbuilder = false,
-            .deprecated = false,
-            .@"legacy-support" = @as(usize, 0),
-        }).artifact("zstd"),
-        .cflags = try computeCflags(b, &info),
-        .sources = sources,
-        .platform = platform,
-    };
-}
-
-pub fn library(r: *Runtime, lib: Lib) *Compile {
-    const gop = r.libs.getOrPut(r.b.allocator, lib) catch @panic("OOM");
-    if (!gop.found_existing) gop.value_ptr.* = r.createLibrary(lib);
-    return gop.value_ptr.*;
-}
-
-/// `prims.c` is what makes the interpreter a program rather than a library:
-/// it holds the tables mapping bytecode `C_CALL` operands to C functions.
-pub fn ocamlrun(r: *Runtime, flavor: Flavor) *Compile {
-    if (r.runs.get(flavor)) |exe| return exe;
-    const b = r.b;
-    const exe = b.addExecutable(.{
-        .name = b.fmt("ocamlrun{s}", .{flavor.suffix()}),
-        .root_module = b.createModule(.{
-            .target = r.target,
-            .optimize = r.optimize,
-            .link_libc = true,
-            .sanitize_c = .off,
-        }),
-    });
-    r.addCommon(exe.root_module, .bytecode, flavor);
-    exe.root_module.addCSourceFile(.{
-        .file = r.primitives.path(b, "runtime/prims.c"),
-        .flags = r.cflags,
-    });
-    exe.root_module.linkLibrary(r.library(.{ .backend = .bytecode, .flavor = flavor }));
-    if (r.info.needsNoPie()) exe.pie = false;
-    r.runs.put(flavor, exe);
-    return exe;
-}
-
-/// `runtime/zstd.c` alone, linked into native executables separately so that
-/// programs which never marshal avoid the zstd dependency.
-pub fn comprmarsh(r: *Runtime) *Compile {
-    if (r.comprmarsh_lib) |lib| return lib;
-    const b = r.b;
-    const lib = b.addLibrary(.{
-        .name = "comprmarsh",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .target = r.target,
-            .optimize = r.optimize,
-            .link_libc = true,
-            .sanitize_c = .off,
-            .pic = true,
-        }),
-    });
-    r.addCommon(lib.root_module, .native, .normal);
-    lib.root_module.addCSourceFile(.{
-        .file = r.src.path(b, "runtime/zstd.c"),
-        .flags = r.cflags,
-    });
-    lib.root_module.linkLibrary(r.zstd);
-    r.comprmarsh_lib = lib;
-    return lib;
-}
-
 fn createLibrary(r: *Runtime, l: Lib) *Compile {
     const b = r.b;
     const lib = b.addLibrary(.{
@@ -213,7 +231,7 @@ fn addCommon(r: *Runtime, m: *std.Build.Module, backend: Backend, flavor: Flavor
     // `#include "m.h"` from `caml/config.h` finds its sibling. Ours live in
     // separate trees, so `runtime/caml` is searched explicitly, generated
     // directories first (the tarball only has `.in` templates for those).
-    for ([_]LazyPath{ r.generated, r.primitives, r.src }) |root| {
+    inline for (&.{ r.generated, r.primitives, r.src }) |root| {
         m.addIncludePath(root.path(b, "runtime"));
         m.addIncludePath(root.path(b, "runtime/caml"));
     }
@@ -239,7 +257,7 @@ fn addCommon(r: *Runtime, m: *std.Build.Module, backend: Backend, flavor: Flavor
     // zig links libc and libm itself and `-pthread` covers pthreads, so only
     // the platform extras from `$cclibs` remain.
     if (r.info.isWindows()) {
-        for ([_][]const u8{
+        inline for (&.{
             "ws2_32", "ole32", "uuid", "version", "shlwapi", "synchronization",
         }) |lib| m.linkSystemLibrary(lib, .{});
     } else if (r.info.zig.os.tag == .linux) {
@@ -247,10 +265,7 @@ fn addCommon(r: *Runtime, m: *std.Build.Module, backend: Backend, flavor: Flavor
     }
 }
 
-/// `$(OC_CFLAGS)`. Upstream's `-O2` is absent because zig passes its own
-/// `-O` and a second one would silently win; `-no-pie` is a link flag and
-/// goes on the executable.
-fn computeCflags(b: *std.Build, info: *const Target) error{OutOfMemory}![]const []const u8 {
+fn computeCflags(b: *std.Build, info: *const Target) ![]const []const u8 {
     var flags: std.ArrayList([]const u8) = .empty;
     try flags.appendSlice(b.allocator, &.{
         // The runtime relies on signed overflow wrapping and puns `value`

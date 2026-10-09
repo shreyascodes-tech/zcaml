@@ -1,5 +1,3 @@
-//! Shared plumbing for `ocaml-gen` subcommands.
-
 const std = @import("std");
 const Io = std.Io;
 const Writer = std.Io.Writer;

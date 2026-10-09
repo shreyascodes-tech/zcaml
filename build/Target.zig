@@ -1,6 +1,3 @@
-//! What OCaml's `configure` would decide about a target, derived from
-//! `std.Target` without probing.
-
 const std = @import("std");
 
 const Target = @This();

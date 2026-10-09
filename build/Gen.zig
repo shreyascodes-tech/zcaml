@@ -1,8 +1,4 @@
 //! The `ocaml-gen` host program and the run steps that invoke it.
-//!
-//! `addDirectoryArg` hashes the *path* of the source tree, not its contents.
-//! The path contains the package hash so that is sufficient, but editing files
-//! under `zig-pkg/` by hand will not rerun these steps.
 
 const std = @import("std");
 const LazyPath = std.Build.LazyPath;
