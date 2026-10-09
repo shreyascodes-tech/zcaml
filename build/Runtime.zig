@@ -84,7 +84,9 @@ pub fn init(
     };
 }
 
-pub fn library(r: *Runtime, lib: Lib) *Compile {
+/// Returns null when the requested backend is unavailable for this target.
+pub fn library(r: *Runtime, lib: Lib) ?*Compile {
+    if (lib.backend == .native and !r.info.native) return null;
     const gop = r.libs.getOrPut(r.b.allocator, lib) catch @panic("OOM");
     if (!gop.found_existing) gop.value_ptr.* = r.createLibrary(lib);
     return gop.value_ptr.*;
@@ -105,7 +107,7 @@ pub fn ocamlrun(r: *Runtime, flavor: Flavor) *Compile {
             .file = r.primitives.path(b, "runtime/prims.c"),
             .flags = r.cflags,
         });
-        ocamlrun_mod.linkLibrary(r.library(.{ .backend = .bytecode, .flavor = flavor }));
+        ocamlrun_mod.linkLibrary(r.library(.{ .backend = .bytecode, .flavor = flavor }).?);
 
         const ocamlrun_exe = b.addExecutable(.{
             .name = b.fmt("ocamlrun{s}", .{flavor.suffix()}),
@@ -120,7 +122,9 @@ pub fn ocamlrun(r: *Runtime, flavor: Flavor) *Compile {
 
 /// `runtime/zstd.c` alone, linked into native executables separately so that
 /// programs which never marshal avoid the zstd dependency.
-pub fn comprmarsh(r: *Runtime) *Compile {
+/// Returns null when this target has no native backend.
+pub fn comprmarsh(r: *Runtime) ?*Compile {
+    if (!r.info.native) return null;
     return r.comprmarsh_lib orelse blk: {
         const b = r.b;
 

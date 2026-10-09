@@ -60,7 +60,7 @@ pub fn build(self: *OCaml, o: BuildOptions) !Artifacts {
     return .{
         .boot_ocamlrun = boot_rt.ocamlrun(.normal),
         .ocamlrun = host_rt.ocamlrun(.normal),
-        .libcamlrun = target_rt.library(.{ .backend = .bytecode }),
+        .libcamlrun = target_rt.library(.{ .backend = .bytecode }).?,
         .libasmrun = target_rt.library(.{ .backend = .native }),
         .libcomprmarsh = target_rt.comprmarsh(),
         .libzstd = target_rt.zstd,
@@ -94,8 +94,10 @@ pub fn addInstallArtifacts(a: *const Artifacts, b: *std.Build, step: *Step, pref
 
     step.dependOn(&b.addInstallArtifact(a.boot_ocamlrun, .{}).step);
     step.dependOn(&b.addInstallArtifact(a.ocamlrun, .{ .dest_dir = .{ .override = bin } }).step);
-    inline for (&.{ a.libcamlrun, a.libasmrun, a.libcomprmarsh, a.libzstd }) |c| {
-        step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
+    inline for (&[_]?*Compile{ a.libcamlrun, a.libasmrun, a.libcomprmarsh, a.libzstd }) |artifact| {
+        if (artifact) |c| {
+            step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
+        }
     }
     step.dependOn(&b.addInstallFileWithDir(a.ld_conf, lib, "ld.conf").step);
     step.dependOn(&b.addInstallFileWithDir(a.primitives, lib, "primitives").step);
@@ -124,8 +126,9 @@ pub const Artifacts = struct {
     ocamlrun: *Compile,
     /// Linked into programs for `target`.
     libcamlrun: *Compile,
-    libasmrun: *Compile,
-    libcomprmarsh: *Compile,
+    /// Only present when `target` has a native backend.
+    libasmrun: ?*Compile,
+    libcomprmarsh: ?*Compile,
     libzstd: *Compile,
     ld_conf: LazyPath,
     primitives: LazyPath,
@@ -157,8 +160,10 @@ fn getSourcesManifest(self: *OCaml) !*const Sources {
     const b = self.b;
     return self.sources_manifest orelse blk: {
         const sources_file = b.build_root.handle.openFile(b.graph.io, self.sources_manifest_path, .{}) catch return error.SourcesUnavailable;
+        defer sources_file.close(b.graph.io);
         const parsed = b.allocator.create(Sources) catch @panic("OOM");
         parsed.* = try Sources.loadFromFile(b.graph.io, b.allocator, sources_file);
+        if (!std.mem.eql(u8, parsed.ocaml_hash, self.ocaml_source_hash)) return error.SourcesHashMismatch;
         self.sources_manifest = parsed;
         break :blk parsed;
     };

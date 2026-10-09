@@ -29,6 +29,12 @@ pub fn build(b: *std.Build) !void {
             ).step);
             return;
         },
+        error.SourcesHashMismatch => {
+            b.getInstallStep().dependOn(&b.addFail(
+                "Sources manifest does not match the OCaml dependency; run `zig build gen` to regenerate it.",
+            ).step);
+            return;
+        },
         else => |e| return e,
     };
     out.addInstall(b, b.getInstallStep(), plainTriple(b, host));
