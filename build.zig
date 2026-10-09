@@ -1,5 +1,6 @@
 const std = @import("std");
 const OCaml = @import("build/OCaml.zig");
+const Toolchain = @import("build/Toolchain.zig");
 const manifest = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) !void {
@@ -42,7 +43,7 @@ pub fn build(b: *std.Build) !void {
 
 /// Uses the plain `arch-os-abi` triple so that neither `native` nor the
 /// build machine's kernel/libc versions end up in `config.ml`.
-fn zigToolchain(b: *std.Build, target: std.Build.ResolvedTarget) OCaml.Toolchain {
+fn zigToolchain(b: *std.Build, target: std.Build.ResolvedTarget) Toolchain {
     return .{
         .cc = b.fmt("zig cc -target {s}", .{plainTriple(b, target)}),
         .ar = "zig ar",

@@ -6,6 +6,7 @@ const Compile = Step.Compile;
 const Gen = @import("Gen.zig");
 const Runtime = @import("Runtime.zig");
 const Sources = @import("Sources.zig");
+const Toolchain = @import("Toolchain.zig");
 
 const OCaml = @This();
 
@@ -17,7 +18,8 @@ sources_manifest_path: []const u8,
 gen: Gen,
 toolchain: Toolchain,
 sources_manifest: ?*const Sources = null,
-/// Keyed by resolved zig triple.
+bootstrap_runtime: ?*Runtime = null,
+/// Keyed by resolved target (including CPU settings) and optimization mode.
 runtimes: std.StringArrayHashMapUnmanaged(*Runtime) = .empty,
 
 pub const InitOptions = struct {
@@ -49,29 +51,17 @@ pub const BuildOptions = struct {
 };
 
 pub fn build(self: *OCaml, o: BuildOptions) !Artifacts {
-    const b = self.b;
     const build_machine = o.build_machine orelse self.b.graph.host;
 
     const sources = try self.getSourcesManifest();
-    const boot_rt = try self.getRuntime(sources, build_machine, o.optimize);
+
+    self.bootstrap_runtime = try self.getRuntime(sources, build_machine, o.optimize);
     const host_rt = try self.getRuntime(sources, o.host, o.optimize);
     const target_rt = try self.getRuntime(sources, o.target, o.optimize);
 
     return .{
-        .boot_ocamlrun = boot_rt.ocamlrun(.normal),
-        .ocamlrun = host_rt.ocamlrun(.normal),
-        .libcamlrun = target_rt.library(.{ .backend = .bytecode }).?,
-        .libasmrun = target_rt.library(.{ .backend = .native }),
-        .libcomprmarsh = target_rt.comprmarsh(),
-        .libzstd = target_rt.zstd,
-        .ld_conf = target_rt.generated.path(b, "runtime/ld.conf"),
-        .primitives = target_rt.primitives.path(b, "runtime/primitives"),
-        .header_dirs = .{
-            target_rt.generated.path(b, "runtime/caml"),
-            target_rt.primitives.path(b, "runtime/caml"),
-            target_rt.src.path(b, "runtime/caml"),
-        },
-        .generated = target_rt.generated,
+        .host_ocamlrun = host_rt.ocamlrun(.normal),
+        .runtime = target_rt.artifacts(),
     };
 }
 
@@ -87,57 +77,15 @@ pub fn addGenStep(
     step.dependOn(&update.step);
 }
 
-pub fn addInstallArtifacts(a: *const Artifacts, b: *std.Build, step: *Step, prefix: []const u8) void {
-    const bin = std.Build.InstallDir{ .custom = b.fmt("{s}/bin", .{prefix}) };
-    const lib = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml", .{prefix}) };
-    const caml = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml/caml", .{prefix}) };
-
-    step.dependOn(&b.addInstallArtifact(a.boot_ocamlrun, .{}).step);
-    step.dependOn(&b.addInstallArtifact(a.ocamlrun, .{ .dest_dir = .{ .override = bin } }).step);
-    inline for (&[_]?*Compile{ a.libcamlrun, a.libasmrun, a.libcomprmarsh, a.libzstd }) |artifact| {
-        if (artifact) |c| {
-            step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
-        }
-    }
-    step.dependOn(&b.addInstallFileWithDir(a.ld_conf, lib, "ld.conf").step);
-    step.dependOn(&b.addInstallFileWithDir(a.primitives, lib, "primitives").step);
-    for (a.header_dirs) |dir| {
-        step.dependOn(&b.addInstallDirectory(.{
-            .source_dir = dir,
-            .install_dir = caml,
-            .install_subdir = "",
-            .include_extensions = &.{".h"},
-        }).step);
-    }
-}
-
-/// What `ocamlc`/`ocamlopt` invoke on the user's machine; baked into `Config`.
-pub const Toolchain = struct {
-    cc: []const u8,
-    ar: []const u8,
-    asm_: ?[]const u8 = null,
-    packld: ?[]const u8 = null,
-};
-
 pub const Artifacts = struct {
-    /// Runs on the build machine; drives `boot/ocamlc`.
-    boot_ocamlrun: *Compile,
-    /// Runs on `host`.
-    ocamlrun: *Compile,
-    /// Linked into programs for `target`.
-    libcamlrun: *Compile,
-    /// Only present when `target` has a native backend.
-    libasmrun: ?*Compile,
-    libcomprmarsh: ?*Compile,
-    libzstd: *Compile,
-    ld_conf: LazyPath,
-    primitives: LazyPath,
-    /// `runtime/caml` header trees for `target`, generated ones first.
-    header_dirs: [3]LazyPath,
-    /// `ocaml-gen configure` output for `target`.
-    generated: LazyPath,
+    host_ocamlrun: *Compile,
+    runtime: Runtime.Artifacts,
 
-    pub const addInstall = addInstallArtifacts;
+    pub fn addInstall(a: Artifacts, b: *std.Build, step: *Step, prefix: []const u8) void {
+        const bin = std.Build.InstallDir{ .custom = b.fmt("{s}/bin", .{prefix}) };
+        step.dependOn(&b.addInstallArtifact(a.host_ocamlrun, .{ .dest_dir = .{ .override = bin } }).step);
+        a.runtime.addInstall(b, step, prefix);
+    }
 };
 
 fn getRuntime(
@@ -146,14 +94,42 @@ fn getRuntime(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) !*Runtime {
-    const key = try target.result.zigTriple(self.b.allocator);
-    const gop = try self.runtimes.getOrPut(self.b.allocator, key);
-    if (!gop.found_existing) {
-        const r = try self.b.allocator.create(Runtime);
-        r.* = try Runtime.init(self, sources, target, optimize);
-        gop.value_ptr.* = r;
+    const gpa = self.b.allocator;
+
+    const key = try runtimeKey(gpa, target.result, optimize);
+    errdefer gpa.free(key);
+
+    if (self.runtimes.get(key)) |r| {
+        gpa.free(key);
+        return r;
     }
-    return gop.value_ptr.*;
+
+    const r = try gpa.create(Runtime);
+    errdefer gpa.destroy(r);
+    r.* = try Runtime.init(self.b, .{
+        .src = self.src,
+        .gen = self.gen,
+        .sources = sources,
+        .target = target,
+        .optimize = optimize,
+        .toolchain = self.toolchain,
+    });
+
+    try self.runtimes.put(gpa, key, r);
+    return r;
+}
+
+fn runtimeKey(gpa: std.mem.Allocator, target: std.Target, optimize: std.builtin.OptimizeMode) ![]const u8 {
+    const triple = try target.zigTriple(gpa);
+    defer gpa.free(triple);
+    return std.fmt.allocPrint(gpa, "{s}:{s}:{any}:{t}:{t}:{s}", .{
+        triple,
+        target.cpu.model.name,
+        target.cpu.features.ints,
+        target.ofmt,
+        optimize,
+        target.dynamic_linker.get() orelse "",
+    });
 }
 
 fn getSourcesManifest(self: *OCaml) !*const Sources {

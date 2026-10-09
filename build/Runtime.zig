@@ -8,9 +8,10 @@ const std = @import("std");
 const LazyPath = std.Build.LazyPath;
 const Compile = std.Build.Step.Compile;
 
-const OCaml = @import("OCaml.zig");
+const Gen = @import("Gen.zig");
 const Sources = @import("Sources.zig");
 const Target = @import("Target.zig");
+const Toolchain = @import("Toolchain.zig");
 
 const Runtime = @This();
 
@@ -34,25 +35,30 @@ libs: std.AutoArrayHashMapUnmanaged(Lib, *Compile) = .empty,
 runs: std.EnumMap(Flavor, *Compile) = .{},
 comprmarsh_lib: ?*Compile = null,
 
-pub fn init(
-    ocaml: *OCaml,
+pub const InitOptions = struct {
+    src: LazyPath,
+    gen: Gen,
     sources: *const Sources,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) !Runtime {
-    const b = ocaml.b;
+    toolchain: Toolchain,
+};
+
+pub fn init(b: *std.Build, o: InitOptions) !Runtime {
+    const target = o.target;
+    const sources = o.sources;
     const info = Target.resolve(target.result) catch |err| {
         std.log.err("unsupported target '{s}'", .{try target.result.zigTriple(b.allocator)});
         return err;
     };
 
-    const gen = ocaml.gen;
+    const gen = o.gen;
     const platform: Sources.Platform = if (info.isWindows()) .win32 else .unix;
 
     const generated = gen.configure(b, .{
         .host = target,
         .target = target,
-        .toolchain = ocaml.toolchain,
+        .toolchain = o.toolchain,
     });
 
     const primitives = prims: {
@@ -73,14 +79,72 @@ pub fn init(
         .b = b,
         .target = target,
         .info = info,
-        .optimize = optimize,
-        .src = ocaml.src,
+        .optimize = o.optimize,
+        .src = o.src,
         .generated = generated,
         .primitives = primitives,
         .zstd = zstd,
         .cflags = try computeCflags(b, &info),
         .sources = sources,
         .platform = platform,
+    };
+}
+
+pub const Artifacts = struct {
+    libcamlrun: *Compile,
+    native: ?Native,
+    libzstd: *Compile,
+    ld_conf: LazyPath,
+    primitives: LazyPath,
+    /// Public header trees, generated ones first.
+    header_dirs: [3]LazyPath,
+
+    pub const Native = struct {
+        libasmrun: *Compile,
+        libcomprmarsh: *Compile,
+    };
+
+    pub fn addInstall(a: Artifacts, b: *std.Build, step: *std.Build.Step, prefix: []const u8) void {
+        const lib = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml", .{prefix}) };
+        const caml = std.Build.InstallDir{ .custom = b.fmt("{s}/lib/ocaml/caml", .{prefix}) };
+
+        for ([_]*Compile{ a.libcamlrun, a.libzstd }) |c| {
+            step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
+        }
+        if (a.native) |native| {
+            for ([_]*Compile{ native.libasmrun, native.libcomprmarsh }) |c| {
+                step.dependOn(&b.addInstallArtifact(c, .{ .dest_dir = .{ .override = lib }, .h_dir = .disabled }).step);
+            }
+        }
+        step.dependOn(&b.addInstallFileWithDir(a.ld_conf, lib, "ld.conf").step);
+        step.dependOn(&b.addInstallFileWithDir(a.primitives, lib, "primitives").step);
+        for (a.header_dirs) |dir| {
+            step.dependOn(&b.addInstallDirectory(.{
+                .source_dir = dir,
+                .install_dir = caml,
+                .install_subdir = "",
+                .include_extensions = &.{".h"},
+            }).step);
+        }
+    }
+};
+
+pub fn artifacts(r: *Runtime) Artifacts {
+    const b = r.b;
+    return .{
+        .libcamlrun = r.library(.{ .backend = .bytecode }).?,
+        .native = if (r.info.native) .{
+            .libasmrun = r.library(.{ .backend = .native }).?,
+            .libcomprmarsh = r.comprmarsh().?,
+        } else null,
+        .libzstd = r.zstd,
+        .ld_conf = r.generated.path(b, "runtime/ld.conf"),
+        .primitives = r.primitives.path(b, "runtime/primitives"),
+        .header_dirs = .{
+            r.generated.path(b, "runtime/caml"),
+            r.primitives.path(b, "runtime/caml"),
+            r.src.path(b, "runtime/caml"),
+        },
     };
 }
 

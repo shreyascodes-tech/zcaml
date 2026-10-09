@@ -3,7 +3,7 @@
 const std = @import("std");
 const LazyPath = std.Build.LazyPath;
 
-const OCaml = @import("OCaml.zig");
+const Toolchain = @import("Toolchain.zig");
 
 const Gen = @This();
 
@@ -33,7 +33,7 @@ pub fn init(b: *std.Build, src: LazyPath) Gen {
 pub const ConfigureOptions = struct {
     host: std.Build.ResolvedTarget,
     target: std.Build.ResolvedTarget,
-    toolchain: OCaml.Toolchain,
+    toolchain: Toolchain,
     layout: Layout = .{ .relative = "../lib/ocaml" },
     /// `-lzstd` resolves because `libzstd.a` is installed alongside the
     /// stdlib, which is always on the linker's search path (see
