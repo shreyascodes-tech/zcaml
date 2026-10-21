@@ -1,7 +1,7 @@
 const std = @import("std");
 const utils = @import("utils.zig");
-const InputFile = utils.InputFile;
-const OutputFile = utils.OutputFile;
+pub const InputFile = utils.InputFile;
+pub const OutputFile = utils.OutputFile;
 
 const Self = @This();
 
@@ -36,15 +36,25 @@ pub const Command = union(enum) {
                 const command_name = @tagName(tag);
                 run_tool.addArg(command_name);
 
-                const tool_args = @field(self, command_name);
+                const tool_args = &@field(self, command_name);
                 const T = std.meta.fieldInfo(Command, tag).type;
 
                 inline for (comptime std.meta.fieldNames(T)) |field| {
-                    // todo handle file types
-                    run_tool.addArgs(&.{
-                        b.fmt("--{s}", .{field}),
-                        @field(tool_args, field),
-                    });
+                    if (comptime !std.mem.eql(u8, field, "--")) {
+                        addNamedFieldArg(b, run_tool, field, &@field(tool_args, field));
+                    }
+                }
+
+                if (@hasField(T, "--")) {
+                    const rest_ptr = &@field(tool_args, "--");
+                    const RestType = @TypeOf(rest_ptr.*);
+                    const items = if (comptime isArrayList(RestType)) rest_ptr.items else rest_ptr.*;
+                    if (items.len > 0) {
+                        run_tool.addArg("--");
+                        for (items) |*item| {
+                            addPositionalArg(b, run_tool, item);
+                        }
+                    }
                 }
             },
         }
@@ -53,10 +63,109 @@ pub const Command = union(enum) {
     }
 };
 
+fn isListSlice(comptime T: type) bool {
+    if (T == []const u8 or T == []u8) return false;
+    return @typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice;
+}
+
+fn isArrayList(comptime T: type) bool {
+    if (@typeInfo(T) != .@"struct") return false;
+    if (!@hasField(T, "items") or !@hasField(T, "capacity")) return false;
+    const ItemsType = @FieldType(T, "items");
+    if (@typeInfo(ItemsType) != .pointer or @typeInfo(ItemsType).pointer.size != .slice) return false;
+    const Elem = @typeInfo(ItemsType).pointer.child;
+    return T == std.ArrayList(Elem);
+}
+
+fn addNamedFieldArg(
+    b: *std.Build,
+    run_tool: *std.Build.Step.Run,
+    comptime field_name: []const u8,
+    field_ptr: anytype,
+) void {
+    const FieldType = @typeInfo(@TypeOf(field_ptr)).pointer.child;
+
+    if (@typeInfo(FieldType) == .optional) {
+        if (field_ptr.*) |*inner| {
+            addNamedFieldArg(b, run_tool, field_name, inner);
+        }
+        return;
+    }
+
+    if (comptime isListSlice(FieldType)) {
+        for (field_ptr.*) |*elem| {
+            addSingleNamedArg(b, run_tool, field_name, elem);
+        }
+        return;
+    }
+
+    if (comptime isArrayList(FieldType)) {
+        for (field_ptr.items) |*elem| {
+            addSingleNamedArg(b, run_tool, field_name, elem);
+        }
+        return;
+    }
+
+    addSingleNamedArg(b, run_tool, field_name, field_ptr);
+}
+
+fn addSingleNamedArg(
+    b: *std.Build,
+    run_tool: *std.Build.Step.Run,
+    comptime field_name: []const u8,
+    val_ptr: anytype,
+) void {
+    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
+    const flag = "--" ++ field_name;
+
+    if (ValType == InputFile) {
+        run_tool.addArg(flag);
+        run_tool.addFileArg(val_ptr.lazy);
+    } else if (ValType == OutputFile) {
+        run_tool.addArg(flag);
+        val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
+    } else if (ValType == []const u8 or ValType == []u8) {
+        run_tool.addArgs(&.{ flag, val_ptr.* });
+    } else if (ValType == bool) {
+        if (val_ptr.*) {
+            run_tool.addArg(flag);
+        }
+    } else if (@typeInfo(ValType) == .int or @typeInfo(ValType) == .float) {
+        run_tool.addArgs(&.{ flag, b.fmt("{d}", .{val_ptr.*}) });
+    } else if (@typeInfo(ValType) == .@"enum") {
+        run_tool.addArgs(&.{ flag, @tagName(val_ptr.*) });
+    } else {
+        @compileError("Unsupported tool field type: " ++ @typeName(ValType) ++ " for field '" ++ field_name ++ "'");
+    }
+}
+
+fn addPositionalArg(
+    b: *std.Build,
+    run_tool: *std.Build.Step.Run,
+    val_ptr: anytype,
+) void {
+    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
+
+    if (ValType == InputFile) {
+        run_tool.addFileArg(val_ptr.lazy);
+    } else if (ValType == OutputFile) {
+        val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
+    } else if (ValType == []const u8 or ValType == []u8) {
+        run_tool.addArg(val_ptr.*);
+    } else if (@typeInfo(ValType) == .int or @typeInfo(ValType) == .float) {
+        run_tool.addArg(b.fmt("{d}", .{val_ptr.*}));
+    } else if (@typeInfo(ValType) == .@"enum") {
+        run_tool.addArg(@tagName(val_ptr.*));
+    } else {
+        @compileError("Unsupported positional element type: " ++ @typeName(ValType));
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     utils.mode = .run;
 
     const gpa = init.gpa;
+    const arena = init.arena.allocator();
 
     var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
@@ -84,53 +193,128 @@ pub fn main(init: std.process.Init) !void {
                             continue;
                         };
 
-                        if (found.contains(field)) {
-                            // todo handle list of values
-                            std.log.warn("option '{s}' specified multiple times, ignoring", .{named.name});
-                            continue;
-                        }
-
                         switch (field) {
                             inline else => |f| {
-                                // todo handle file types
-                                @field(result, @tagName(f)) = named.value orelse continue;
+                                const FieldType = std.meta.fieldInfo(T, f).type;
+                                const is_multi = comptime (isListSlice(FieldType) or isArrayList(FieldType));
+
+                                if (found.contains(field) and !is_multi) {
+                                    std.log.warn("option '{s}' specified multiple times, ignoring", .{named.name});
+                                    continue;
+                                }
+
+                                try assignFieldValue(arena, FieldType, &@field(result, @tagName(f)), named.value, found.contains(field));
                                 found.insert(field);
                             },
                         }
                     },
                     .positional => |positional| {
-                        // todo handle an arg called @"--" with an array list or a slice of values in the struct
-                        std.debug.panic("positional argument '{s}' not allowed", .{positional});
+                        if (@hasField(T, "--")) {
+                            const RestField = @field(TFieldEnum, "--");
+                            const RestType = std.meta.fieldInfo(T, RestField).type;
+                            try assignFieldValue(arena, RestType, &@field(result, "--"), positional, found.contains(RestField));
+                            found.insert(RestField);
+                        } else {
+                            std.debug.panic("positional argument '{s}' not allowed", .{positional});
+                        }
                     },
                 }
             }
 
-            var found_it = found.iterator();
-            while (found_it.next()) |field| {
-                switch (field) {
-                    inline else => |f| {
-                        std.log.info("found field: '{t}' = {s}", .{ f, @field(result, @tagName(f)) });
-                    },
-                }
-            }
-
+            var missing_required = false;
             const not_found = found.complement();
             var not_found_it = not_found.iterator();
             while (not_found_it.next()) |field| {
-                std.log.info("not found field: '{t}'", .{field});
+                switch (field) {
+                    inline else => |f| {
+                        const field_info = std.meta.fieldInfo(T, f);
+                        const FieldType = field_info.type;
+
+                        if (field_info.defaultValue()) |default_val| {
+                            @field(result, @tagName(f)) = default_val;
+                        } else if (@typeInfo(FieldType) == .optional) {
+                            @field(result, @tagName(f)) = null;
+                        } else if (comptime isListSlice(FieldType)) {
+                            @field(result, @tagName(f)) = &.{};
+                        } else if (comptime isArrayList(FieldType)) {
+                            @field(result, @tagName(f)) = .empty;
+                        } else {
+                            std.log.err("missing required option '--{t}' for command '{s}'", .{ f, command_name });
+                            missing_required = true;
+                        }
+                    },
+                }
             }
+
+            if (missing_required) {
+                std.process.exit(1);
+            }
+
+            try result.run(init);
         },
     }
+}
 
-    while (parser.next()) |result| {
-        switch (result) {
-            .named => |named| {
-                std.log.info("named: '{s}' = '{?s}'", .{ named.name, named.value });
-            },
-            .positional => |positional| {
-                std.log.info("positional: '{s}'", .{positional});
-            },
+fn assignFieldValue(
+    arena: std.mem.Allocator,
+    comptime FieldType: type,
+    field_ptr: *FieldType,
+    raw_value: ?[]const u8,
+    already_found: bool,
+) !void {
+    if (@typeInfo(FieldType) == .optional) {
+        const Child = @typeInfo(FieldType).optional.child;
+        field_ptr.* = try parseSingleValue(Child, raw_value);
+        return;
+    }
+
+    if (comptime isListSlice(FieldType)) {
+        const Elem = @typeInfo(FieldType).pointer.child;
+        const parsed = try parseSingleValue(Elem, raw_value);
+        const existing = if (already_found) field_ptr.* else &.{};
+        const new_slice = try arena.alloc(Elem, existing.len + 1);
+        @memcpy(new_slice[0..existing.len], existing);
+        new_slice[existing.len] = parsed;
+        field_ptr.* = new_slice;
+        return;
+    }
+
+    if (comptime isArrayList(FieldType)) {
+        const Elem = @typeInfo(@FieldType(FieldType, "items")).pointer.child;
+        const parsed = try parseSingleValue(Elem, raw_value);
+        if (!already_found) {
+            field_ptr.* = .empty;
         }
+        try field_ptr.append(arena, parsed);
+        return;
+    }
+
+    field_ptr.* = try parseSingleValue(FieldType, raw_value);
+}
+
+fn parseSingleValue(comptime ValType: type, raw: ?[]const u8) !ValType {
+    if (ValType == InputFile) {
+        return .{ .cli = raw orelse return error.MissingOptionValue };
+    } else if (ValType == OutputFile) {
+        return .{ .cli = raw orelse return error.MissingOptionValue };
+    } else if (ValType == []const u8) {
+        return raw orelse return error.MissingOptionValue;
+    } else if (ValType == bool) {
+        const val = raw orelse return true;
+        if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1")) return true;
+        if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "0")) return false;
+        return error.InvalidBooleanValue;
+    } else if (@typeInfo(ValType) == .int) {
+        const val = raw orelse return error.MissingOptionValue;
+        return std.fmt.parseInt(ValType, val, 0);
+    } else if (@typeInfo(ValType) == .float) {
+        const val = raw orelse return error.MissingOptionValue;
+        return std.fmt.parseFloat(ValType, val);
+    } else if (@typeInfo(ValType) == .@"enum") {
+        const val = raw orelse return error.MissingOptionValue;
+        return std.meta.stringToEnum(ValType, val) orelse error.InvalidEnumValue;
+    } else {
+        @compileError("Unsupported tool value type: " ++ @typeName(ValType));
     }
 }
 

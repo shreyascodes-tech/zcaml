@@ -5,6 +5,16 @@ pub var mode: enum { build, run } = .build;
 pub const InputFile = union(enum) {
     lazy: std.Build.LazyPath,
     cli: []const u8,
+
+    pub fn of(lp: std.Build.LazyPath) InputFile {
+        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        return .{ .lazy = lp };
+    }
+
+    pub fn path(self: InputFile) []const u8 {
+        std.debug.assert(mode == .run); // must only be used in the run handlers of the commands
+        return self.cli;
+    }
 };
 
 pub const OutputFile = union(enum) {
@@ -23,5 +33,15 @@ pub const OutputFile = union(enum) {
                 .path = undefined,
             },
         };
+    }
+
+    pub fn lazyPath(self: OutputFile) std.Build.LazyPath {
+        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        return self.lazy.path;
+    }
+
+    pub fn path(self: OutputFile) []const u8 {
+        std.debug.assert(mode == .run); // must only be used in the run handlers of the commands
+        return self.cli;
     }
 };

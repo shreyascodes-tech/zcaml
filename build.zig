@@ -5,12 +5,19 @@ const Tools = @import("build/tools/root.zig");
 pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
+    var rest_args: std.ArrayList([]const u8) = .empty;
+    try rest_args.appendSlice(b.allocator, &.{ "pos1", "pos2" });
+
     var hello_cmd = Tools.Command{ .hello = .{
-        .input_file = "hello.txt",
-        .output_file = "hello.txt",
+        .input_file = .of(b.path("README.md")),
+        .output_file = .of("hello.txt"),
         .some_str = "some string",
+        .flag = true,
+        .list = &.{ "a", "b", "c" },
+        .@"--" = rest_args,
     } };
-    b.getInstallStep().dependOn(&hello_cmd.run(b).step);
+    _ = hello_cmd.run(b);
+    b.getInstallStep().dependOn(&b.addInstallFile(hello_cmd.hello.output_file.lazyPath(), "hello.txt").step);
 
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const compiler_host = host: {
