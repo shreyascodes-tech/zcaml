@@ -26,12 +26,12 @@ pub fn build(b: *std.Build) !void {
                 return error.MissingCompilerHost;
             };
 
-            break :host Ocaml.resolveTarget(str);
+            break :host Ocaml.resolveTarget(b, str);
         };
 
         const compiler_target = target: {
             const str = b.option([]const u8, "ocaml-target", "ocaml target") orelse break :target compiler_host;
-            break :target Ocaml.resolveTarget(str);
+            break :target Ocaml.resolveTarget(b, str);
         };
 
         const ocaml = Ocaml.init(b, b.dependency("ocaml", .{}));

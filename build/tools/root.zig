@@ -9,6 +9,7 @@ const Self = @This();
 
 pub const Command = union(enum) {
     hello: @import("hello.zig"),
+    gen_runtime: @import("gen_runtime.zig"),
 
     pub fn run(self: *Command, b: *std.Build) *std.Build.Step.Run {
         const tool_exe = (struct {
