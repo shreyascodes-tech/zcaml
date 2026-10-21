@@ -1,8 +1,16 @@
 const std = @import("std");
 const Ocaml = @import("build/ocaml.zig");
+const Tools = @import("build/tools/root.zig");
 
 pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
+
+    var hello_cmd = Tools.Command{ .hello = .{
+        .input_file = "hello.txt",
+        .output_file = "hello.txt",
+        .some_str = "some string",
+    } };
+    b.getInstallStep().dependOn(&hello_cmd.run(b).step);
 
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const compiler_host = host: {
