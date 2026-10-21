@@ -2,10 +2,22 @@ const std = @import("std");
 const Ocaml = @import("build/ocaml.zig");
 const Tools = @import("build/tools/root.zig");
 
+pub const OcamlVersion = enum {
+    @"5.5.1",
+
+    pub fn dependencyName(self: OcamlVersion) []const u8 {
+        return switch (self) {
+            .@"5.5.1" => "ocaml_5_5_1",
+        };
+    }
+};
+
 pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
+        const ocaml_version = b.option(OcamlVersion, "ocaml-version", "ocaml version to build") orelse .@"5.5.1";
+
         const compiler_host = host: {
             const str = b.option([]const u8, "ocaml-host", "ocaml host") orelse {
                 std.log.err("missing ocaml compiler host", .{});
@@ -20,13 +32,27 @@ pub fn build(b: *std.Build) !void {
             break :target Ocaml.resolveTarget(b, str);
         };
 
-        const ocaml = Ocaml.init(b, b.dependency("ocaml", .{}));
+        if (b.lazyDependency(ocaml_version.dependencyName(), .{})) |ocaml_dep| {
+            const ocaml = Ocaml.init(b, ocaml_dep);
 
-        _ = try ocaml.build(.{
-            .compiler_host = compiler_host,
-            .compiler_target = compiler_target,
-            .optimize = optimize,
-        });
+            const toolchain = try ocaml.build(.{
+                .compiler_host = compiler_host,
+                .compiler_target = compiler_target,
+                .optimize = optimize,
+            });
+
+            const prefix = b.option([]const u8, "ocaml-prefix", "install sub-prefix under zig-out") orelse b.fmt(
+                "{s}/host-{s}/target-{s}",
+                .{
+                    @tagName(ocaml_version),
+                    try compiler_host.result.linuxTriple(b.allocator),
+                    try compiler_target.result.linuxTriple(b.allocator),
+                },
+            );
+            toolchain.addInstall(b.getInstallStep(), .{
+                .prefix = prefix,
+            });
+        }
 
         return;
     }

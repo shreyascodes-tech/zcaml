@@ -2,9 +2,10 @@
     .name = .zcaml,
     .version = "0.0.1",
     .dependencies = .{
-        .ocaml = .{
+        .ocaml_5_5_1 = .{
             .url = "https://github.com/ocaml/ocaml/releases/download/5.5.1/ocaml-5.5.1.tar.gz",
             .hash = "N-V-__8AAN6LfwEXSAd8pDJD2HFaj68plGGg7XaWz8xi4xBo",
+            .lazy = true,
         },
         .flexdll = .{
             .url = "https://github.com/ocaml/flexdll/archive/refs/tags/0.44.tar.gz",

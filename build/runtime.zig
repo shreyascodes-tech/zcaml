@@ -1,5 +1,6 @@
 const std = @import("std");
 const TargetConfig = @import("target_config.zig").TargetConfig;
+const SourceInfo = @import("source_info.zig").SourceInfo;
 const Tools = @import("tools/root.zig");
 
 pub const RuntimeArtifacts = struct {
@@ -16,6 +17,7 @@ pub const RuntimeArtifacts = struct {
 };
 
 pub const BuildRuntimeOptions = struct {
+    src_info: SourceInfo,
     target_cfg: TargetConfig,
     optimize: std.builtin.OptimizeMode,
     stdlib_dir: []const u8 = "../lib/ocaml",
@@ -26,6 +28,7 @@ pub fn buildRuntime(
     ocaml_dep: *std.Build.Dependency,
     options: BuildRuntimeOptions,
 ) !RuntimeArtifacts {
+    const src_info = options.src_info;
     const cfg = options.target_cfg;
     const target = cfg.resolved;
 
@@ -36,7 +39,16 @@ pub fn buildRuntime(
     });
     const zstd_lib = zstd_dep.artifact("zstd");
 
-    // 1. Collect bytecode C files for primitive extraction and compilation
+    // 1. Parse C source lists directly from the OCaml Makefile with strict variable expansion
+    const common_c_sources = src_info.parseMakefileList("runtime_COMMON_C_SOURCES", &.{
+        .{ .name = "UNIX_OR_WIN32", .values = &.{cfg.unix_or_win32} },
+    });
+    const bytecode_only_c_sources = src_info.parseMakefileList("runtime_BYTECODE_ONLY_C_SOURCES", &.{});
+    const native_only_c_sources = src_info.parseMakefileList("runtime_NATIVE_ONLY_C_SOURCES", &.{
+        .{ .name = "TSAN_NATIVE_RUNTIME_C_SOURCES", .values = &.{} },
+    });
+    const yacc_other_modules = src_info.parseMakefileList("ocamlyacc_OTHER_MODULES", &.{});
+
     var bytecode_c_rel_paths: std.ArrayList([]const u8) = .empty;
     var bytecode_c_inputs: std.ArrayList(Tools.InputFile) = .empty;
 
@@ -44,11 +56,6 @@ pub fn buildRuntime(
         const rel = b.fmt("runtime/{s}.c", .{name});
         try bytecode_c_rel_paths.append(b.allocator, rel);
         try bytecode_c_inputs.append(b.allocator, .of(ocaml_dep.path(rel)));
-    }
-    {
-        const os_rel = b.fmt("runtime/{s}.c", .{cfg.unix_or_win32});
-        try bytecode_c_rel_paths.append(b.allocator, os_rel);
-        try bytecode_c_inputs.append(b.allocator, .of(ocaml_dep.path(os_rel)));
     }
     for (bytecode_only_c_sources) |name| {
         const rel = b.fmt("runtime/{s}.c", .{name});
@@ -69,12 +76,12 @@ pub fn buildRuntime(
     };
     _ = gen_cmd.run(b);
 
-    // 3. Assemble generated header directory with m.h, s.h, version.h, exec.h, opnames.h, jumptbl.h, build_config.h
+    // 3. Assemble generated header directory from strict .h.in templates
     const headers_wf = b.addWriteFiles();
-    _ = headers_wf.add("caml/m.h", cfg.generateMH(b));
-    _ = headers_wf.add("caml/s.h", cfg.generateSH(b));
-    _ = headers_wf.add("caml/version.h", TargetConfig.generateVersionH());
-    _ = headers_wf.add("caml/exec.h", TargetConfig.generateExecH());
+    _ = headers_wf.add("caml/m.h", cfg.generateMH(b, src_info));
+    _ = headers_wf.add("caml/s.h", cfg.generateSH(b, src_info));
+    _ = headers_wf.add("caml/version.h", TargetConfig.generateVersionH(b, src_info));
+    _ = headers_wf.add("caml/exec.h", TargetConfig.generateExecH(b, src_info));
     _ = headers_wf.add("build_config.h", cfg.generateBuildConfigH(b, options.stdlib_dir));
     _ = headers_wf.addCopyFile(gen_cmd.gen_runtime.opnames_h.lazyPath(), "caml/opnames.h");
     _ = headers_wf.addCopyFile(gen_cmd.gen_runtime.jumptbl_h.lazyPath(), "caml/jumptbl.h");
@@ -110,6 +117,14 @@ pub fn buildRuntime(
     }
 
     // 4. Build ocamlyacc
+    var yacc_c_files: std.ArrayList([]const u8) = .empty;
+    if (cfg.is_windows) {
+        try yacc_c_files.append(b.allocator, "yacc/wstr.c");
+    }
+    for (yacc_other_modules) |mod_path| {
+        try yacc_c_files.append(b.allocator, b.fmt("{s}.c", .{mod_path}));
+    }
+
     const ocamlyacc = b.addExecutable(.{
         .name = "ocamlyacc",
         .root_module = b.createModule(.{
@@ -137,8 +152,8 @@ pub fn buildRuntime(
     ocamlyacc.root_module.addIncludePath(headers_caml_dir);
     ocamlyacc.root_module.addIncludePath(ocaml_dep.path("runtime"));
     ocamlyacc.root_module.addCSourceFiles(.{
-        .root = ocaml_dep.path("yacc"),
-        .files = if (cfg.is_windows) yacc_c_sources_win32 else yacc_c_sources_unix,
+        .root = ocaml_dep.path(""),
+        .files = yacc_c_files.items,
         .flags = yacc_cflags.items,
     });
     if (cfg.is_windows) {
@@ -197,7 +212,6 @@ pub fn buildRuntime(
         for (common_c_sources) |name| {
             try native_c_rel_paths.append(b.allocator, b.fmt("runtime/{s}.c", .{name}));
         }
-        try native_c_rel_paths.append(b.allocator, b.fmt("runtime/{s}.c", .{cfg.unix_or_win32}));
         for (native_only_c_sources) |name| {
             try native_c_rel_paths.append(b.allocator, b.fmt("runtime/{s}.c", .{name}));
         }
@@ -285,107 +299,3 @@ fn linkRuntimeSystemLibs(mod: *std.Build.Module, cfg: TargetConfig) void {
         }
     }
 }
-
-pub const common_c_sources: []const []const u8 = &.{
-    "addrmap",
-    "afl",
-    "alloc",
-    "array",
-    "backtrace",
-    "bigarray",
-    "blake2",
-    "callback",
-    "codefrag",
-    "compare",
-    "custom",
-    "debugger",
-    "domain",
-    "dynlink",
-    "extern",
-    "fail",
-    "fiber",
-    "finalise",
-    "floats",
-    "gc_ctrl",
-    "gc_stats",
-    "globroots",
-    "hash",
-    "intern",
-    "ints",
-    "io",
-    "lexing",
-    "lf_skiplist",
-    "main",
-    "major_gc",
-    "md5",
-    "memory",
-    "memprof",
-    "meta",
-    "minor_gc",
-    "misc",
-    "obj",
-    "parsing",
-    "platform",
-    "printexc",
-    "prng",
-    "roots",
-    "runtime_events",
-    "shared_heap",
-    "signals",
-    "skiplist",
-    "startup_aux",
-    "str",
-    "sync",
-    "sys",
-    "weak",
-};
-
-pub const bytecode_only_c_sources: []const []const u8 = &.{
-    "backtrace_byt",
-    "fail_byt",
-    "fix_code",
-    "interp",
-    "startup_byt",
-    "zstd",
-};
-
-pub const native_only_c_sources: []const []const u8 = &.{
-    "backtrace_nat",
-    "clambda_checks",
-    "dynlink_nat",
-    "fail_nat",
-    "frame_descriptors",
-    "startup_nat",
-    "signals_nat",
-};
-
-pub const yacc_c_sources_unix: []const []const u8 = &.{
-    "closure.c",
-    "error.c",
-    "lalr.c",
-    "lr0.c",
-    "main.c",
-    "mkpar.c",
-    "output.c",
-    "reader.c",
-    "skeleton.c",
-    "symtab.c",
-    "verbose.c",
-    "warshall.c",
-};
-
-pub const yacc_c_sources_win32: []const []const u8 = &.{
-    "wstr.c",
-    "closure.c",
-    "error.c",
-    "lalr.c",
-    "lr0.c",
-    "main.c",
-    "mkpar.c",
-    "output.c",
-    "reader.c",
-    "skeleton.c",
-    "symtab.c",
-    "verbose.c",
-    "warshall.c",
-};
