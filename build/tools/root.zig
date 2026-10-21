@@ -191,6 +191,7 @@ pub fn main(init: std.process.Init) !void {
     ) orelse return printUsage(gpa, command_name);
 
     var parser = ArgParser{ .args_it = &args };
+    @setEvalBranchQuota(100_000);
     switch (command_tag) {
         inline else => |tag| {
             const T = std.meta.fieldInfo(Command, tag).type;

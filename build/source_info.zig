@@ -6,15 +6,15 @@ pub const OcamlVersionInfo = struct {
     major: u32,
     minor: u32,
     patchlevel: u32,
-    release_number: u32,
+    release_number: ?u32,
     extra: []const u8,
     extra_prefix: []const u8,
     version_string: []const u8,
     version_number: u32,
-    magic_prefix: []const u8,
-    magic_version: []const u8,
-    exec_format: []const u8,
-    exec_magic_length: usize,
+    magic_prefix: ?[]const u8,
+    magic_version: ?[]const u8,
+    exec_format: ?[]const u8,
+    exec_magic_length: ?usize,
 };
 
 pub const SourceInfo = struct {
@@ -153,6 +153,8 @@ pub const SourceInfo = struct {
     pub const MacroEntry = struct {
         name: []const u8,
         value: ?[]const u8,
+        /// Set to true for macros that only exist in some OCaml versions' .h.in templates.
+        version_specific: bool = false,
     };
 
     /// Strictly renders an autoconf `.h.in` file (`runtime/caml/m.h.in`, `s.h.in`, `version.h.in`, `exec.h.in`).
@@ -239,7 +241,7 @@ pub const SourceInfo = struct {
         }
 
         for (entries, 0..) |entry, idx| {
-            if (!used[idx]) {
+            if (!used[idx] and !entry.version_specific) {
                 std.debug.panic(
                     "Template safety check failed in '{s}': macro '{s}' in zcaml config table does not exist in template",
                     .{ template_sub_path, entry.name },
@@ -350,12 +352,15 @@ fn parseOcamlVersion(b: *std.Build, m4_src: []const u8, version_file_src: []cons
     const major = std.fmt.parseInt(u32, extractM4Define(m4_src, "OCAML__VERSION_MAJOR"), 10) catch @panic("Invalid OCAML__VERSION_MAJOR");
     const minor = std.fmt.parseInt(u32, extractM4Define(m4_src, "OCAML__VERSION_MINOR"), 10) catch @panic("Invalid OCAML__VERSION_MINOR");
     const patchlevel = std.fmt.parseInt(u32, extractM4Define(m4_src, "OCAML__VERSION_PATCHLEVEL"), 10) catch @panic("Invalid OCAML__VERSION_PATCHLEVEL");
-    const release_number = std.fmt.parseInt(u32, extractM4Define(m4_src, "OCAML__RELEASE_NUMBER"), 10) catch @panic("Invalid OCAML__RELEASE_NUMBER");
+    const release_number: ?u32 = if (extractM4DefineOptional(m4_src, "OCAML__RELEASE_NUMBER")) |rn_str|
+        (std.fmt.parseInt(u32, rn_str, 10) catch @panic("Invalid OCAML__RELEASE_NUMBER"))
+    else
+        null;
     const extra = extractM4Define(m4_src, "OCAML__VERSION_EXTRA");
     const extra_prefix = extractM4Define(m4_src, "OCAML__VERSION_EXTRA_PREFIX");
-    const magic_prefix = extractM4Define(m4_src, "MAGIC_NUMBER__PREFIX");
-    const magic_version = extractM4Define(m4_src, "MAGIC_NUMBER__VERSION");
-    const exec_format = extractM4Define(m4_src, "EXEC__FORMAT");
+    const magic_prefix = extractM4DefineOptional(m4_src, "MAGIC_NUMBER__PREFIX");
+    const magic_version = extractM4DefineOptional(m4_src, "MAGIC_NUMBER__VERSION");
+    const exec_format = extractM4DefineOptional(m4_src, "EXEC__FORMAT");
 
     const version_string = if (extra.len > 0)
         b.fmt("{d}.{d}.{d}{s}{s}", .{ major, minor, patchlevel, extra_prefix, extra })
@@ -373,7 +378,10 @@ fn parseOcamlVersion(b: *std.Build, m4_src: []const u8, version_file_src: []cons
     }
 
     const version_number = major * 10000 + minor * 100 + patchlevel;
-    const exec_magic_length = magic_prefix.len + exec_format.len + magic_version.len;
+    const exec_magic_length: ?usize = if (magic_prefix != null and exec_format != null and magic_version != null)
+        magic_prefix.?.len + exec_format.?.len + magic_version.?.len
+    else
+        null;
 
     return .{
         .sem_ver = .{
@@ -399,6 +407,12 @@ fn parseOcamlVersion(b: *std.Build, m4_src: []const u8, version_file_src: []cons
 }
 
 fn extractM4Define(m4_src: []const u8, key: []const u8) []const u8 {
+    return extractM4DefineOptional(m4_src, key) orelse {
+        std.debug.panic("m4 safety check failed: m4_define for '{s}' not found in build-aux/ocaml_version.m4", .{key});
+    };
+}
+
+fn extractM4DefineOptional(m4_src: []const u8, key: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, m4_src, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -425,5 +439,5 @@ fn extractM4Define(m4_src: []const u8, key: []const u8) []const u8 {
             }
         }
     }
-    std.debug.panic("m4 safety check failed: m4_define for '{s}' not found in build-aux/ocaml_version.m4", .{key});
+    return null;
 }

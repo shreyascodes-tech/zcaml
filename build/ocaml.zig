@@ -79,9 +79,11 @@ pub const Toolchain = struct {
                 .dest_dir = .{ .override = ocaml_lib_dir },
             }).step);
         }
-        step.dependOn(&b.addInstallArtifact(self.target_rt.libcomprmarsh, .{
-            .dest_dir = .{ .override = ocaml_lib_dir },
-        }).step);
+        if (self.target_rt.libcomprmarsh) |comprmarsh| {
+            step.dependOn(&b.addInstallArtifact(comprmarsh, .{
+                .dest_dir = .{ .override = ocaml_lib_dir },
+            }).step);
+        }
 
         // Primitives & runtime C headers -> <prefix>/lib/ocaml/
         step.dependOn(&b.addInstallFileWithDir(

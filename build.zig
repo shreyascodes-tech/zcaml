@@ -4,10 +4,20 @@ const Tools = @import("build/tools/root.zig");
 
 pub const OcamlVersion = enum {
     @"5.5.1",
+    @"5.4.1",
+    @"5.3.0",
+    @"5.2.1",
+    @"5.1.1",
+    @"5.0.0",
 
     pub fn dependencyName(self: OcamlVersion) []const u8 {
         return switch (self) {
             .@"5.5.1" => "ocaml_5_5_1",
+            .@"5.4.1" => "ocaml_5_4_1",
+            .@"5.3.0" => "ocaml_5_3_0",
+            .@"5.2.1" => "ocaml_5_2_1",
+            .@"5.1.1" => "ocaml_5_1_1",
+            .@"5.0.0" => "ocaml_5_0_0",
         };
     }
 };

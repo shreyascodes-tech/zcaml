@@ -12,8 +12,8 @@ pub const RuntimeArtifacts = struct {
     libcamlrun: *std.Build.Step.Compile,
     ocamlrun: *std.Build.Step.Compile,
     libasmrun: ?*std.Build.Step.Compile,
-    libcomprmarsh: *std.Build.Step.Compile,
-    zstd: *std.Build.Step.Compile,
+    libcomprmarsh: ?*std.Build.Step.Compile,
+    zstd: ?*std.Build.Step.Compile,
 };
 
 pub const BuildRuntimeOptions = struct {
@@ -32,22 +32,31 @@ pub fn buildRuntime(
     const cfg = options.target_cfg;
     const target = cfg.resolved;
 
-    const zstd_dep = b.dependency("zstd", .{
-        .target = target,
-        .optimize = options.optimize,
-        .pie = true,
-    });
-    const zstd_lib = zstd_dep.artifact("zstd");
-
     // 1. Parse C source lists directly from the OCaml Makefile with strict variable expansion
     const common_c_sources = src_info.parseMakefileList("runtime_COMMON_C_SOURCES", &.{
         .{ .name = "UNIX_OR_WIN32", .values = &.{cfg.unix_or_win32} },
+        .{ .name = "TSAN_NATIVE_RUNTIME_C_SOURCES", .values = &.{} },
     });
     const bytecode_only_c_sources = src_info.parseMakefileList("runtime_BYTECODE_ONLY_C_SOURCES", &.{});
     const native_only_c_sources = src_info.parseMakefileList("runtime_NATIVE_ONLY_C_SOURCES", &.{
         .{ .name = "TSAN_NATIVE_RUNTIME_C_SOURCES", .values = &.{} },
     });
     const yacc_other_modules = src_info.parseMakefileList("ocamlyacc_OTHER_MODULES", &.{});
+
+    const has_zstd = blk: {
+        for (bytecode_only_c_sources) |name| {
+            if (std.mem.eql(u8, name, "zstd")) break :blk true;
+        }
+        break :blk false;
+    };
+    const zstd_lib: ?*std.Build.Step.Compile = if (has_zstd) blk: {
+        const zstd_dep = b.dependency("zstd", .{
+            .target = target,
+            .optimize = options.optimize,
+            .pie = true,
+        });
+        break :blk zstd_dep.artifact("zstd");
+    } else null;
 
     var bytecode_c_rel_paths: std.ArrayList([]const u8) = .empty;
     var bytecode_c_inputs: std.ArrayList(Tools.InputFile) = .empty;
@@ -64,6 +73,8 @@ pub fn buildRuntime(
     }
 
     // 2. Run gen_runtime tool to generate opnames.h, jumptbl.h, primitives, prims.c
+    const is_5_2_or_newer = src_info.version.sem_ver.order(.{ .major = 5, .minor = 2, .patch = 0 }) != .lt;
+    const is_5_5_or_newer = src_info.version.sem_ver.order(.{ .major = 5, .minor = 5, .patch = 0 }) != .lt;
     var gen_cmd = Tools.Command{
         .gen_runtime = .{
             .instruct_h = .of(ocaml_dep.path("runtime/caml/instruct.h")),
@@ -71,6 +82,8 @@ pub fn buildRuntime(
             .jumptbl_h = .of("jumptbl.h"),
             .primitives = .of("primitives"),
             .prims_c = .of("prims.c"),
+            .has_gen_primsc = is_5_2_or_newer,
+            .has_byte_program_mode = is_5_5_or_newer,
             .c_files = bytecode_c_inputs.items,
         },
     };
@@ -81,7 +94,9 @@ pub fn buildRuntime(
     _ = headers_wf.add("caml/m.h", cfg.generateMH(b, src_info));
     _ = headers_wf.add("caml/s.h", cfg.generateSH(b, src_info));
     _ = headers_wf.add("caml/version.h", TargetConfig.generateVersionH(b, src_info));
-    _ = headers_wf.add("caml/exec.h", TargetConfig.generateExecH(b, src_info));
+    if (TargetConfig.generateExecH(b, src_info)) |exec_h| {
+        _ = headers_wf.add("caml/exec.h", exec_h);
+    }
     _ = headers_wf.add("build_config.h", cfg.generateBuildConfigH(b, options.stdlib_dir));
     _ = headers_wf.addCopyFile(gen_cmd.gen_runtime.opnames_h.lazyPath(), "caml/opnames.h");
     _ = headers_wf.addCopyFile(gen_cmd.gen_runtime.jumptbl_h.lazyPath(), "caml/jumptbl.h");
@@ -96,6 +111,7 @@ pub fn buildRuntime(
         "-fno-strict-aliasing",
         "-fwrapv",
         "-fno-common",
+        "-fno-sanitize=undefined",
         "-DIN_CAML_RUNTIME",
         "-DCAMLDLLIMPORT=",
         "-Wno-unused-parameter",
@@ -138,6 +154,7 @@ pub fn buildRuntime(
         "-O2",
         "-fno-strict-aliasing",
         "-fwrapv",
+        "-fno-sanitize=undefined",
         "-DNDEBUG",
         "-DCAMLDLLIMPORT=",
     });
@@ -173,7 +190,7 @@ pub fn buildRuntime(
     libcamlrun.root_module.addIncludePath(headers_dir);
     libcamlrun.root_module.addIncludePath(headers_caml_dir);
     libcamlrun.root_module.addIncludePath(ocaml_dep.path("runtime"));
-    libcamlrun.root_module.linkLibrary(zstd_lib);
+    if (zstd_lib) |z| libcamlrun.root_module.linkLibrary(z);
     libcamlrun.root_module.addCSourceFiles(.{
         .root = ocaml_dep.path(""),
         .files = bytecode_c_rel_paths.items,
@@ -197,7 +214,7 @@ pub fn buildRuntime(
         .flags = base_cflags.items,
     });
     ocamlrun.root_module.linkLibrary(libcamlrun);
-    ocamlrun.root_module.linkLibrary(zstd_lib);
+    if (zstd_lib) |z| ocamlrun.root_module.linkLibrary(z);
     linkRuntimeSystemLibs(ocamlrun.root_module, cfg);
     if (cfg.is_elf) {
         ocamlrun.rdynamic = true;
@@ -248,25 +265,28 @@ pub fn buildRuntime(
         break :blk asmrun;
     } else null;
 
-    // 8. Build libcomprmarsh.a
-    const libcomprmarsh = b.addLibrary(.{
-        .linkage = .static,
-        .name = "comprmarsh",
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = options.optimize,
-            .pic = true,
-            .link_libc = true,
-        }),
-    });
-    libcomprmarsh.root_module.addIncludePath(headers_dir);
-    libcomprmarsh.root_module.addIncludePath(headers_caml_dir);
-    libcomprmarsh.root_module.addIncludePath(ocaml_dep.path("runtime"));
-    libcomprmarsh.root_module.linkLibrary(zstd_lib);
-    libcomprmarsh.root_module.addCSourceFile(.{
-        .file = ocaml_dep.path("runtime/zstd.c"),
-        .flags = base_cflags.items,
-    });
+    // 8. Build libcomprmarsh.a (OCaml 5.2+)
+    const libcomprmarsh: ?*std.Build.Step.Compile = if (zstd_lib) |z| blk: {
+        const cm = b.addLibrary(.{
+            .linkage = .static,
+            .name = "comprmarsh",
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = options.optimize,
+                .pic = true,
+                .link_libc = true,
+            }),
+        });
+        cm.root_module.addIncludePath(headers_dir);
+        cm.root_module.addIncludePath(headers_caml_dir);
+        cm.root_module.addIncludePath(ocaml_dep.path("runtime"));
+        cm.root_module.linkLibrary(z);
+        cm.root_module.addCSourceFile(.{
+            .file = ocaml_dep.path("runtime/zstd.c"),
+            .flags = base_cflags.items,
+        });
+        break :blk cm;
+    } else null;
 
     return .{
         .target_cfg = cfg,

@@ -10,6 +10,8 @@ opnames_h: OutputFile,
 jumptbl_h: OutputFile,
 primitives: OutputFile,
 prims_c: OutputFile,
+has_gen_primsc: bool = false,
+has_byte_program_mode: bool = false,
 c_files: []const InputFile = &.{},
 
 pub fn run(self: *Self, init: std.process.Init) !void {
@@ -157,6 +159,14 @@ fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !vo
                     try extern_decls.append(arena, '\n');
                     in_multiline_decl = true;
                 }
+            } else if (std.mem.startsWith(u8, line, "CAMLprim_int64_")) {
+                if (std.mem.indexOfScalar(u8, line, '(')) |open_idx| {
+                    if (std.mem.indexOfScalarPos(u8, line, open_idx + 1, ')')) |close_idx| {
+                        const op = line[open_idx + 1 .. close_idx];
+                        try prim_names.append(arena, try std.fmt.allocPrint(arena, "caml_int64_{s}", .{op}));
+                        try prim_names.append(arena, try std.fmt.allocPrint(arena, "caml_int64_{s}_native", .{op}));
+                    }
+                }
             }
         }
     }
@@ -191,19 +201,36 @@ fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !vo
         defer file_writer.file.close(io);
         const writer = &file_writer.interface;
 
-        try writer.writeAll(
-            \\/* Generated file, do not edit */
-            \\
-            \\#define CAML_INTERNALS
-            \\#include "caml/mlvalues.h"
-            \\#include "caml/prims.h"
-            \\#include "caml/startup.h"
-            \\#include "build_config.h"
-            \\
-            \\
-        );
-
-        try writer.writeAll(extern_decls.items);
+        if (self.has_gen_primsc) {
+            try writer.writeAll(
+                \\/* Generated file, do not edit */
+                \\
+                \\#define CAML_INTERNALS
+                \\#include "caml/mlvalues.h"
+                \\#include "caml/prims.h"
+                \\
+            );
+            if (self.has_byte_program_mode) {
+                try writer.writeAll(
+                    \\#include "caml/startup.h"
+                    \\#include "build_config.h"
+                    \\
+                );
+            }
+            try writer.writeByte('\n');
+            try writer.writeAll(extern_decls.items);
+        } else {
+            try writer.writeAll(
+                \\#define CAML_INTERNALS
+                \\#include "caml/config.h"
+                \\typedef intnat value;
+                \\typedef value (*c_primitive)(void);
+                \\
+            );
+            for (unique_prims.items) |name| {
+                try writer.print("extern value {s}(void);\n", .{name});
+            }
+        }
 
         try writer.writeAll("\nconst c_primitive caml_builtin_cprim[] = {\n");
         for (unique_prims.items) |name| {
@@ -213,13 +240,15 @@ fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !vo
         for (unique_prims.items) |name| {
             try writer.print("  \"{s}\",\n", .{name});
         }
-        try writer.writeAll(
-            \\  0 };
-            \\
-            \\const enum caml_byte_program_mode caml_byte_program_mode = STANDARD;
-            \\const char_os *caml_runtime_standard_library_default = OCAML_STDLIB_DIR;
-            \\
-        );
+        try writer.writeAll("  0 };\n");
+        if (self.has_byte_program_mode) {
+            try writer.writeAll(
+                \\
+                \\const enum caml_byte_program_mode caml_byte_program_mode = STANDARD;
+                \\const char_os *caml_runtime_standard_library_default = OCAML_STDLIB_DIR;
+                \\
+            );
+        }
 
         try file_writer.flush();
     }

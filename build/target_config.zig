@@ -86,14 +86,16 @@ pub const TargetConfig = struct {
             else => b.fmt("{s}-unknown-{s}", .{ arch_str, @tagName(t.os.tag) }),
         };
 
-        // Compute Runtime IDs using configure.ac's exact base32 formula
+        // Compute Runtime IDs using configure.ac's exact base32 formula (OCaml 5.5+)
         const alphabet = "0123456789abcdefghijklmnopqrstuv";
-        const id_version: u32 = (ver.release_number << 1) + @as(u32, if (ver.dev_version) 1 else 0);
-        const q0 = alphabet[id_version & 31];
-        const q1 = alphabet[(id_version >> 5) & 31]; // reserved_header_bits = 0
-        const q2 = alphabet[0]; // flat_float_array = true, frame_pointers = false, tsan = false
-        const q3 = alphabet[@as(u32, if (arch64) 0 else 1)]; // supports_shared = true, zstd = ok, windows_unicode = 1
-        const runtime_id = b.fmt("{c}{c}{c}{c}", .{ q0, q1, q2, q3 });
+        const runtime_id = if (ver.release_number) |rn| blk: {
+            const id_version: u32 = (rn << 1) + @as(u32, if (ver.dev_version) 1 else 0);
+            const q0 = alphabet[id_version & 31];
+            const q1 = alphabet[(id_version >> 5) & 31]; // reserved_header_bits = 0
+            const q2 = alphabet[0]; // flat_float_array = true, frame_pointers = false, tsan = false
+            const q3 = alphabet[@as(u32, if (arch64) 0 else 1)]; // supports_shared = true, zstd = ok, windows_unicode = 1
+            break :blk b.fmt("{c}{c}{c}{c}", .{ q0, q1, q2, q3 });
+        } else "";
 
         return .{
             .resolved = resolved,
@@ -145,20 +147,25 @@ pub const TargetConfig = struct {
             .{ .name = "SIZEOF_PTR", .value = sizeof_ptr },
             .{ .name = "SIZEOF_SHORT", .value = "2" },
             .{ .name = "SIZEOF_LONGLONG", .value = "8" },
+            .{ .name = "ARCH_INT64_TYPE", .value = null, .version_specific = true },
+            .{ .name = "ARCH_UINT64_TYPE", .value = null, .version_specific = true },
+            .{ .name = "ARCH_INT64_PRINTF_FORMAT", .value = null, .version_specific = true },
             .{ .name = "ARCH_ALIGN_INT64", .value = if (!self.arch64) "1" else null },
-            .{ .name = "HEADER_RESERVED_BITS", .value = "0" },
+            .{ .name = "HEADER_RESERVED_BITS", .value = "0", .version_specific = true },
+            .{ .name = "WITH_PROFINFO", .value = null, .version_specific = true },
+            .{ .name = "PROFINFO_WIDTH", .value = "0", .version_specific = true },
             .{ .name = "ASM_CFI_SUPPORTED", .value = if (!self.is_windows) "1" else null },
-            .{ .name = "ASM_SIZE_TYPE_DIRECTIVES", .value = if (self.is_elf) "1" else null },
+            .{ .name = "ASM_SIZE_TYPE_DIRECTIVES", .value = if (self.is_elf) "1" else null, .version_specific = true },
             .{ .name = "WITH_FRAME_POINTERS", .value = null },
             .{ .name = "NO_NAKED_POINTERS", .value = "1" },
-            .{ .name = "CAML_WITH_FPIC", .value = null },
+            .{ .name = "CAML_WITH_FPIC", .value = null, .version_specific = true },
             .{ .name = "CAML_SAFE_STRING", .value = "1" },
             .{ .name = "FLAT_FLOAT_ARRAY", .value = "1" },
             .{ .name = "FUNCTION_SECTIONS", .value = if (self.is_elf) "1" else null },
             .{ .name = "SUPPORTS_ALIGNED_ATTRIBUTE", .value = "1" },
-            .{ .name = "SUPPORTS_TREE_VECTORIZE", .value = "1" },
-            .{ .name = "USE_MMAP_MAP_STACK", .value = if (self.resolved.result.os.tag == .openbsd) "1" else null },
-            .{ .name = "WITH_NONEXECSTACK_NOTE", .value = if (self.is_linux and self.is_elf) "1" else null },
+            .{ .name = "SUPPORTS_TREE_VECTORIZE", .value = "1", .version_specific = true },
+            .{ .name = "USE_MMAP_MAP_STACK", .value = if (self.resolved.result.os.tag == .openbsd) "1" else null, .version_specific = true },
+            .{ .name = "WITH_NONEXECSTACK_NOTE", .value = if (self.is_linux and self.is_elf) "1" else null, .version_specific = true },
         };
         _ = b;
         return src_info.renderConfigHeaderTemplate("runtime/caml/m.h.in", &entries, &.{}, "");
@@ -171,32 +178,45 @@ pub const TargetConfig = struct {
             .{ .name = "POSIX_SIGNALS", .value = if (is_unix) "1" else null },
             .{ .name = "BSD_SIGNALS", .value = if (is_unix) "1" else null },
             .{ .name = "SUPPORT_DYNAMIC_LINKING", .value = if (is_unix) "1" else null },
-            .{ .name = "HAS_FULL_THREAD_VARIABLES", .value = if (self.is_linux or self.is_bsd) "1" else null },
+            .{ .name = "HAS_FULL_THREAD_VARIABLES", .value = if (self.is_linux or self.is_bsd) "1" else null, .version_specific = true },
             .{ .name = "HAS_C99_FLOAT_OPS", .value = "1" },
-            .{ .name = "HAS_WORKING_FMA", .value = "1" },
-            .{ .name = "HAS_WORKING_ROUND", .value = "1" },
-            .{ .name = "HAS_GETENTROPY", .value = if (is_unix) "1" else null },
+            .{ .name = "HAS_WORKING_FMA", .value = "1", .version_specific = true },
+            .{ .name = "HAS_WORKING_ROUND", .value = "1", .version_specific = true },
+            .{ .name = "HAS_GETENTROPY", .value = if (is_unix) "1" else null, .version_specific = true },
             .{ .name = "HAS_GETRUSAGE", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_TIMES", .value = if (is_unix) "1" else null },
-            .{ .name = "HAS_STRLCPY", .value = if (self.is_macos or self.is_bsd) "1" else null },
+            .{ .name = "HAS_STRLCPY", .value = if (self.is_macos or self.is_bsd) "1" else null, .version_specific = true },
             .{ .name = "HAS_SECURE_GETENV", .value = if (self.is_linux) "1" else null },
             .{ .name = "HAS___SECURE_GETENV", .value = null },
             .{ .name = "HAS_ISSETUGID", .value = if (self.is_macos or self.is_bsd) "1" else null },
-            .{ .name = "HAS_SYS_MMAN_H", .value = if (is_unix) "1" else null },
-            .{ .name = "HAS_LINUX_FUTEX_H", .value = if (self.is_linux) "1" else null },
+            .{ .name = "HAS_SYS_MMAN_H", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAS_LINUX_FUTEX_H", .value = if (self.is_linux) "1" else null, .version_specific = true },
             .{ .name = "HAS_SOCKETS", .value = "1" },
-            .{ .name = "HAS_SOCKETPAIR", .value = if (is_unix) "1" else null },
-            .{ .name = "HAS_AFUNIX_H", .value = if (self.is_windows) "1" else null },
+            .{ .name = "HAS_SOCKLEN_T", .value = "1", .version_specific = true },
+            .{ .name = "HAS_SOCKETPAIR", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAS_AFUNIX_H", .value = if (self.is_windows) "1" else null, .version_specific = true },
             .{ .name = "HAS_INET_ATON", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_IPV6", .value = "1" },
-            .{ .name = "HAS_PTHREAD_NP_H", .value = if (self.is_bsd) "1" else null },
-            .{ .name = "HAS_PRCTL", .value = if (self.is_linux) "1" else null },
-            .{ .name = "HAVE_PTHREAD_CANCEL", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_PTHREAD_SETNAME_NP", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_PTHREAD_SET_NAME_NP", .value = null },
-            .{ .name = "HAS_SETTHREADDESCRIPTION", .value = if (self.is_windows) "1" else null },
-            .{ .name = "HAS_DECL_SETTHREADDESCRIPTION", .value = if (self.is_windows) "1" else null },
-            .{ .name = "HAS_LIBGEN_H", .value = if (is_unix) "1" else null },
+            .{ .name = "HAS_PTHREAD_NP_H", .value = if (self.is_bsd) "1" else null, .version_specific = true },
+            .{ .name = "HAS_PRCTL", .value = if (self.is_linux) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_PTHREAD_CANCEL", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_PTHREAD_SETNAME_NP", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_PTHREAD_SET_NAME_NP", .value = null, .version_specific = true },
+            .{ .name = "HAS_PTHREAD_SETNAME_NP", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAS_PTHREAD_SET_NAME_NP", .value = null, .version_specific = true },
+            .{ .name = "HAS_SETTHREADDESCRIPTION", .value = if (self.is_windows) "1" else null, .version_specific = true },
+            .{ .name = "HAS_DECL_SETTHREADDESCRIPTION", .value = if (self.is_windows) "1" else null, .version_specific = true },
+            .{ .name = "HAS_STDINT_H", .value = "1", .version_specific = true },
+            .{ .name = "HAS_STDATOMIC_H", .value = "1", .version_specific = true },
+            .{ .name = "HAS_UNISTD", .value = "1", .version_specific = true },
+            .{ .name = "HAS_STRERROR", .value = "1", .version_specific = true },
+            .{ .name = "HAS_SIGWAIT", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAS_STACK_OVERFLOW_DETECTION", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAS_NANOSECOND_STAT", .value = if (self.is_linux) "1" else if (self.is_macos or self.is_bsd) "2" else null, .version_specific = true },
+            .{ .name = "HAS_MACH_ABSOLUTE_TIME", .value = if (self.is_macos) "1" else null, .version_specific = true },
+            .{ .name = "HAS_BITSCANFORWARD", .value = null, .version_specific = true },
+            .{ .name = "HAS_FFS", .value = null, .version_specific = true },
+            .{ .name = "HAS_LIBGEN_H", .value = if (is_unix) "1" else null, .version_specific = true },
             .{ .name = "HAS_DIRENT", .value = "1" },
             .{ .name = "HAS_REWINDDIR", .value = "1" },
             .{ .name = "HAS_LOCKF", .value = if (is_unix) "1" else null },
@@ -223,8 +243,8 @@ pub const TargetConfig = struct {
             .{ .name = "HAS_UNAME", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_GETTIMEOFDAY", .value = "1" },
             .{ .name = "HAS_MKTIME", .value = "1" },
-            .{ .name = "HAVE_GMTIME_R", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_LOCALTIME_R", .value = if (is_unix) "1" else null },
+            .{ .name = "HAVE_GMTIME_R", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_LOCALTIME_R", .value = if (is_unix) "1" else null, .version_specific = true },
             .{ .name = "HAS_SETSID", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_PUTENV", .value = "1" },
             .{ .name = "HAS_SETENV_UNSETENV", .value = if (is_unix) "1" else null },
@@ -233,39 +253,39 @@ pub const TargetConfig = struct {
             .{ .name = "HAS_STRTOD_L", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_MMAP", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_PWRITE", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC", .value = if (self.is_linux) "1" else null },
-            .{ .name = "HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC", .value = if (self.is_macos or self.is_bsd) "1" else null },
-            .{ .name = "HAVE_STRUCT_STAT_ST_ATIMENSEC", .value = null },
+            .{ .name = "HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC", .value = if (self.is_linux) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC", .value = if (self.is_macos or self.is_bsd) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_STRUCT_STAT_ST_ATIMENSEC", .value = null, .version_specific = true },
             .{ .name = "HAS_GETHOSTBYNAME_R", .value = if (self.is_linux) "6" else null },
             .{ .name = "HAS_GETHOSTBYADDR_R", .value = if (self.is_linux) "8" else null },
             .{ .name = "HAS_MKSTEMP", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_NICE", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_DUP3", .value = if (self.is_linux or self.is_bsd) "1" else null },
             .{ .name = "HAS_PIPE2", .value = if (self.is_linux or self.is_bsd) "1" else null },
-            .{ .name = "HAS_ACCEPT4", .value = if (self.is_linux or self.is_bsd) "1" else null },
-            .{ .name = "HAS_GETAUXVAL", .value = if (self.is_linux) "1" else null },
-            .{ .name = "HAS_SYS_SHM_H", .value = if (self.is_linux or self.is_macos) "1" else null },
+            .{ .name = "HAS_ACCEPT4", .value = if (self.is_linux or self.is_bsd) "1" else null, .version_specific = true },
+            .{ .name = "HAS_GETAUXVAL", .value = if (self.is_linux) "1" else null, .version_specific = true },
+            .{ .name = "HAS_SYS_SHM_H", .value = if (self.is_linux or self.is_macos) "1" else null, .version_specific = true },
             .{ .name = "HAS_SHMAT", .value = if (self.is_linux or self.is_macos) "1" else null },
             .{ .name = "HAS_EXECVPE", .value = if (self.is_linux) "1" else null },
             .{ .name = "HAS_POSIX_SPAWN", .value = if (is_unix) "1" else null },
             .{ .name = "HAS_HUGE_PAGES", .value = null },
             .{ .name = "HUGE_PAGE_SIZE", .value = null },
-            .{ .name = "HAS_LIBUNWIND", .value = null },
+            .{ .name = "HAS_LIBUNWIND", .value = null, .version_specific = true },
             .{ .name = "HAS_BROKEN_PRINTF", .value = if (self.is_windows) "1" else null },
-            .{ .name = "HAS_POSIX_MONOTONIC_CLOCK", .value = if (self.is_linux or self.is_bsd) "1" else null },
-            .{ .name = "HAS_CLOCK_GETTIME_NSEC_NP", .value = if (self.is_macos) "1" else null },
+            .{ .name = "HAS_POSIX_MONOTONIC_CLOCK", .value = if (self.is_linux or self.is_bsd) "1" else null, .version_specific = true },
+            .{ .name = "HAS_CLOCK_GETTIME_NSEC_NP", .value = if (self.is_macos) "1" else null, .version_specific = true },
             .{ .name = "HAS_GNU_GETAFFINITY_NP", .value = if (self.is_linux) "1" else null },
             .{ .name = "HAS_BSD_GETAFFINITY_NP", .value = null },
-            .{ .name = "HAS_ZSTD", .value = "1" },
-            .{ .name = "HAVE_MAX_ALIGN_T", .value = "1" },
-            .{ .name = "HAVE_GETGRNAM_R", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_GETGRGID_R", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_GETPWNAM_R", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_GETPWUID_R", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_GETLOGIN_R", .value = if (is_unix) "1" else null },
-            .{ .name = "HAVE_LABELS_AS_VALUES", .value = "1" },
-            .{ .name = "HAVE___TSAN_FUNC_EXIT_VOID_VOID_P", .value = null },
-            .{ .name = "HAVE___TSAN_FUNC_EXIT_VOID_VOID", .value = null },
+            .{ .name = "HAS_ZSTD", .value = "1", .version_specific = true },
+            .{ .name = "HAVE_MAX_ALIGN_T", .value = "1", .version_specific = true },
+            .{ .name = "HAVE_GETGRNAM_R", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_GETGRGID_R", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_GETPWNAM_R", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_GETPWUID_R", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_GETLOGIN_R", .value = if (is_unix) "1" else null, .version_specific = true },
+            .{ .name = "HAVE_LABELS_AS_VALUES", .value = "1", .version_specific = true },
+            .{ .name = "HAVE___TSAN_FUNC_EXIT_VOID_VOID_P", .value = null, .version_specific = true },
+            .{ .name = "HAVE___TSAN_FUNC_EXIT_VOID_VOID", .value = null, .version_specific = true },
         };
 
         const win_footer = if (self.is_windows)
@@ -282,7 +302,8 @@ pub const TargetConfig = struct {
 
     pub fn generateVersionH(b: *std.Build, src_info: SourceInfo) []const u8 {
         const v = src_info.version;
-        const entries = [_]SourceInfo.MacroEntry{
+        var entries: std.ArrayList(SourceInfo.MacroEntry) = .empty;
+        entries.appendSlice(b.allocator, &.{
             .{ .name = "OCAML_VERSION_MAJOR", .value = b.fmt("{d}", .{v.major}) },
             .{ .name = "OCAML_VERSION_MINOR", .value = b.fmt("{d}", .{v.minor}) },
             .{ .name = "OCAML_VERSION_PATCHLEVEL", .value = b.fmt("{d}", .{v.patchlevel}) },
@@ -290,18 +311,24 @@ pub const TargetConfig = struct {
             .{ .name = "OCAML_VERSION_EXTRA", .value = if (v.extra.len > 0) b.fmt("\"{s}{s}\"", .{ v.extra_prefix, v.extra }) else null },
             .{ .name = "OCAML_VERSION", .value = b.fmt("{d}", .{v.version_number}) },
             .{ .name = "OCAML_VERSION_STRING", .value = b.fmt("\"{s}\"", .{v.version_string}) },
-            .{ .name = "OCAML_RELEASE_NUMBER", .value = b.fmt("{d}", .{v.release_number}) },
-        };
-        return src_info.renderConfigHeaderTemplate("runtime/caml/version.h.in", &entries, &.{}, "");
+        }) catch @panic("OOM");
+        if (v.release_number) |rn| {
+            entries.append(b.allocator, .{
+                .name = "OCAML_RELEASE_NUMBER",
+                .value = b.fmt("{d}", .{rn}),
+            }) catch @panic("OOM");
+        }
+        return src_info.renderConfigHeaderTemplate("runtime/caml/version.h.in", entries.items, &.{}, "");
     }
 
-    pub fn generateExecH(b: *std.Build, src_info: SourceInfo) []const u8 {
+    pub fn generateExecH(b: *std.Build, src_info: SourceInfo) ?[]const u8 {
         const v = src_info.version;
+        const magic_len = v.exec_magic_length orelse return null;
         const entries = [_]SourceInfo.MacroEntry{
-            .{ .name = "EXEC_MAGIC_LENGTH", .value = b.fmt("{d}", .{v.exec_magic_length}) },
-            .{ .name = "MAGIC_NUMBER_PREFIX", .value = b.fmt("\"{s}\"", .{v.magic_prefix}) },
-            .{ .name = "EXEC_FORMAT", .value = b.fmt("\"{s}\"", .{v.exec_format}) },
-            .{ .name = "MAGIC_NUMBER_VERSION", .value = b.fmt("\"{s}\"", .{v.magic_version}) },
+            .{ .name = "EXEC_MAGIC_LENGTH", .value = b.fmt("{d}", .{magic_len}) },
+            .{ .name = "MAGIC_NUMBER_PREFIX", .value = b.fmt("\"{s}\"", .{v.magic_prefix.?}) },
+            .{ .name = "EXEC_FORMAT", .value = b.fmt("\"{s}\"", .{v.exec_format.?}) },
+            .{ .name = "MAGIC_NUMBER_VERSION", .value = b.fmt("\"{s}\"", .{v.magic_version.?}) },
         };
         const ignored_defines = [_][]const u8{
             "CAML_EXEC_H",
