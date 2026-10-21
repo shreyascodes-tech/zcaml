@@ -2,6 +2,8 @@ const std = @import("std");
 const utils = @import("utils.zig");
 pub const InputFile = utils.InputFile;
 pub const OutputFile = utils.OutputFile;
+pub const InputDir = utils.InputDir;
+pub const OutputDir = utils.OutputDir;
 
 const Self = @This();
 
@@ -124,6 +126,12 @@ fn addSingleNamedArg(
     } else if (ValType == OutputFile) {
         run_tool.addArg(flag);
         val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
+    } else if (ValType == InputDir) {
+        run_tool.addArg(flag);
+        run_tool.addDirectoryArg(val_ptr.lazy);
+    } else if (ValType == OutputDir) {
+        run_tool.addArg(flag);
+        val_ptr.lazy.path = run_tool.addOutputDirectoryArg(val_ptr.lazy.basename);
     } else if (ValType == []const u8 or ValType == []u8) {
         run_tool.addArgs(&.{ flag, val_ptr.* });
     } else if (ValType == bool) {
@@ -150,6 +158,10 @@ fn addPositionalArg(
         run_tool.addFileArg(val_ptr.lazy);
     } else if (ValType == OutputFile) {
         val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
+    } else if (ValType == InputDir) {
+        run_tool.addDirectoryArg(val_ptr.lazy);
+    } else if (ValType == OutputDir) {
+        val_ptr.lazy.path = run_tool.addOutputDirectoryArg(val_ptr.lazy.basename);
     } else if (ValType == []const u8 or ValType == []u8) {
         run_tool.addArg(val_ptr.*);
     } else if (@typeInfo(ValType) == .int or @typeInfo(ValType) == .float) {
@@ -296,6 +308,10 @@ fn parseSingleValue(comptime ValType: type, raw: ?[]const u8) !ValType {
     if (ValType == InputFile) {
         return .{ .cli = raw orelse return error.MissingOptionValue };
     } else if (ValType == OutputFile) {
+        return .{ .cli = raw orelse return error.MissingOptionValue };
+    } else if (ValType == InputDir) {
+        return .{ .cli = raw orelse return error.MissingOptionValue };
+    } else if (ValType == OutputDir) {
         return .{ .cli = raw orelse return error.MissingOptionValue };
     } else if (ValType == []const u8) {
         return raw orelse return error.MissingOptionValue;

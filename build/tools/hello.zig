@@ -17,14 +17,12 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
 
-    const contents = try std.Io.Dir.cwd().readFileAlloc(io, self.input_file.path(), gpa, .unlimited);
+    const contents = try self.input_file.readAll(io, gpa);
     defer gpa.free(contents);
 
-    const out_file = try std.Io.Dir.cwd().createFile(io, self.output_file.path(), .{});
-    defer out_file.close(io);
-
     var write_buf: [1024]u8 = undefined;
-    var file_writer = out_file.writer(io, &write_buf);
+    var file_writer = try self.output_file.writer(io, &write_buf);
+    defer file_writer.file.close(io);
     const writer = &file_writer.interface;
 
     try writer.print("{s} (flag={}, list={d}, rest={d})\n{s}", .{
