@@ -21,6 +21,7 @@ pub const SourceInfo = struct {
     b: *std.Build,
     dep: *std.Build.Dependency,
     version: OcamlVersionInfo,
+    version_m4: []const u8,
     makefile_src: []const u8,
 
     pub fn load(b: *std.Build, ocaml_dep: *std.Build.Dependency) SourceInfo {
@@ -34,8 +35,35 @@ pub const SourceInfo = struct {
             .b = b,
             .dep = ocaml_dep,
             .version = version,
+            .version_m4 = version_m4,
             .makefile_src = makefile_src,
         };
+    }
+
+    pub fn magicNumber(self: SourceInfo, kind: []const u8) []const u8 {
+        const prefix = self.version.magic_prefix orelse @panic("magicNumber called on OCaml version without MAGIC_NUMBER__PREFIX");
+        const ver = self.version.magic_version orelse @panic("magicNumber called on OCaml version without MAGIC_NUMBER__VERSION");
+
+        var lines = std.mem.splitScalar(u8, self.version_m4, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.startsWith(u8, line, "DEFINE_MAGIC_NUMBER([")) {
+                const inner = line["DEFINE_MAGIC_NUMBER([".len..];
+                const k_end = std.mem.indexOfScalar(u8, inner, ']') orelse continue;
+                const k = inner[0..k_end];
+                if (!std.mem.eql(u8, k, kind)) continue;
+                const rest = std.mem.trim(u8, inner[k_end + 1 ..], " \t,");
+                if (std.mem.startsWith(u8, rest, "[")) {
+                    const c_end = std.mem.indexOfScalar(u8, rest[1..], ']') orelse continue;
+                    const fmt_char = rest[1 .. 1 + c_end];
+                    return self.b.fmt("{s}{s}{s}", .{ prefix, fmt_char, ver });
+                } else if (std.mem.startsWith(u8, rest, "EXEC__FORMAT")) {
+                    const fmt_char = self.version.exec_format.?;
+                    return self.b.fmt("{s}{s}{s}", .{ prefix, fmt_char, ver });
+                }
+            }
+        }
+        std.debug.panic("m4 safety check failed: DEFINE_MAGIC_NUMBER([{s}], ...) not found in build-aux/ocaml_version.m4", .{kind});
     }
 
     pub fn readFile(b: *std.Build, ocaml_dep: *std.Build.Dependency, sub_path: []const u8) []const u8 {
@@ -50,8 +78,9 @@ pub const SourceInfo = struct {
         values: []const []const u8,
     };
 
-    /// Parses a variable assignment `var_name = ...` (with `\` line continuations)
-    /// from the root OCaml Makefile and expands any allowed `$(VAR)` references.
+    /// Parses a variable assignment `var_name = ...` (with `\` line continuations,
+    /// `+=` appends, `ifeq` blocks, and nested `$(addprefix ...)` / `$(addsuffix ...)` / `$(VAR)`)
+    /// from the root OCaml Makefile.
     /// Panics if the variable is missing, empty, or contains unknown `$(...)` expansions.
     pub fn parseMakefileList(
         self: SourceInfo,
@@ -59,6 +88,14 @@ pub const SourceInfo = struct {
         expansions: []const VarExpansion,
     ) []const []const u8 {
         return self.parseMakefileListFromSource("Makefile", self.makefile_src, var_name, expansions);
+    }
+
+    pub fn parseMakefileListOptional(
+        self: SourceInfo,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+    ) ?[]const []const u8 {
+        return self.parseMakefileListFromSourceOptional("Makefile", self.makefile_src, var_name, expansions, false);
     }
 
     /// Parses a variable assignment `var_name = ...` from `sub_path` in the OCaml tarball.
@@ -79,26 +116,94 @@ pub const SourceInfo = struct {
         var_name: []const u8,
         expansions: []const VarExpansion,
     ) []const []const u8 {
+        const items = self.parseMakefileListFromSourceOptional(file_label, src, var_name, expansions, false) orelse {
+            std.debug.panic(
+                "Makefile safety check failed: variable '{s}' not found in '{s}'",
+                .{ var_name, file_label },
+            );
+        };
+        if (items.len == 0) {
+            std.debug.panic("Makefile safety check failed: variable '{s}' in '{s}' resolved to 0 items", .{ var_name, file_label });
+        }
+        return items;
+    }
+
+    pub fn parseMakefileListFromSourceAllowEmpty(
+        self: SourceInfo,
+        file_label: []const u8,
+        src: []const u8,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+    ) []const []const u8 {
+        return self.parseMakefileListFromSourceOptional(file_label, src, var_name, expansions, true) orelse {
+            std.debug.panic(
+                "Makefile safety check failed: variable '{s}' not found in '{s}'",
+                .{ var_name, file_label },
+            );
+        };
+    }
+
+    pub fn parseMakefileListFromSourceOptional(
+        self: SourceInfo,
+        file_label: []const u8,
+        src: []const u8,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+        allow_empty: bool,
+    ) ?[]const []const u8 {
+        _ = allow_empty;
         const alloc = self.b.allocator;
         var lines = std.mem.splitScalar(u8, src, '\n');
 
         var found = false;
         var raw_body: std.ArrayList(u8) = .empty;
+        var reading_continuation = false;
+
+        // Track simple 1-level ifeq/ifneq state when condition variables are in `expansions`
+        var cond_active = true;
+        var in_cond = false;
 
         while (lines.next()) |raw_line| {
             const line = std.mem.trimEnd(u8, raw_line, "\r");
-            if (!found) {
+            if (!reading_continuation) {
+                const trimmed_line = std.mem.trim(u8, line, " \t");
+                if (std.mem.startsWith(u8, trimmed_line, "ifeq ") or std.mem.startsWith(u8, trimmed_line, "ifeq(")) {
+                    if (evalMakefileIfeq(trimmed_line["ifeq".len..], expansions)) |matched| {
+                        in_cond = true;
+                        cond_active = matched;
+                    }
+                    continue;
+                } else if (in_cond and std.mem.eql(u8, trimmed_line, "else")) {
+                    cond_active = !cond_active;
+                    continue;
+                } else if (in_cond and (std.mem.eql(u8, trimmed_line, "endif") or std.mem.startsWith(u8, trimmed_line, "endif "))) {
+                    in_cond = false;
+                    cond_active = true;
+                    continue;
+                }
+
+                if (!cond_active) continue;
+
                 if (std.mem.startsWith(u8, line, var_name)) {
                     const after = std.mem.trimStart(u8, line[var_name.len..], " \t");
-                    if (std.mem.startsWith(u8, after, "=")) {
+                    const is_assign = std.mem.startsWith(u8, after, "=") and !std.mem.startsWith(u8, after, "==");
+                    const is_colon_assign = std.mem.startsWith(u8, after, ":=");
+                    const is_plus_assign = std.mem.startsWith(u8, after, "+=");
+                    if (is_assign or is_colon_assign or is_plus_assign) {
+                        const op_len: usize = if (is_colon_assign or is_plus_assign) 2 else 1;
+                        if (!is_plus_assign) {
+                            raw_body = .empty;
+                        } else if (raw_body.items.len > 0) {
+                            raw_body.append(alloc, ' ') catch @panic("OOM");
+                        }
                         found = true;
-                        const rhs = std.mem.trimStart(u8, after[1..], " \t");
+                        const rhs = std.mem.trimStart(u8, after[op_len..], " \t");
                         if (std.mem.endsWith(u8, rhs, "\\")) {
                             raw_body.appendSlice(alloc, rhs[0 .. rhs.len - 1]) catch @panic("OOM");
                             raw_body.append(alloc, ' ') catch @panic("OOM");
+                            reading_continuation = true;
                         } else {
                             raw_body.appendSlice(alloc, rhs) catch @panic("OOM");
-                            break;
                         }
                     }
                 }
@@ -109,69 +214,144 @@ pub const SourceInfo = struct {
                     raw_body.append(alloc, ' ') catch @panic("OOM");
                 } else {
                     raw_body.appendSlice(alloc, trimmed) catch @panic("OOM");
-                    break;
+                    reading_continuation = false;
                 }
             }
         }
 
-        if (!found) {
-            std.debug.panic(
-                "Makefile safety check failed: variable '{s}' not found in '{s}'",
-                .{ var_name, file_label },
-            );
-        }
-
-        var body_slice = std.mem.trim(u8, raw_body.items, " \t");
-        var prefix_to_add: ?[]const u8 = null;
-
-        // Handle $(addprefix prefix, items...) wrapper if present
-        if (std.mem.startsWith(u8, body_slice, "$(addprefix ") and std.mem.endsWith(u8, body_slice, ")")) {
-            const inner = body_slice["$(addprefix ".len .. body_slice.len - 1];
-            const comma_idx = std.mem.indexOfScalar(u8, inner, ',') orelse {
-                std.debug.panic("Malformed $(addprefix ...) in '{s}' variable '{s}'", .{ file_label, var_name });
-            };
-            prefix_to_add = std.mem.trim(u8, inner[0..comma_idx], " \t");
-            body_slice = std.mem.trim(u8, inner[comma_idx + 1 ..], " \t");
-        }
+        if (!found) return null;
 
         var result: std.ArrayList([]const u8) = .empty;
-        var tok_iter = std.mem.tokenizeAny(u8, body_slice, " \t");
-        while (tok_iter.next()) |tok| {
-            if (std.mem.startsWith(u8, tok, "$(") and std.mem.endsWith(u8, tok, ")")) {
-                const ref_name = tok[2 .. tok.len - 1];
-                var expanded = false;
+        self.expandMakefileExprInto(&result, std.mem.trim(u8, raw_body.items, " \t"), "", "", file_label, var_name, expansions);
+        return result.items;
+    }
+
+    fn expandMakefileExprInto(
+        self: SourceInfo,
+        out: *std.ArrayList([]const u8),
+        expr: []const u8,
+        cur_prefix: []const u8,
+        cur_suffix: []const u8,
+        file_label: []const u8,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+    ) void {
+        const alloc = self.b.allocator;
+        var i: usize = 0;
+        while (i < expr.len) {
+            while (i < expr.len and (expr[i] == ' ' or expr[i] == '\t')) : (i += 1) {}
+            if (i >= expr.len) break;
+
+            if (std.mem.startsWith(u8, expr[i..], "$(")) {
+                const close_idx = findMatchingParen(expr, i + 1) orelse {
+                    std.debug.panic("Malformed $(...) in '{s}' variable '{s}'", .{ file_label, var_name });
+                };
+                const inner = expr[i + 2 .. close_idx];
+                i = close_idx + 1;
+
+                if (std.mem.startsWith(u8, inner, "addprefix ")) {
+                    const args = inner["addprefix ".len..];
+                    const comma_idx = std.mem.indexOfScalar(u8, args, ',') orelse {
+                        std.debug.panic("Malformed $(addprefix ...) in '{s}' variable '{s}'", .{ file_label, var_name });
+                    };
+                    const sub_prefix_raw = std.mem.trim(u8, args[0..comma_idx], " \t");
+                    const sub_prefix = self.expandSingleToken(sub_prefix_raw, file_label, var_name, expansions);
+                    const sub_body = std.mem.trim(u8, args[comma_idx + 1 ..], " \t");
+                    const combined_prefix = if (cur_prefix.len > 0)
+                        self.b.fmt("{s}{s}", .{ cur_prefix, sub_prefix })
+                    else
+                        sub_prefix;
+                    self.expandMakefileExprInto(out, sub_body, combined_prefix, cur_suffix, file_label, var_name, expansions);
+                } else if (std.mem.startsWith(u8, inner, "addsuffix ")) {
+                    const args = inner["addsuffix ".len..];
+                    const comma_idx = std.mem.indexOfScalar(u8, args, ',') orelse {
+                        std.debug.panic("Malformed $(addsuffix ...) in '{s}' variable '{s}'", .{ file_label, var_name });
+                    };
+                    const sub_suffix_raw = std.mem.trim(u8, args[0..comma_idx], " \t");
+                    const sub_suffix = self.expandSingleToken(sub_suffix_raw, file_label, var_name, expansions);
+                    const sub_body = std.mem.trim(u8, args[comma_idx + 1 ..], " \t");
+                    const combined_suffix = if (cur_suffix.len > 0)
+                        self.b.fmt("{s}{s}", .{ sub_suffix, cur_suffix })
+                    else
+                        sub_suffix;
+                    self.expandMakefileExprInto(out, sub_body, cur_prefix, combined_suffix, file_label, var_name, expansions);
+                } else {
+                    const ref_name = std.mem.trim(u8, inner, " \t");
+                    var expanded = false;
+                    for (expansions) |exp| {
+                        if (std.mem.eql(u8, exp.name, ref_name)) {
+                            for (exp.values) |v| {
+                                const item = self.b.fmt("{s}{s}{s}", .{ cur_prefix, v, cur_suffix });
+                                out.append(alloc, item) catch @panic("OOM");
+                            }
+                            expanded = true;
+                            break;
+                        }
+                    }
+                    if (!expanded) {
+                        std.debug.panic(
+                            "Makefile safety check failed: unexpanded variable '$({s})' in '{s}' ('{s}')",
+                            .{ ref_name, var_name, file_label },
+                        );
+                    }
+                }
+            } else {
+                const start = i;
+                while (i < expr.len and expr[i] != ' ' and expr[i] != '\t') : (i += 1) {}
+                const tok = expr[start..i];
+                const expanded_tok = self.expandSingleToken(tok, file_label, var_name, expansions);
+                const item = self.b.fmt("{s}{s}{s}", .{ cur_prefix, expanded_tok, cur_suffix });
+                out.append(alloc, item) catch @panic("OOM");
+            }
+        }
+    }
+
+    fn expandSingleToken(
+        self: SourceInfo,
+        tok: []const u8,
+        file_label: []const u8,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+    ) []const u8 {
+        if (std.mem.indexOfScalar(u8, tok, '$') == null) return tok;
+        const alloc = self.b.allocator;
+        var res: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < tok.len) {
+            if (std.mem.startsWith(u8, tok[i..], "$(")) {
+                const close_idx = findMatchingParen(tok, i + 1) orelse {
+                    std.debug.panic("Malformed $(...) in token '{s}' ('{s}' in '{s}')", .{ tok, var_name, file_label });
+                };
+                const ref_name = tok[i + 2 .. close_idx];
+                var found_val: ?[]const u8 = null;
                 for (expansions) |exp| {
                     if (std.mem.eql(u8, exp.name, ref_name)) {
-                        for (exp.values) |v| {
-                            const final_item = if (prefix_to_add) |p| self.b.fmt("{s}{s}", .{ p, v }) else v;
-                            result.append(alloc, final_item) catch @panic("OOM");
+                        if (exp.values.len != 1) {
+                            std.debug.panic("Expected single value for inline expansion '$({s})' in '{s}'", .{ ref_name, tok });
                         }
-                        expanded = true;
+                        found_val = exp.values[0];
                         break;
                     }
                 }
-                if (!expanded) {
+                const v = found_val orelse {
                     std.debug.panic(
-                        "Makefile safety check failed: unexpanded variable '$({s})' in '{s}' ('{s}')",
+                        "Makefile safety check failed: unexpanded inline variable '$({s})' in '{s}' ('{s}')",
                         .{ ref_name, var_name, file_label },
                     );
-                }
-            } else if (std.mem.indexOfScalar(u8, tok, '$') != null) {
+                };
+                res.appendSlice(alloc, v) catch @panic("OOM");
+                i = close_idx + 1;
+            } else if (tok[i] == '$') {
                 std.debug.panic(
                     "Makefile safety check failed: unexpected macro expression '{s}' in '{s}' ('{s}')",
                     .{ tok, var_name, file_label },
                 );
             } else {
-                const final_item = if (prefix_to_add) |p| self.b.fmt("{s}{s}", .{ p, tok }) else tok;
-                result.append(alloc, final_item) catch @panic("OOM");
+                res.append(alloc, tok[i]) catch @panic("OOM");
+                i += 1;
             }
         }
-
-        if (result.items.len == 0) {
-            std.debug.panic("Makefile safety check failed: variable '{s}' in '{s}' resolved to 0 items", .{ var_name, file_label });
-        }
-
-        return result.items;
+        return res.items;
     }
 
     pub const MacroEntry = struct {
@@ -283,11 +463,12 @@ pub const SourceInfo = struct {
     pub const AtVarEntry = struct {
         name: []const u8,
         value: []const u8,
+        version_specific: bool = false,
     };
 
     /// Strictly renders a template using `@var@` placeholders (such as `stdlib/sys.ml.in`,
     /// `utils/config.generated.ml.in`, `otherlibs/dynlink/dynlink_config.ml.in`, `META.in`).
-    /// Panics if any `@var@` in the template is missing from `entries` or if any entry is unused.
+    /// Panics if any `@var@` in the template is missing from `entries` or if any non-`version_specific` entry is unused.
     pub fn renderAtTemplate(
         self: SourceInfo,
         template_sub_path: []const u8,
@@ -298,6 +479,14 @@ pub const SourceInfo = struct {
 
         const used = alloc.alloc(bool, entries.len) catch @panic("OOM");
         @memset(used, false);
+
+        for (entries, 0..) |e1, idx1| {
+            for (entries[idx1 + 1 ..]) |e2| {
+                if (std.mem.eql(u8, e1.name, e2.name)) {
+                    std.debug.panic("Duplicate '@{s}@' in substitution table for '{s}'", .{ e1.name, template_sub_path });
+                }
+            }
+        }
 
         var out: std.ArrayList(u8) = .empty;
         var i: usize = 0;
@@ -322,7 +511,7 @@ pub const SourceInfo = struct {
         }
 
         for (entries, 0..) |entry, idx| {
-            if (!used[idx]) {
+            if (!used[idx] and !entry.version_specific) {
                 std.debug.panic(
                     "Template safety check failed in '{s}': substitution '@{s}@' in zcaml table does not exist in template",
                     .{ template_sub_path, entry.name },
@@ -332,7 +521,124 @@ pub const SourceInfo = struct {
 
         return out.items;
     }
+
+    /// Strictly renders a template using `%%VAR%%` placeholders (such as `utils/config.mlp` in OCaml 5.0).
+    /// Panics if any `%%VAR%%` in the template is missing from `entries` or if any non-`version_specific` entry is unused.
+    pub fn renderPercentTemplate(
+        self: SourceInfo,
+        template_sub_path: []const u8,
+        entries: []const AtVarEntry,
+    ) []const u8 {
+        const alloc = self.b.allocator;
+        const template_src = readFile(self.b, self.dep, template_sub_path);
+
+        const used = alloc.alloc(bool, entries.len) catch @panic("OOM");
+        @memset(used, false);
+
+        for (entries, 0..) |e1, idx1| {
+            for (entries[idx1 + 1 ..]) |e2| {
+                if (std.mem.eql(u8, e1.name, e2.name)) {
+                    std.debug.panic("Duplicate '%%{s}%%' in substitution table for '{s}'", .{ e1.name, template_sub_path });
+                }
+            }
+        }
+
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < template_src.len) {
+            if (i + 1 < template_src.len and template_src[i] == '%' and template_src[i + 1] == '%') {
+                if (findClosingPercentIdent(template_src, i + 2)) |end_idx| {
+                    const var_name = template_src[i + 2 .. end_idx];
+                    const entry_idx = findAtVarIndex(entries, var_name) orelse {
+                        std.debug.panic(
+                            "Template safety check failed in '{s}': placeholder '%%{s}%%' is not handled in zcaml substitution table",
+                            .{ template_sub_path, var_name },
+                        );
+                    };
+                    used[entry_idx] = true;
+                    out.appendSlice(alloc, entries[entry_idx].value) catch @panic("OOM");
+                    i = end_idx + 2;
+                    continue;
+                }
+            }
+            out.append(alloc, template_src[i]) catch @panic("OOM");
+            i += 1;
+        }
+
+        for (entries, 0..) |entry, idx| {
+            if (!used[idx] and !entry.version_specific) {
+                std.debug.panic(
+                    "Template safety check failed in '{s}': substitution '%%{s}%%' in zcaml table does not exist in template",
+                    .{ template_sub_path, entry.name },
+                );
+            }
+        }
+
+        return out.items;
+    }
 };
+
+fn findMatchingParen(s: []const u8, open_idx: usize) ?usize {
+    std.debug.assert(s[open_idx] == '(');
+    var depth: usize = 1;
+    var i: usize = open_idx + 1;
+    while (i < s.len) : (i += 1) {
+        if (s[i] == '(') {
+            depth += 1;
+        } else if (s[i] == ')') {
+            depth -= 1;
+            if (depth == 0) return i;
+        }
+    }
+    return null;
+}
+
+fn evalMakefileIfeq(rest: []const u8, expansions: []const SourceInfo.VarExpansion) ?bool {
+    const trimmed = std.mem.trim(u8, rest, " \t");
+    // Format 1: ifeq ($(VAR),val)
+    if (std.mem.startsWith(u8, trimmed, "(") and std.mem.endsWith(u8, trimmed, ")")) {
+        const inner = trimmed[1 .. trimmed.len - 1];
+        const comma = std.mem.indexOfScalar(u8, inner, ',') orelse return null;
+        const lhs = std.mem.trim(u8, inner[0..comma], " \t\"'");
+        const rhs = std.mem.trim(u8, inner[comma + 1 ..], " \t\"'");
+        if (std.mem.startsWith(u8, lhs, "$(") and std.mem.endsWith(u8, lhs, ")")) {
+            const var_name = lhs[2 .. lhs.len - 1];
+            for (expansions) |exp| {
+                if (std.mem.eql(u8, exp.name, var_name) and exp.values.len == 1) {
+                    return std.mem.eql(u8, exp.values[0], rhs);
+                }
+            }
+        }
+        return null;
+    }
+    // Format 2: ifeq "$(VAR)" "val"
+    if (std.mem.startsWith(u8, trimmed, "\"")) {
+        const q1_end = std.mem.indexOfScalarPos(u8, trimmed, 1, '"') orelse return null;
+        const lhs = trimmed[1..q1_end];
+        const after_q1 = std.mem.trim(u8, trimmed[q1_end + 1 ..], " \t");
+        if (!std.mem.startsWith(u8, after_q1, "\"")) return null;
+        const q2_end = std.mem.indexOfScalarPos(u8, after_q1, 1, '"') orelse return null;
+        const rhs = after_q1[1..q2_end];
+        if (std.mem.startsWith(u8, lhs, "$(") and std.mem.endsWith(u8, lhs, ")")) {
+            const var_name = lhs[2 .. lhs.len - 1];
+            for (expansions) |exp| {
+                if (std.mem.eql(u8, exp.name, var_name) and exp.values.len == 1) {
+                    return std.mem.eql(u8, exp.values[0], rhs);
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn findClosingPercentIdent(src: []const u8, start: usize) ?usize {
+    if (start >= src.len) return null;
+    if (!std.ascii.isAlphabetic(src[start]) and src[start] != '_') return null;
+    var i = start + 1;
+    while (i < src.len and (std.ascii.isAlphanumeric(src[i]) or src[i] == '_')) : (i += 1) {}
+    if (i + 1 < src.len and src[i] == '%' and src[i + 1] == '%') return i;
+    return null;
+}
 
 fn extractMacroIdent(s: []const u8) []const u8 {
     var i: usize = 0;

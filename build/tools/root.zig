@@ -11,6 +11,8 @@ pub const Command = union(enum) {
     hello: @import("hello.zig"),
     gen_runtime: @import("gen_runtime.zig"),
     build_stdlib: @import("build_stdlib.zig"),
+    build_compiler: @import("build_compiler.zig"),
+    build_otherlibs: @import("build_otherlibs.zig"),
 
     pub fn run(self: *Command, b: *std.Build) *std.Build.Step.Run {
         const tool_exe = (struct {

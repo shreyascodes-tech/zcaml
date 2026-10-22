@@ -43,14 +43,6 @@ pub fn build(b: *std.Build) !void {
         };
 
         if (b.lazyDependency(ocaml_version.dependencyName(), .{})) |ocaml_dep| {
-            const ocaml = Ocaml.init(b, ocaml_dep);
-
-            const toolchain = try ocaml.build(.{
-                .compiler_host = compiler_host,
-                .compiler_target = compiler_target,
-                .optimize = optimize,
-            });
-
             const prefix = b.option([]const u8, "ocaml-prefix", "install sub-prefix under zig-out") orelse b.fmt(
                 "{s}/host-{s}/target-{s}",
                 .{
@@ -59,6 +51,16 @@ pub fn build(b: *std.Build) !void {
                     try compiler_target.result.linuxTriple(b.allocator),
                 },
             );
+
+            const ocaml = Ocaml.init(b, ocaml_dep);
+
+            const toolchain = try ocaml.build(.{
+                .compiler_host = compiler_host,
+                .compiler_target = compiler_target,
+                .optimize = optimize,
+                .prefix = prefix,
+            });
+
             toolchain.addInstall(b.getInstallStep(), .{
                 .prefix = prefix,
             });

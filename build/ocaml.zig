@@ -3,11 +3,15 @@ const target_config = @import("target_config.zig");
 const source_info = @import("source_info.zig");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
+const compiler = @import("compiler.zig");
+const otherlibs = @import("otherlibs.zig");
 
 pub const TargetConfig = target_config.TargetConfig;
 pub const SourceInfo = source_info.SourceInfo;
 pub const RuntimeArtifacts = runtime.RuntimeArtifacts;
 pub const StdlibArtifacts = stdlib.StdlibArtifacts;
+pub const CompilerArtifacts = compiler.CompilerArtifacts;
+pub const OtherlibsArtifacts = otherlibs.OtherlibsArtifacts;
 
 const Self = @This();
 
@@ -34,10 +38,12 @@ pub const BuildOptions = struct {
     /// The target where the output of the ocaml compiler runs.
     compiler_target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    /// Optional sub-prefix under zig-out used to compute default runtime/stdlib paths.
+    prefix: ?[]const u8 = null,
 };
 
 pub const InstallOptions = struct {
-    /// Optional prefix relative to the install root (e.g. "x86_64-linux-gnu").
+    /// Optional prefix relative to the install root (e.g. "5.5.1/host-.../target-...").
     /// When null, installs into standard `bin/` and `lib/ocaml/` under the install prefix.
     prefix: ?[]const u8 = null,
 };
@@ -45,10 +51,15 @@ pub const InstallOptions = struct {
 pub const Toolchain = struct {
     b: *std.Build,
     ocaml_dep: *std.Build.Dependency,
+    src_info: SourceInfo,
     host_cfg: TargetConfig,
     target_cfg: TargetConfig,
+    host_rt: RuntimeArtifacts,
     target_rt: RuntimeArtifacts,
     target_stdlib: StdlibArtifacts,
+    target_compiler: CompilerArtifacts,
+    target_otherlibs: OtherlibsArtifacts,
+    ld_conf: std.Build.LazyPath,
 
     pub fn addInstall(self: Toolchain, step: *std.Build.Step, options: InstallOptions) void {
         const b = self.b;
@@ -63,17 +74,70 @@ pub const Toolchain = struct {
         else
             .{ .custom = "lib/ocaml" };
 
-        // Binaries -> <prefix>/bin/
-        step.dependOn(&b.addInstallArtifact(self.target_rt.ocamlrun, .{
-            .dest_dir = .{ .override = bin_dir },
-            .pdb_dir = .disabled,
-        }).step);
-        step.dependOn(&b.addInstallArtifact(self.target_rt.ocamlyacc, .{
-            .dest_dir = .{ .override = bin_dir },
-            .pdb_dir = .disabled,
-        }).step);
+        const stublibs_dir: std.Build.InstallDir = if (options.prefix) |p|
+            .{ .custom = b.fmt("{s}/lib/ocaml/stublibs", .{p}) }
+        else
+            .{ .custom = "lib/ocaml/stublibs" };
 
-        // Runtime static libraries -> <prefix>/lib/ocaml/
+        // 1. Host runtime & yacc binaries -> <prefix>/bin/
+        step.dependOn(&b.addInstallArtifact(self.host_rt.ocamlrun, .{
+            .dest_dir = .{ .override = bin_dir },
+            .pdb_dir = .disabled,
+        }).step);
+        step.dependOn(&b.addInstallArtifact(self.host_rt.ocamlyacc, .{
+            .dest_dir = .{ .override = bin_dir },
+            .pdb_dir = .disabled,
+        }).step);
+        if (!std.mem.eql(u8, self.host_cfg.triplet, self.target_cfg.triplet)) {
+            const target_exe_ext = if (self.target_cfg.is_windows) ".exe" else "";
+            step.dependOn(&b.addInstallFileWithDir(
+                self.target_rt.ocamlrun.getEmittedBin(),
+                bin_dir,
+                b.fmt("ocamlrun-target{s}", .{target_exe_ext}),
+            ).step);
+        }
+
+        // 2. Bytecode compilers & tools -> <prefix>/bin/
+        const comp_dir = self.target_compiler.compiler_dir;
+        const dual_tools = [_][]const u8{
+            "ocamlc",
+            "ocamlopt",
+            "ocamllex",
+            "ocamldep",
+            "ocamlobjinfo",
+        };
+        for (dual_tools) |tool| {
+            const byte_name = b.fmt("{s}.byte", .{tool});
+            const src_lp = comp_dir.path(b, b.fmt("bin/{s}", .{byte_name}));
+            step.dependOn(&b.addInstallFileWithDir(src_lp, bin_dir, byte_name).step);
+            step.dependOn(&b.addInstallFileWithDir(src_lp, bin_dir, tool).step);
+        }
+
+        const byt_only_tools = [_][]const u8{
+            "ocamlcmt",
+            "ocamlprof",
+            "ocamlcp",
+            "ocamloptp",
+            "ocamlmklib",
+            "ocamlmktop",
+        };
+        for (byt_only_tools) |tool| {
+            const src_lp = comp_dir.path(b, b.fmt("bin/{s}.byte", .{tool}));
+            step.dependOn(&b.addInstallFileWithDir(src_lp, bin_dir, tool).step);
+        }
+
+        step.dependOn(&b.addInstallFileWithDir(
+            comp_dir.path(b, "bin/ocaml"),
+            bin_dir,
+            "ocaml",
+        ).step);
+        step.dependOn(&b.addInstallFileWithDir(
+            comp_dir.path(b, "bin/expunge.byte"),
+            ocaml_lib_dir,
+            "expunge",
+        ).step);
+
+        // 3. Runtime static libraries -> <prefix>/lib/ocaml/
         step.dependOn(&b.addInstallArtifact(self.target_rt.libcamlrun, .{
             .dest_dir = .{ .override = ocaml_lib_dir },
         }).step);
@@ -88,11 +152,16 @@ pub const Toolchain = struct {
             }).step);
         }
 
-        // Primitives & runtime C headers -> <prefix>/lib/ocaml/
+        // 4. Primitives, ld.conf, & runtime C headers -> <prefix>/lib/ocaml/
         step.dependOn(&b.addInstallFileWithDir(
             self.target_rt.primitives,
             ocaml_lib_dir,
             "primitives",
+        ).step);
+        step.dependOn(&b.addInstallFileWithDir(
+            self.ld_conf,
+            ocaml_lib_dir,
+            "ld.conf",
         ).step);
         step.dependOn(&b.addInstallDirectory(.{
             .source_dir = self.ocaml_dep.path("runtime/caml"),
@@ -106,7 +175,7 @@ pub const Toolchain = struct {
             .install_subdir = "caml",
         }).step);
 
-        // Standard library -> <prefix>/lib/ocaml/ and <prefix>/lib/ocaml/stdlib/META
+        // 5. Standard library -> <prefix>/lib/ocaml/ and <prefix>/lib/ocaml/stdlib/META
         step.dependOn(&b.addInstallDirectory(.{
             .source_dir = self.target_stdlib.stdlib_dir,
             .install_dir = ocaml_lib_dir,
@@ -117,6 +186,103 @@ pub const Toolchain = struct {
             ocaml_lib_dir,
             "stdlib/META",
         ).step);
+
+        // 6. Compilerlibs -> <prefix>/lib/ocaml/compiler-libs/ and profiling -> <prefix>/lib/ocaml/profiling/
+        step.dependOn(&b.addInstallDirectory(.{
+            .source_dir = comp_dir.path(b, "compilerlibs"),
+            .install_dir = ocaml_lib_dir,
+            .install_subdir = "compiler-libs",
+        }).step);
+        const complib_subdirs = [_][]const u8{
+            "utils",
+            "parsing",
+            "typing",
+            "bytecomp",
+            "file_formats",
+            "lambda",
+            "middle_end",
+            "middle_end/closure",
+            "middle_end/flambda",
+            "middle_end/flambda/base_types",
+            "asmcomp",
+            "driver",
+            "toplevel",
+            "toplevel/byte",
+        };
+        for (complib_subdirs) |sub| {
+            step.dependOn(&b.addInstallDirectory(.{
+                .source_dir = comp_dir.path(b, sub),
+                .install_dir = ocaml_lib_dir,
+                .install_subdir = "compiler-libs",
+                .include_extensions = &.{ ".cmi", ".cmt", ".cmti", ".mli" },
+            }).step);
+        }
+        step.dependOn(&b.addInstallFileWithDir(comp_dir.path(b, "driver/main.cmo"), ocaml_lib_dir, "compiler-libs/main.cmo").step);
+        step.dependOn(&b.addInstallFileWithDir(comp_dir.path(b, "driver/optmain.cmo"), ocaml_lib_dir, "compiler-libs/optmain.cmo").step);
+        step.dependOn(&b.addInstallFileWithDir(comp_dir.path(b, "toplevel/topstart.cmo"), ocaml_lib_dir, "compiler-libs/topstart.cmo").step);
+
+        const prof_exts = [_][]const u8{ "cmi", "cmo", "cmt", "cmti" };
+        for (prof_exts) |ext| {
+            step.dependOn(&b.addInstallFileWithDir(
+                comp_dir.path(b, b.fmt("tools/profiling.{s}", .{ext})),
+                ocaml_lib_dir,
+                b.fmt("profiling/profiling.{s}", .{ext}),
+            ).step);
+        }
+
+        // 7. Otherlibs -> <prefix>/lib/ocaml/<lib>/, C stubs -> <prefix>/lib/ocaml/ and stublibs/
+        const ol = self.target_otherlibs;
+        const otherlib_names = [_][]const u8{ "dynlink", "unix", "str", "threads", "runtime_events" };
+        for (otherlib_names) |lib_name| {
+            step.dependOn(&b.addInstallDirectory(.{
+                .source_dir = ol.otherlibs_dir.path(b, lib_name),
+                .install_dir = ocaml_lib_dir,
+                .install_subdir = lib_name,
+                .include_extensions = &.{ ".cma", ".cmi", ".cmt", ".cmti", ".mli", "META" },
+            }).step);
+        }
+
+        const static_stubs = [_]*std.Build.Step.Compile{
+            ol.libunix_byt,
+            ol.libunix_nat,
+            ol.libstr_byt,
+            ol.libstr_nat,
+            ol.libthreads_byt,
+            ol.libthreads_nat,
+            ol.libruntime_events_byt,
+            ol.libruntime_events_nat,
+        };
+        for (static_stubs) |st_lib| {
+            step.dependOn(&b.addInstallArtifact(st_lib, .{
+                .dest_dir = .{ .override = ocaml_lib_dir },
+            }).step);
+        }
+
+        const is_5_1_or_newer = self.src_info.version.sem_ver.order(.{ .major = 5, .minor = 1, .patch = 0 }) != .lt;
+        const dll_ext = if (self.target_cfg.is_windows) "dll" else "so";
+        const dll_entries = [_]struct { art: ?*std.Build.Step.Compile, name: []const u8 }{
+            .{ .art = ol.dllunix_byt, .name = if (is_5_1_or_newer) b.fmt("dllunixbyt.{s}", .{dll_ext}) else b.fmt("dllunix.{s}", .{dll_ext}) },
+            .{ .art = ol.dllstr_byt, .name = if (is_5_1_or_newer) b.fmt("dllcamlstrbyt.{s}", .{dll_ext}) else b.fmt("dllcamlstr.{s}", .{dll_ext}) },
+            .{ .art = ol.dllthreads_byt, .name = b.fmt("dllthreads.{s}", .{dll_ext}) },
+            .{ .art = ol.dllruntime_events_byt, .name = if (is_5_1_or_newer) b.fmt("dllcamlruntime_eventsbyt.{s}", .{dll_ext}) else b.fmt("dllcamlruntime_events.{s}", .{dll_ext}) },
+        };
+        for (dll_entries) |entry| {
+            if (entry.art) |dll| {
+                step.dependOn(&b.addInstallFileWithDir(
+                    dll.getEmittedBin(),
+                    stublibs_dir,
+                    entry.name,
+                ).step);
+            }
+        }
+
+        for (ol.headers) |hdr| {
+            step.dependOn(&b.addInstallFileWithDir(
+                hdr.source,
+                ocaml_lib_dir,
+                b.fmt("caml/{s}", .{hdr.dest_name}),
+            ).step);
+        }
     }
 };
 
@@ -127,39 +293,101 @@ pub fn build(self: *Self, options: BuildOptions) !Toolchain {
     const host_cfg = TargetConfig.fromTarget(b, options.compiler_host, self.src_info.version);
     const target_cfg = TargetConfig.fromTarget(b, options.compiler_target, self.src_info.version);
 
+    const bin_install_dir: std.Build.InstallDir = if (options.prefix) |p|
+        .{ .custom = b.fmt("{s}/bin", .{p}) }
+    else
+        .bin;
+    const lib_install_dir: std.Build.InstallDir = if (options.prefix) |p|
+        .{ .custom = b.fmt("{s}/lib/ocaml", .{p}) }
+    else
+        .{ .custom = "lib/ocaml" };
+
+    const install_bindir = b.getInstallPath(bin_install_dir, "");
+    const install_libdir = b.getInstallPath(lib_install_dir, "");
+
+    const is_5_5_or_newer = self.src_info.version.sem_ver.order(.{ .major = 5, .minor = 5, .patch = 0 }) != .lt;
+    const runtime_stdlib_dir = if (is_5_5_or_newer) "../lib/ocaml" else install_libdir;
+
     const target_rt = try runtime.buildRuntime(b, self.dep, .{
         .src_info = self.src_info,
         .target_cfg = target_cfg,
         .optimize = options.optimize,
+        .stdlib_dir = runtime_stdlib_dir,
     });
 
     const target_is_build = std.mem.eql(u8, target_cfg.triplet, build_cfg.triplet);
-    const build_ocamlrun = if (target_is_build)
-        target_rt.ocamlrun
-    else blk: {
-        const build_rt = try runtime.buildRuntime(b, self.dep, .{
+    const build_rt = if (target_is_build)
+        target_rt
+    else
+        try runtime.buildRuntime(b, self.dep, .{
             .src_info = self.src_info,
             .target_cfg = build_cfg,
             .optimize = options.optimize,
+            .stdlib_dir = runtime_stdlib_dir,
         });
-        break :blk build_rt.ocamlrun;
-    };
+
+    const host_rt = if (std.mem.eql(u8, host_cfg.triplet, target_cfg.triplet))
+        target_rt
+    else if (std.mem.eql(u8, host_cfg.triplet, build_cfg.triplet))
+        build_rt
+    else
+        try runtime.buildRuntime(b, self.dep, .{
+            .src_info = self.src_info,
+            .target_cfg = host_cfg,
+            .optimize = options.optimize,
+            .stdlib_dir = runtime_stdlib_dir,
+        });
 
     const target_stdlib = try stdlib.buildStdlib(b, self.dep, .{
         .src_info = self.src_info,
         .target_cfg = target_cfg,
         .target_rt = target_rt,
-        .build_ocamlrun = build_ocamlrun,
+        .build_ocamlrun = build_rt.ocamlrun,
         .optimize = options.optimize,
+        .target_bindir = install_bindir,
     });
 
-    return .{
-        .b = b,
-        .ocaml_dep = self.dep,
+    const target_compiler = try compiler.buildCompiler(b, self.dep, .{
+        .src_info = self.src_info,
         .host_cfg = host_cfg,
         .target_cfg = target_cfg,
         .target_rt = target_rt,
         .target_stdlib = target_stdlib,
+        .build_ocamlrun = build_rt.ocamlrun,
+        .build_ocamlyacc = build_rt.ocamlyacc,
+        .install_bindir = install_bindir,
+        .install_libdir = if (is_5_5_or_newer) "../lib/ocaml" else install_libdir,
+    });
+
+    const target_otherlibs = try otherlibs.buildOtherlibs(b, self.dep, .{
+        .src_info = self.src_info,
+        .target_cfg = target_cfg,
+        .target_rt = target_rt,
+        .target_stdlib = target_stdlib,
+        .compiler = target_compiler,
+        .build_ocamlrun = build_rt.ocamlrun,
+        .optimize = options.optimize,
+    });
+
+    const ld_conf_content = if (is_5_5_or_newer)
+        "./stublibs\n.\n"
+    else
+        b.fmt("{s}/stublibs\n{s}\n", .{ install_libdir, install_libdir });
+    const wf = b.addWriteFiles();
+    const ld_conf_lp = wf.add("ld.conf", ld_conf_content);
+
+    return .{
+        .b = b,
+        .ocaml_dep = self.dep,
+        .src_info = self.src_info,
+        .host_cfg = host_cfg,
+        .target_cfg = target_cfg,
+        .host_rt = host_rt,
+        .target_rt = target_rt,
+        .target_stdlib = target_stdlib,
+        .target_compiler = target_compiler,
+        .target_otherlibs = target_otherlibs,
+        .ld_conf = ld_conf_lp,
     };
 }
 
