@@ -10,20 +10,37 @@ pub const OcamlVersion = enum {
     @"5.1.1",
     @"5.0.0",
 
-    pub fn dependencyName(self: OcamlVersion) []const u8 {
-        return switch (self) {
-            .@"5.5.1" => "ocaml_5_5_1",
-            .@"5.4.1" => "ocaml_5_4_1",
-            .@"5.3.0" => "ocaml_5_3_0",
-            .@"5.2.1" => "ocaml_5_2_1",
-            .@"5.1.1" => "ocaml_5_1_1",
-            .@"5.0.0" => "ocaml_5_0_0",
-        };
+    pub fn slug(self: OcamlVersion, b: *std.Build) ![]const u8 {
+        return std.mem.replaceOwned(u8, b.allocator, @tagName(self), ".", "_");
+    }
+
+    pub fn dependencyName(self: OcamlVersion, b: *std.Build) ![]const u8 {
+        return b.fmt("ocaml_{s}", .{try self.slug(b)});
     }
 };
 
 pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
+
+    const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
+    const update_src = b.addUpdateSourceFiles();
+    for (std.enums.values(OcamlVersion)) |ver| {
+        if (b.lazyDependency(try ver.dependencyName(b), .{})) |dep| {
+            const file_name = b.fmt("v{s}.zon", .{try ver.slug(b)});
+            var cmd = Tools.Command{
+                .gen_manifests = .{
+                    .ocaml_src_dir = .of(dep.path("")),
+                    .out_file = .of(file_name),
+                },
+            };
+            _ = cmd.run(b);
+            update_src.addCopyFileToSource(
+                cmd.gen_manifests.out_file.lazyPath(),
+                b.fmt("build/manifests/{s}", .{file_name}),
+            );
+        }
+    }
+    gen_step.dependOn(&update_src.step);
 
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const ocaml_version = b.option(OcamlVersion, "ocaml-version", "ocaml version to build") orelse .@"5.5.1";
@@ -42,7 +59,7 @@ pub fn build(b: *std.Build) !void {
             break :target Ocaml.resolveTarget(b, str);
         };
 
-        if (b.lazyDependency(ocaml_version.dependencyName(), .{})) |ocaml_dep| {
+        if (b.lazyDependency(try ocaml_version.dependencyName(b), .{})) |ocaml_dep| {
             const prefix = b.option([]const u8, "ocaml-prefix", "install sub-prefix under zig-out") orelse b.fmt(
                 "{s}/host-{s}/target-{s}",
                 .{

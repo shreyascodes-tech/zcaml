@@ -7,12 +7,15 @@ pub const OutputDir = utils.OutputDir;
 
 const Self = @This();
 
+const gen_ocaml_sources = @import("gen_ocaml_sources.zig");
+
 pub const Command = union(enum) {
     hello: @import("hello.zig"),
     gen_runtime: @import("gen_runtime.zig"),
-    build_stdlib: @import("build_stdlib.zig"),
-    build_compiler: @import("build_compiler.zig"),
-    build_otherlibs: @import("build_otherlibs.zig"),
+    gen_manifests: @import("gen_manifests.zig"),
+    gen_stdlib_sources: gen_ocaml_sources.GenStdlibSources,
+    gen_compiler_sources: gen_ocaml_sources.GenCompilerSources,
+    prepend_emit_line: gen_ocaml_sources.PrependEmitLine,
 
     pub fn run(self: *Command, b: *std.Build) *std.Build.Step.Run {
         const tool_exe = (struct {
@@ -27,6 +30,14 @@ pub const Command = union(enum) {
                         .root_source_file = builder.path("build/tools/root.zig"),
                         .target = builder.graph.host,
                         .optimize = .Debug,
+                        .imports = &.{
+                            .{
+                                .name = "manifest",
+                                .module = builder.createModule(.{
+                                    .root_source_file = builder.path("build/manifests/manifest.zig"),
+                                }),
+                            },
+                        },
                     }),
                 });
 

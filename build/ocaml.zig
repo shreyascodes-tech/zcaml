@@ -98,44 +98,34 @@ pub const Toolchain = struct {
         }
 
         // 2. Bytecode compilers & tools -> <prefix>/bin/
-        const comp_dir = self.target_compiler.compiler_dir;
-        const dual_tools = [_][]const u8{
-            "ocamlc",
-            "ocamlopt",
-            "ocamllex",
-            "ocamldep",
-            "ocamlobjinfo",
+        const tc = self.target_compiler;
+        const dual_tools = [_]struct { name: []const u8, lp: std.Build.LazyPath }{
+            .{ .name = "ocamlc", .lp = tc.ocamlc_byte },
+            .{ .name = "ocamlopt", .lp = tc.ocamlopt_byte },
+            .{ .name = "ocamllex", .lp = tc.ocamllex_byte },
+            .{ .name = "ocamldep", .lp = tc.ocamldep_byte },
+            .{ .name = "ocamlobjinfo", .lp = tc.ocamlobjinfo_byte },
         };
         for (dual_tools) |tool| {
-            const byte_name = b.fmt("{s}.byte", .{tool});
-            const src_lp = comp_dir.path(b, b.fmt("bin/{s}", .{byte_name}));
-            step.dependOn(&b.addInstallFileWithDir(src_lp, bin_dir, byte_name).step);
-            step.dependOn(&b.addInstallFileWithDir(src_lp, bin_dir, tool).step);
+            const byte_name = b.fmt("{s}.byte", .{tool.name});
+            step.dependOn(&b.addInstallFileWithDir(tool.lp, bin_dir, byte_name).step);
+            step.dependOn(&b.addInstallFileWithDir(tool.lp, bin_dir, tool.name).step);
         }
 
-        const byt_only_tools = [_][]const u8{
-            "ocamlcmt",
-            "ocamlprof",
-            "ocamlcp",
-            "ocamloptp",
-            "ocamlmklib",
-            "ocamlmktop",
+        const byt_only_tools = [_]struct { name: []const u8, lp: std.Build.LazyPath }{
+            .{ .name = "ocamlcmt", .lp = tc.ocamlcmt_byte },
+            .{ .name = "ocamlprof", .lp = tc.ocamlprof_byte },
+            .{ .name = "ocamlcp", .lp = tc.ocamlcp_byte },
+            .{ .name = "ocamloptp", .lp = tc.ocamloptp_byte },
+            .{ .name = "ocamlmklib", .lp = tc.ocamlmklib_byte },
+            .{ .name = "ocamlmktop", .lp = tc.ocamlmktop_byte },
         };
         for (byt_only_tools) |tool| {
-            const src_lp = comp_dir.path(b, b.fmt("bin/{s}.byte", .{tool}));
-            step.dependOn(&b.addInstallFileWithDir(src_lp, bin_dir, tool).step);
+            step.dependOn(&b.addInstallFileWithDir(tool.lp, bin_dir, tool.name).step);
         }
 
-        step.dependOn(&b.addInstallFileWithDir(
-            comp_dir.path(b, "bin/ocaml"),
-            bin_dir,
-            "ocaml",
-        ).step);
-        step.dependOn(&b.addInstallFileWithDir(
-            comp_dir.path(b, "bin/expunge.byte"),
-            ocaml_lib_dir,
-            "expunge",
-        ).step);
+        step.dependOn(&b.addInstallFileWithDir(tc.ocaml_toplevel, bin_dir, "ocaml").step);
+        step.dependOn(&b.addInstallFileWithDir(tc.expunge_byte, ocaml_lib_dir, "expunge").step);
 
         // 3. Runtime static libraries -> <prefix>/lib/ocaml/
         step.dependOn(&b.addInstallArtifact(self.target_rt.libcamlrun, .{
@@ -189,56 +179,30 @@ pub const Toolchain = struct {
 
         // 6. Compilerlibs -> <prefix>/lib/ocaml/compiler-libs/ and profiling -> <prefix>/lib/ocaml/profiling/
         step.dependOn(&b.addInstallDirectory(.{
-            .source_dir = comp_dir.path(b, "compilerlibs"),
+            .source_dir = tc.compilerlibs_dir,
             .install_dir = ocaml_lib_dir,
             .install_subdir = "compiler-libs",
         }).step);
-        const complib_subdirs = [_][]const u8{
-            "utils",
-            "parsing",
-            "typing",
-            "bytecomp",
-            "file_formats",
-            "lambda",
-            "middle_end",
-            "middle_end/closure",
-            "middle_end/flambda",
-            "middle_end/flambda/base_types",
-            "asmcomp",
-            "driver",
-            "toplevel",
-            "toplevel/byte",
-        };
-        for (complib_subdirs) |sub| {
-            step.dependOn(&b.addInstallDirectory(.{
-                .source_dir = comp_dir.path(b, sub),
-                .install_dir = ocaml_lib_dir,
-                .install_subdir = "compiler-libs",
-                .include_extensions = &.{ ".cmi", ".cmt", ".cmti", ".mli" },
-            }).step);
-        }
-        step.dependOn(&b.addInstallFileWithDir(comp_dir.path(b, "driver/main.cmo"), ocaml_lib_dir, "compiler-libs/main.cmo").step);
-        step.dependOn(&b.addInstallFileWithDir(comp_dir.path(b, "driver/optmain.cmo"), ocaml_lib_dir, "compiler-libs/optmain.cmo").step);
-        step.dependOn(&b.addInstallFileWithDir(comp_dir.path(b, "toplevel/topstart.cmo"), ocaml_lib_dir, "compiler-libs/topstart.cmo").step);
-
-        const prof_exts = [_][]const u8{ "cmi", "cmo", "cmt", "cmti" };
-        for (prof_exts) |ext| {
-            step.dependOn(&b.addInstallFileWithDir(
-                comp_dir.path(b, b.fmt("tools/profiling.{s}", .{ext})),
-                ocaml_lib_dir,
-                b.fmt("profiling/profiling.{s}", .{ext}),
-            ).step);
-        }
+        step.dependOn(&b.addInstallDirectory(.{
+            .source_dir = tc.profiling_dir,
+            .install_dir = ocaml_lib_dir,
+            .install_subdir = "profiling",
+        }).step);
 
         // 7. Otherlibs -> <prefix>/lib/ocaml/<lib>/, C stubs -> <prefix>/lib/ocaml/ and stublibs/
         const ol = self.target_otherlibs;
-        const otherlib_names = [_][]const u8{ "dynlink", "unix", "str", "threads", "runtime_events" };
-        for (otherlib_names) |lib_name| {
+        const otherlib_dirs = [_]struct { name: []const u8, dir: std.Build.LazyPath }{
+            .{ .name = "dynlink", .dir = ol.dynlink_dir },
+            .{ .name = "unix", .dir = ol.unix_dir },
+            .{ .name = "str", .dir = ol.str_dir },
+            .{ .name = "threads", .dir = ol.threads_dir },
+            .{ .name = "runtime_events", .dir = ol.runtime_events_dir },
+        };
+        for (otherlib_dirs) |lib| {
             step.dependOn(&b.addInstallDirectory(.{
-                .source_dir = ol.otherlibs_dir.path(b, lib_name),
+                .source_dir = lib.dir,
                 .install_dir = ocaml_lib_dir,
-                .install_subdir = lib_name,
-                .include_extensions = &.{ ".cma", ".cmi", ".cmt", ".cmti", ".mli", "META" },
+                .install_subdir = lib.name,
             }).step);
         }
 

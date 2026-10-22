@@ -1,13 +1,97 @@
 const std = @import("std");
 const TargetConfig = @import("target_config.zig").TargetConfig;
 const SourceInfo = @import("source_info.zig").SourceInfo;
+const Manifest = @import("manifests/manifest.zig");
 const RuntimeArtifacts = @import("runtime.zig").RuntimeArtifacts;
 const StdlibArtifacts = @import("stdlib.zig").StdlibArtifacts;
 const Tools = @import("tools/root.zig");
 
 pub const CompilerArtifacts = struct {
-    compiler_dir: std.Build.LazyPath,
-    compilerlibs_meta: std.Build.LazyPath,
+    ocamlc_byte: std.Build.LazyPath,
+    ocamlopt_byte: std.Build.LazyPath,
+    ocamllex_byte: std.Build.LazyPath,
+    ocamldep_byte: std.Build.LazyPath,
+    ocamlobjinfo_byte: std.Build.LazyPath,
+    ocamlcmt_byte: std.Build.LazyPath,
+    ocamlprof_byte: std.Build.LazyPath,
+    ocamlcp_byte: std.Build.LazyPath,
+    ocamloptp_byte: std.Build.LazyPath,
+    ocamlmklib_byte: std.Build.LazyPath,
+    ocamlmktop_byte: std.Build.LazyPath,
+    expunge_byte: std.Build.LazyPath,
+    ocaml_toplevel: std.Build.LazyPath,
+    compilerlibs_dir: std.Build.LazyPath,
+    profiling_dir: std.Build.LazyPath,
+    gen_sources: GeneratedCompilerSources,
+
+    pub fn resolveSource(
+        self: CompilerArtifacts,
+        b: *std.Build,
+        ocaml_dep: *std.Build.Dependency,
+        arch: []const u8,
+        src_path: []const u8,
+    ) std.Build.LazyPath {
+        return self.gen_sources.resolve(b, ocaml_dep, arch, src_path);
+    }
+};
+
+pub const GeneratedCompilerSources = struct {
+    config_main_ml: std.Build.LazyPath,
+    config_boot_ml: std.Build.LazyPath,
+    domainstate_ml: std.Build.LazyPath,
+    domainstate_mli: std.Build.LazyPath,
+    runtimedef_ml: std.Build.LazyPath,
+    menhir_lib_mli: std.Build.LazyPath,
+    parser_ml: std.Build.LazyPath,
+    parser_mli: std.Build.LazyPath,
+    parsing_lexer_ml: std.Build.LazyPath,
+    byterntm_ml: ?std.Build.LazyPath,
+    opcodes_ml: std.Build.LazyPath,
+    opcodes_mli: std.Build.LazyPath,
+    opnames_ml: std.Build.LazyPath,
+    emit_ml: std.Build.LazyPath,
+    lex_parser_ml: std.Build.LazyPath,
+    lex_parser_mli: std.Build.LazyPath,
+    lex_lexer_ml: std.Build.LazyPath,
+
+    pub fn resolve(
+        self: GeneratedCompilerSources,
+        b: *std.Build,
+        ocaml_dep: *std.Build.Dependency,
+        arch: []const u8,
+        src_path: []const u8,
+    ) std.Build.LazyPath {
+        if (std.mem.startsWith(u8, src_path, "@gen/")) {
+            const name = src_path["@gen/".len..];
+            inline for (&.{
+                .{ "config_main.ml", self.config_main_ml },
+                .{ "config_boot.ml", self.config_boot_ml },
+                .{ "domainstate.ml", self.domainstate_ml },
+                .{ "domainstate.mli", self.domainstate_mli },
+                .{ "runtimedef.ml", self.runtimedef_ml },
+                .{ "camlinternalMenhirLib.mli", self.menhir_lib_mli },
+                .{ "parser.ml", self.parser_ml },
+                .{ "parser.mli", self.parser_mli },
+                .{ "parsing_lexer.ml", self.parsing_lexer_ml },
+                .{ "opcodes.ml", self.opcodes_ml },
+                .{ "opcodes.mli", self.opcodes_mli },
+                .{ "opnames.ml", self.opnames_ml },
+                .{ "emit.ml", self.emit_ml },
+                .{ "lex_parser.ml", self.lex_parser_ml },
+                .{ "lex_parser.mli", self.lex_parser_mli },
+                .{ "lex_lexer.ml", self.lex_lexer_ml },
+            }) |entry| {
+                if (std.mem.eql(u8, name, entry[0])) return entry[1];
+            }
+            if (std.mem.eql(u8, name, "byterntm.ml")) return self.byterntm_ml.?;
+            std.debug.panic("Unknown @gen/ source: '{s}'", .{src_path});
+        }
+        if (std.mem.startsWith(u8, src_path, "@arch/")) {
+            const name = src_path["@arch/".len..];
+            return ocaml_dep.path(b.fmt("asmcomp/{s}/{s}", .{ arch, name }));
+        }
+        return ocaml_dep.path(src_path);
+    }
 };
 
 pub const BuildCompilerOptions = struct {
@@ -22,32 +106,17 @@ pub const BuildCompilerOptions = struct {
     install_libdir: []const u8,
 };
 
-const core_include_dirs = [_][]const u8{
-    "utils",
-    "parsing",
-    "typing",
-    "bytecomp",
-    "file_formats",
-    "lambda",
-    "middle_end",
-    "middle_end/closure",
-    "middle_end/flambda",
-    "middle_end/flambda/base_types",
-    "asmcomp",
-    "driver",
-    "toplevel",
-    "tools",
-};
-
 pub fn buildCompiler(
     b: *std.Build,
     ocaml_dep: *std.Build.Dependency,
     options: BuildCompilerOptions,
 ) !CompilerArtifacts {
     const src_info = options.src_info;
+    const m = src_info.manifest;
     const v = src_info.version;
     const host_cfg = options.host_cfg;
     const target_cfg = options.target_cfg;
+    const is_intel = std.mem.eql(u8, target_cfg.arch, "amd64") or std.mem.eql(u8, target_cfg.arch, "i386");
 
     const is_5_5_or_newer = v.sem_ver.order(.{ .major = 5, .minor = 5, .patch = 0 }) != .lt;
     const is_5_2_or_newer = v.sem_ver.order(.{ .major = 5, .minor = 2, .patch = 0 }) != .lt;
@@ -66,443 +135,542 @@ pub fn buildCompiler(
         .{ .name = "VERSION", .value = v.version_string },
     });
 
-    const wf = b.addWriteFiles();
-    const config_main_lp = wf.add("config_main.ml", config_main_content);
-    const config_boot_lp = wf.add("config_boot.ml", config_boot_content);
-    const compilerlibs_meta_lp = wf.add("META", compilerlibs_meta_content);
+    const config_wf = b.addWriteFiles();
+    const config_main_lp = config_wf.add("config_main.ml", config_main_content);
+    const config_boot_lp = config_wf.add("config_boot.ml", config_boot_content);
 
-    // 2. Parse COMPFLAGS, ARCH_SPECIFIC, and PERVASIVES from upstream Makefiles
-    const compflags = if (is_5_1_or_newer)
-        src_info.parseMakefileListFromFile("Makefile.build_config.in", "OC_COMMON_COMPFLAGS", &.{})
-    else blk: {
-        const raw = src_info.parseMakefileList("COMPFLAGS", &.{
-            .{ .name = "INCLUDES", .values = &.{} },
-        });
-        break :blk raw;
-    };
-
-    const arch_specific_files = src_info.parseMakefileList("ARCH_SPECIFIC", &.{});
-
-    const stdlib_basenames = src_info.parseMakefileListFromFile("stdlib/StdlibModules", "STDLIB_MODULE_BASENAMES", &.{});
-    var stdlib_modules: std.ArrayList([]const u8) = .empty;
-    for (stdlib_basenames) |base| {
-        if (std.mem.eql(u8, base, "stdlib") or std.mem.startsWith(u8, base, "camlinternal")) {
-            try stdlib_modules.append(b.allocator, base);
-        } else {
-            var cap = try b.allocator.dupe(u8, base);
-            cap[0] = std.ascii.toUpper(cap[0]);
-            try stdlib_modules.append(b.allocator, b.fmt("stdlib__{s}", .{cap}));
-        }
-    }
-    const pervasives_modules = src_info.parseMakefileList("PERVASIVES", &.{
-        .{ .name = "STDLIB_MODULES", .values = stdlib_modules.items },
-    });
-
-    // 3. Parse compilerlibs, lex, and tools module lists from Makefile / Makefile.compilerlibs
-    const lists = try parseCompilerModuleLists(b, ocaml_dep, src_info, target_cfg.arch, is_5_2_or_newer, is_5_1_or_newer);
-
-    const launch_method = if (host_cfg.is_windows)
-        "exe"
-    else
-        b.fmt("sh {s}", .{options.install_bindir});
-
-    var cmd = Tools.Command{
-        .build_compiler = .{
-            .ocamlrun = .of(options.build_ocamlrun.getEmittedBin()),
-            .boot_ocamlc = .of(ocaml_dep.path("boot/ocamlc")),
-            .boot_ocamllex = .of(ocaml_dep.path("boot/ocamllex")),
-            .ocamlyacc = .of(options.build_ocamlyacc.getEmittedBin()),
-            .primitives = .of(options.target_rt.primitives),
-            .stdlib_dir = .of(options.target_stdlib.stdlib_dir),
+    // 2. Run pure-Zig generator for domainstate, runtimedef, and menhir parser files
+    var gen_src_cmd = Tools.Command{
+        .gen_compiler_sources = .{
             .ocaml_src_dir = .of(ocaml_dep.path("")),
-            .config_main_ml = .of(config_main_lp),
-            .config_boot_ml = .of(config_boot_lp),
-            .compilerlibs_meta = .of(compilerlibs_meta_lp),
-            .arch = target_cfg.arch,
+            .primitives = .of(options.target_rt.primitives),
             .arch64 = target_cfg.arch64,
-            .strict_yacc = is_5_1_or_newer,
-            .has_set_runtime_default = is_5_5_or_newer,
-            .host_libdir = "../lib/ocaml",
-            .launch_method = launch_method,
-            .runtime_search = "fallback",
-            .compflags = compflags,
-            .include_dirs = &core_include_dirs,
-            .arch_specific_files = arch_specific_files,
-            .pervasives_modules = pervasives_modules,
-            .ocamlcommon_cmos = lists.ocamlcommon_cmos,
-            .ocamlcommon_cmis = lists.ocamlcommon_cmis,
-            .ocamlbytecomp_cmos = lists.ocamlbytecomp_cmos,
-            .ocamlmiddleend_cmos = lists.ocamlmiddleend_cmos,
-            .ocamlmiddleend_cmis = lists.ocamlmiddleend_cmis,
-            .ocamloptcomp_cmos = lists.ocamloptcomp_cmos,
-            .ocamloptcomp_cmis = lists.ocamloptcomp_cmis,
-            .ocamltoplevel_cmos = lists.ocamltoplevel_cmos,
-            .ocamllex_cmos = lists.ocamllex_cmos,
-            .ocamlprof_cmos = lists.ocamlprof_cmos,
-            .ocamlcp_cmos = lists.ocamlcp_cmos,
-            .ocamloptp_cmos = lists.ocamloptp_cmos,
-            .ocamlmklib_cmos = lists.ocamlmklib_cmos,
-            .ocamlmktop_cmos = lists.ocamlmktop_cmos,
-            .out_dir = .of("compiler"),
+            .domainstate_ml = .of("domainstate.ml"),
+            .domainstate_mli = .of("domainstate.mli"),
+            .runtimedef_ml = .of("runtimedef.ml"),
+            .menhir_lib_mli = .of("camlinternalMenhirLib.mli"),
+            .parser_ml = .of("parser.ml"),
+            .parser_mli = .of("parser.mli"),
         },
     };
-    _ = cmd.run(b);
+    _ = gen_src_cmd.run(b);
+
+    // 3. Run ocamlyacc on lex/parser.mly and boot/ocamllex on .mll files via `b.addRunArtifact`
+    const yacc_run = b.addRunArtifact(options.build_ocamlyacc);
+    if (is_5_1_or_newer) yacc_run.addArg("--strict");
+    yacc_run.addArg("-b");
+    const yacc_prefix = yacc_run.addOutputFileArg("parser");
+    yacc_run.addFileArg(ocaml_dep.path("lex/parser.mly"));
+    const lex_parser_ml = yacc_prefix.dirname().path(b, "parser.ml");
+    const lex_parser_mli = yacc_prefix.dirname().path(b, "parser.mli");
+
+    const boot_ocamllex = ocaml_dep.path("boot/ocamllex");
+    const lex_lexer_ml = runOcamllex(b, options.build_ocamlrun, boot_ocamllex, ocaml_dep.path("lex/lexer.mll"), "lexer.ml");
+    const parsing_lexer_ml = runOcamllex(b, options.build_ocamlrun, boot_ocamllex, ocaml_dep.path("parsing/lexer.mll"), "lexer.ml");
+    const byterntm_ml = if (is_5_2_or_newer)
+        runOcamllex(b, options.build_ocamlrun, boot_ocamllex, ocaml_dep.path("bytecomp/byterntm.mll"), "byterntm.ml")
+    else
+        null;
+    const make_opcodes_ml = runOcamllex(b, options.build_ocamlrun, boot_ocamllex, ocaml_dep.path("tools/make_opcodes.mll"), "make_opcodes.ml");
+    const cvt_emit_ml = runOcamllex(b, options.build_ocamlrun, boot_ocamllex, ocaml_dep.path("tools/cvt_emit.mll"), "cvt_emit.ml");
+
+    // 4. Compile & link tools/make_opcodes.byte and tools/cvt_emit.byte, then generate opcodes.{ml,mli}, opnames.ml, emit.ml
+    const boot_ocamlc = ocaml_dep.path("boot/ocamlc");
+    const primitives = options.target_rt.primitives;
+    const stdlib_dir = options.target_stdlib.stdlib_dir;
+    const launch_method = if (host_cfg.is_windows) "exe" else b.fmt("sh {s}", .{options.install_bindir});
+
+    const make_opcodes_exe = compileSingleFileTool(b, options, boot_ocamlc, primitives, stdlib_dir, make_opcodes_ml, "make_opcodes", is_5_5_or_newer, launch_method);
+    const cvt_emit_exe = compileSingleFileTool(b, options, boot_ocamlc, primitives, stdlib_dir, cvt_emit_ml, "cvt_emit", is_5_5_or_newer, launch_method);
+
+    const instruct_h = ocaml_dep.path("runtime/caml/instruct.h");
+
+    const opcodes_ml = blk: {
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(make_opcodes_exe);
+        run.addArg("-opcodes");
+        run.setStdIn(.{ .lazy_path = instruct_h });
+        break :blk run.captureStdOut(.{});
+    };
+
+    const opcodes_mli = blk: {
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(boot_ocamlc);
+        run.addArgs(&.{ "-nostdlib", "-I" });
+        run.addDirectoryArg(stdlib_dir);
+        run.addArgs(&.{ "-use-prims" });
+        run.addFileArg(primitives);
+        run.addArgs(&.{ "-i", "-impl" });
+        run.addFileArg(opcodes_ml);
+        break :blk run.captureStdOut(.{});
+    };
+
+    const opnames_ml = blk: {
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(make_opcodes_exe);
+        run.addArg("-opnames");
+        run.setStdIn(.{ .lazy_path = instruct_h });
+        break :blk run.captureStdOut(.{});
+    };
+
+    const emit_ml = blk: {
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(cvt_emit_exe);
+        run.setStdIn(.{ .lazy_path = ocaml_dep.path(b.fmt("asmcomp/{s}/emit.mlp", .{target_cfg.arch})) });
+        const emit_body = run.captureStdOut(.{});
+
+        var prep_cmd = Tools.Command{
+            .prepend_emit_line = .{
+                .cvt_emit_output = .of(emit_body),
+                .arch = target_cfg.arch,
+                .out_emit_ml = .of("emit.ml"),
+            },
+        };
+        _ = prep_cmd.run(b);
+        break :blk prep_cmd.prepend_emit_line.out_emit_ml.lazyPath();
+    };
+
+    const gen_sources = GeneratedCompilerSources{
+        .config_main_ml = config_main_lp,
+        .config_boot_ml = config_boot_lp,
+        .domainstate_ml = gen_src_cmd.gen_compiler_sources.domainstate_ml.lazyPath(),
+        .domainstate_mli = gen_src_cmd.gen_compiler_sources.domainstate_mli.lazyPath(),
+        .runtimedef_ml = gen_src_cmd.gen_compiler_sources.runtimedef_ml.lazyPath(),
+        .menhir_lib_mli = gen_src_cmd.gen_compiler_sources.menhir_lib_mli.lazyPath(),
+        .parser_ml = gen_src_cmd.gen_compiler_sources.parser_ml.lazyPath(),
+        .parser_mli = gen_src_cmd.gen_compiler_sources.parser_mli.lazyPath(),
+        .parsing_lexer_ml = parsing_lexer_ml,
+        .byterntm_ml = byterntm_ml,
+        .opcodes_ml = opcodes_ml,
+        .opcodes_mli = opcodes_mli,
+        .opnames_ml = opnames_ml,
+        .emit_ml = emit_ml,
+        .lex_parser_ml = lex_parser_ml,
+        .lex_parser_mli = lex_parser_mli,
+        .lex_lexer_ml = lex_lexer_ml,
+    };
+
+    // 5. Schedule compiler .cmi waves and .cmo units via `b.addRunArtifact`
+    const compilerlibs_wf = b.addWriteFiles();
+    _ = compilerlibs_wf.add("META", compilerlibs_meta_content);
+    const profiling_wf = b.addWriteFiles();
+
+    const all_cmis_wf = b.addWriteFiles();
+    var prev_wave_dirs: std.ArrayList(std.Build.LazyPath) = .empty;
+    var cmi_map: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty;
+    var cmo_map: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty;
+
+    for (m.compiler_cmi_waves) |wave| {
+        const wave_wf = b.addWriteFiles();
+        for (wave) |u| {
+            if (u.only_intel and !is_intel) continue;
+
+            const is_tools = std.mem.startsWith(u8, u.key, "tools/");
+            const is_profiling = std.mem.eql(u8, u.key, "tools/profiling");
+            const src_lp = gen_sources.resolve(b, ocaml_dep, target_cfg.arch, u.src_path);
+
+            const run = b.addRunArtifact(options.build_ocamlrun);
+            run.addFileArg(boot_ocamlc);
+            run.addArgs(&.{ "-nostdlib", "-I" });
+            run.addDirectoryArg(stdlib_dir);
+            run.addArgs(&.{"-use-prims"});
+            run.addFileArg(primitives);
+            run.addArgs(m.compiler_compflags);
+            for (prev_wave_dirs.items) |wdir| {
+                run.addArg("-I");
+                run.addDirectoryArg(wdir);
+            }
+
+            if (u.is_ml_without_mli) {
+                run.addArgs(&.{ "-w", "-70", "-o" });
+                const cmo_lp = run.addOutputFileArg(u.cmo_name);
+                run.addArgs(&.{ "-c", "-impl" });
+                run.addFileArg(src_lp);
+
+                const cmi_lp = cmo_lp.dirname().path(b, u.cmi_name);
+                const cmt_name = b.fmt("{s}.cmt", .{u.cmo_name[0 .. u.cmo_name.len - 4]});
+                const cmt_lp = cmo_lp.dirname().path(b, cmt_name);
+
+                _ = wave_wf.addCopyFile(cmi_lp, u.cmi_name);
+                _ = all_cmis_wf.addCopyFile(cmi_lp, u.cmi_name);
+                try cmi_map.put(b.allocator, u.cmi_name, cmi_lp);
+                try cmo_map.put(b.allocator, u.key, cmo_lp);
+
+                if (!is_tools) {
+                    _ = compilerlibs_wf.addCopyFile(cmi_lp, u.cmi_name);
+                    _ = compilerlibs_wf.addCopyFile(cmt_lp, cmt_name);
+                } else if (is_profiling) {
+                    _ = profiling_wf.addCopyFile(cmi_lp, u.cmi_name);
+                    _ = profiling_wf.addCopyFile(cmo_lp, u.cmo_name);
+                    _ = profiling_wf.addCopyFile(cmt_lp, cmt_name);
+                }
+            } else {
+                const stem = u.cmi_name[0 .. u.cmi_name.len - 4];
+                const cmti_name = b.fmt("{s}.cmti", .{stem});
+                const mli_name = b.fmt("{s}.mli", .{stem});
+
+                run.addArg("-o");
+                const cmi_lp = run.addOutputFileArg(u.cmi_name);
+                run.addArgs(&.{ "-c", "-intf" });
+                run.addFileArg(src_lp);
+
+                const cmti_lp = cmi_lp.dirname().path(b, cmti_name);
+                _ = wave_wf.addCopyFile(cmi_lp, u.cmi_name);
+                _ = all_cmis_wf.addCopyFile(cmi_lp, u.cmi_name);
+                try cmi_map.put(b.allocator, u.cmi_name, cmi_lp);
+
+                if (!is_tools) {
+                    _ = compilerlibs_wf.addCopyFile(cmi_lp, u.cmi_name);
+                    _ = compilerlibs_wf.addCopyFile(cmti_lp, cmti_name);
+                    _ = compilerlibs_wf.addCopyFile(src_lp, mli_name);
+                } else if (is_profiling) {
+                    _ = profiling_wf.addCopyFile(cmi_lp, u.cmi_name);
+                    _ = profiling_wf.addCopyFile(cmti_lp, cmti_name);
+                }
+            }
+        }
+        try prev_wave_dirs.append(b.allocator, wave_wf.getDirectory());
+    }
+
+    const all_cmis_dir = all_cmis_wf.getDirectory();
+
+    for (m.compiler_cmo_units) |u| {
+        if (u.only_intel and !is_intel) continue;
+        if (cmo_map.contains(u.key)) continue;
+
+        const is_tools = std.mem.startsWith(u8, u.key, "tools/");
+        const is_profiling = std.mem.eql(u8, u.key, "tools/profiling");
+        const src_lp = gen_sources.resolve(b, ocaml_dep, target_cfg.arch, u.src_path);
+        const stem = u.cmo_name[0 .. u.cmo_name.len - 4];
+        const cmi_name = b.fmt("{s}.cmi", .{stem});
+
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(boot_ocamlc);
+        run.addArgs(&.{ "-nostdlib", "-I" });
+        run.addDirectoryArg(stdlib_dir);
+        run.addArg("-I");
+        run.addDirectoryArg(all_cmis_dir);
+        run.addArgs(&.{"-use-prims"});
+        run.addFileArg(primitives);
+        run.addArgs(m.compiler_compflags);
+        run.addArgs(u.extra_flags);
+        if (cmi_map.get(cmi_name)) |cmi_lp| {
+            run.addArg("-cmi-file");
+            run.addFileArg(cmi_lp);
+        } else {
+            run.addArgs(&.{ "-w", "-70" });
+        }
+        run.addArg("-o");
+
+        const cmo_lp = run.addOutputFileArg(u.cmo_name);
+        run.addArgs(&.{ "-c", "-impl" });
+        run.addFileArg(src_lp);
+
+        const cmt_name = b.fmt("{s}.cmt", .{stem});
+        const cmt_lp = cmo_lp.dirname().path(b, cmt_name);
+
+        try cmo_map.put(b.allocator, u.key, cmo_lp);
+        if (!is_tools) {
+            _ = compilerlibs_wf.addCopyFile(cmt_lp, cmt_name);
+        } else if (is_profiling) {
+            _ = profiling_wf.addCopyFile(cmo_lp, u.cmo_name);
+            _ = profiling_wf.addCopyFile(cmt_lp, cmt_name);
+        }
+    }
+
+    _ = compilerlibs_wf.addCopyFile(cmo_map.get("driver/main").?, "main.cmo");
+    _ = compilerlibs_wf.addCopyFile(cmo_map.get("driver/optmain").?, "optmain.cmo");
+    _ = compilerlibs_wf.addCopyFile(cmo_map.get("toplevel/topstart").?, "topstart.cmo");
+
+    // 6. Schedule lex .cmi waves and .cmo units via `b.addRunArtifact`
+    const lex_cmis_wf = b.addWriteFiles();
+    var lex_prev_waves: std.ArrayList(std.Build.LazyPath) = .empty;
+    var lex_cmi_map: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty;
+    var lex_cmo_map: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty;
+
+    for (m.lex_cmi_waves) |wave| {
+        const wave_wf = b.addWriteFiles();
+        for (wave) |u| {
+            const src_lp = gen_sources.resolve(b, ocaml_dep, target_cfg.arch, u.src_path);
+            const run = b.addRunArtifact(options.build_ocamlrun);
+            run.addFileArg(boot_ocamlc);
+            run.addArgs(&.{ "-nostdlib", "-I" });
+            run.addDirectoryArg(stdlib_dir);
+            run.addArgs(&.{"-use-prims"});
+            run.addFileArg(primitives);
+            run.addArgs(m.compiler_compflags);
+            for (lex_prev_waves.items) |wdir| {
+                run.addArg("-I");
+                run.addDirectoryArg(wdir);
+            }
+
+            if (u.is_ml_without_mli) {
+                run.addArgs(&.{ "-w", "-70", "-o" });
+                const cmo_lp = run.addOutputFileArg(u.cmo_name);
+                run.addArgs(&.{ "-c", "-impl" });
+                run.addFileArg(src_lp);
+                const cmi_lp = cmo_lp.dirname().path(b, u.cmi_name);
+                _ = wave_wf.addCopyFile(cmi_lp, u.cmi_name);
+                _ = lex_cmis_wf.addCopyFile(cmi_lp, u.cmi_name);
+                try lex_cmi_map.put(b.allocator, u.cmi_name, cmi_lp);
+                try lex_cmo_map.put(b.allocator, u.key, cmo_lp);
+            } else {
+                run.addArg("-o");
+                const cmi_lp = run.addOutputFileArg(u.cmi_name);
+                run.addArgs(&.{ "-c", "-intf" });
+                run.addFileArg(src_lp);
+                _ = wave_wf.addCopyFile(cmi_lp, u.cmi_name);
+                _ = lex_cmis_wf.addCopyFile(cmi_lp, u.cmi_name);
+                try lex_cmi_map.put(b.allocator, u.cmi_name, cmi_lp);
+            }
+        }
+        try lex_prev_waves.append(b.allocator, wave_wf.getDirectory());
+    }
+
+    const all_lex_cmis_dir = lex_cmis_wf.getDirectory();
+    for (m.lex_cmo_units) |u| {
+        if (lex_cmo_map.contains(u.key)) continue;
+        const src_lp = gen_sources.resolve(b, ocaml_dep, target_cfg.arch, u.src_path);
+        const stem = u.cmo_name[0 .. u.cmo_name.len - 4];
+        const cmi_name = b.fmt("{s}.cmi", .{stem});
+
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(boot_ocamlc);
+        run.addArgs(&.{ "-nostdlib", "-I" });
+        run.addDirectoryArg(stdlib_dir);
+        run.addArg("-I");
+        run.addDirectoryArg(all_lex_cmis_dir);
+        run.addArgs(&.{"-use-prims"});
+        run.addFileArg(primitives);
+        run.addArgs(m.compiler_compflags);
+        if (lex_cmi_map.get(cmi_name)) |cmi_lp| {
+            run.addArg("-cmi-file");
+            run.addFileArg(cmi_lp);
+        } else {
+            run.addArgs(&.{ "-w", "-70" });
+        }
+        run.addArg("-o");
+        const cmo_lp = run.addOutputFileArg(u.cmo_name);
+        run.addArgs(&.{ "-c", "-impl" });
+        run.addFileArg(src_lp);
+        try lex_cmo_map.put(b.allocator, u.key, cmo_lp);
+    }
+
+    // 7. Link compilerlibs/*.cma
+    const ocamlcommon_cma = linkCma(b, options, boot_ocamlc, primitives, stdlib_dir, "ocamlcommon.cma", m.ocamlcommon_cmos, &cmo_map, is_intel, &.{"-linkall"});
+    const ocamlbytecomp_cma = linkCma(b, options, boot_ocamlc, primitives, stdlib_dir, "ocamlbytecomp.cma", m.ocamlbytecomp_cmos, &cmo_map, is_intel, &.{});
+    const ocamlmiddleend_cma = linkCma(b, options, boot_ocamlc, primitives, stdlib_dir, "ocamlmiddleend.cma", m.ocamlmiddleend_cmos, &cmo_map, is_intel, &.{});
+    const ocamloptcomp_cma = linkCma(b, options, boot_ocamlc, primitives, stdlib_dir, "ocamloptcomp.cma", m.ocamloptcomp_cmos, &cmo_map, is_intel, &.{});
+    const ocamltoplevel_cma = linkCma(b, options, boot_ocamlc, primitives, stdlib_dir, "ocamltoplevel.cma", m.ocamltoplevel_cmos, &cmo_map, is_intel, &.{});
+
+    _ = compilerlibs_wf.addCopyFile(ocamlcommon_cma, "ocamlcommon.cma");
+    _ = compilerlibs_wf.addCopyFile(ocamlbytecomp_cma, "ocamlbytecomp.cma");
+    _ = compilerlibs_wf.addCopyFile(ocamlmiddleend_cma, "ocamlmiddleend.cma");
+    _ = compilerlibs_wf.addCopyFile(ocamloptcomp_cma, "ocamloptcomp.cma");
+    _ = compilerlibs_wf.addCopyFile(ocamltoplevel_cma, "ocamltoplevel.cma");
+
+    // 8. Link bytecode compilers and tools
+    const ocamlc_byte = linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlc.byte", &.{ ocamlcommon_cma, ocamlbytecomp_cma, cmo_map.get("driver/main").? }, &.{ "-compat-32", "-g" }, is_5_5_or_newer, launch_method);
+    const ocamlopt_byte = linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlopt.byte", &.{ ocamlcommon_cma, ocamloptcomp_cma, cmo_map.get("driver/optmain").? }, &.{"-g"}, is_5_5_or_newer, launch_method);
+    const ocamllex_byte = linkProgramFromKeys(b, options, boot_ocamlc, primitives, stdlib_dir, all_lex_cmis_dir, "ocamllex.byte", m.ocamllex_cmos, &lex_cmo_map, &.{"-compat-32"}, is_5_5_or_newer, launch_method);
+    const expunge_byte = linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "expunge.byte", &.{ ocamlcommon_cma, ocamlbytecomp_cma, cmo_map.get("toplevel/expunge").? }, &.{}, is_5_5_or_newer, launch_method);
+    const ocamldep_byte = linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamldep.byte", &.{ ocamlcommon_cma, ocamlbytecomp_cma, cmo_map.get("tools/ocamldep").? }, &.{"-compat-32"}, is_5_5_or_newer, launch_method);
+    const ocamlobjinfo_byte = linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlobjinfo.byte", &.{ ocamlcommon_cma, ocamlbytecomp_cma, ocamlmiddleend_cma, cmo_map.get("tools/objinfo").? }, &.{}, is_5_5_or_newer, launch_method);
+    const ocamlcmt_byte = linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlcmt.byte", &.{ ocamlcommon_cma, ocamlbytecomp_cma, cmo_map.get("tools/ocamlcmt").? }, &.{}, is_5_5_or_newer, launch_method);
+    const ocamlprof_byte = linkProgramFromKeys(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlprof.byte", m.ocamlprof_cmos, &cmo_map, &.{}, is_5_5_or_newer, launch_method);
+    const ocamlcp_byte = linkProgramFromKeys(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlcp.byte", m.ocamlcp_cmos, &cmo_map, &.{}, is_5_5_or_newer, launch_method);
+    const ocamloptp_byte = linkProgramFromKeys(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamloptp.byte", m.ocamloptp_cmos, &cmo_map, &.{}, is_5_5_or_newer, launch_method);
+    const ocamlmklib_byte = linkProgramFromKeys(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlmklib.byte", m.ocamlmklib_cmos, &cmo_map, &.{}, is_5_5_or_newer, launch_method);
+    const ocamlmktop_byte = linkProgramFromKeys(b, options, boot_ocamlc, primitives, stdlib_dir, all_cmis_dir, "ocamlmktop.byte", m.ocamlmktop_cmos, &cmo_map, &.{}, is_5_5_or_newer, launch_method);
+
+    // 9. Link ocaml.tmp and expunge to produce ocaml toplevel
+    const ocaml_tmp = linkProgram(
+        b,
+        options,
+        boot_ocamlc,
+        primitives,
+        stdlib_dir,
+        all_cmis_dir,
+        "ocaml.tmp",
+        &.{ ocamlcommon_cma, ocamlbytecomp_cma, ocamltoplevel_cma, cmo_map.get("toplevel/topstart").? },
+        &.{ "-linkall", "-g" },
+        is_5_5_or_newer,
+        launch_method,
+    );
+
+    const ocaml_toplevel = blk: {
+        const run = b.addRunArtifact(options.build_ocamlrun);
+        run.addFileArg(expunge_byte);
+        run.addFileArg(ocaml_tmp);
+        const out_lp = run.addOutputFileArg("ocaml");
+        run.addArgs(m.pervasives_modules);
+        break :blk out_lp;
+    };
 
     return .{
-        .compiler_dir = cmd.build_compiler.out_dir.lazyPath(),
-        .compilerlibs_meta = compilerlibs_meta_lp,
+        .ocamlc_byte = ocamlc_byte,
+        .ocamlopt_byte = ocamlopt_byte,
+        .ocamllex_byte = ocamllex_byte,
+        .ocamldep_byte = ocamldep_byte,
+        .ocamlobjinfo_byte = ocamlobjinfo_byte,
+        .ocamlcmt_byte = ocamlcmt_byte,
+        .ocamlprof_byte = ocamlprof_byte,
+        .ocamlcp_byte = ocamlcp_byte,
+        .ocamloptp_byte = ocamloptp_byte,
+        .ocamlmklib_byte = ocamlmklib_byte,
+        .ocamlmktop_byte = ocamlmktop_byte,
+        .expunge_byte = expunge_byte,
+        .ocaml_toplevel = ocaml_toplevel,
+        .compilerlibs_dir = compilerlibs_wf.getDirectory(),
+        .profiling_dir = profiling_wf.getDirectory(),
+        .gen_sources = gen_sources,
     };
 }
 
-const ModuleLists = struct {
-    ocamlcommon_cmos: []const []const u8,
-    ocamlcommon_cmis: []const []const u8,
-    ocamlbytecomp_cmos: []const []const u8,
-    ocamlmiddleend_cmos: []const []const u8,
-    ocamlmiddleend_cmis: []const []const u8,
-    ocamloptcomp_cmos: []const []const u8,
-    ocamloptcomp_cmis: []const []const u8,
-    ocamltoplevel_cmos: []const []const u8,
-    ocamllex_cmos: []const []const u8,
-    ocamlprof_cmos: []const []const u8,
-    ocamlcp_cmos: []const []const u8,
-    ocamloptp_cmos: []const []const u8,
-    ocamlmklib_cmos: []const []const u8,
-    ocamlmktop_cmos: []const []const u8,
-};
-
-fn parseCompilerModuleLists(
+fn runOcamllex(
     b: *std.Build,
-    ocaml_dep: *std.Build.Dependency,
-    src_info: SourceInfo,
-    arch: []const u8,
-    is_5_2_or_newer: bool,
-    is_5_1_or_newer: bool,
-) !ModuleLists {
-    const is_intel = std.mem.eql(u8, arch, "amd64") or std.mem.eql(u8, arch, "i386");
-
-    if (is_5_2_or_newer) {
-        const utils_sources = src_info.parseMakefileList("utils_SOURCES", &.{});
-        const parsing_sources = src_info.parseMakefileList("parsing_SOURCES", &.{});
-        const typing_sources = src_info.parseMakefileList("typing_SOURCES", &.{});
-        const lambda_sources = src_info.parseMakefileList("lambda_SOURCES", &.{});
-        const comp_sources = src_info.parseMakefileList("comp_SOURCES", &.{});
-        const ocamlcommon_sources = src_info.parseMakefileList("ocamlcommon_SOURCES", &.{
-            .{ .name = "utils_SOURCES", .values = utils_sources },
-            .{ .name = "parsing_SOURCES", .values = parsing_sources },
-            .{ .name = "typing_SOURCES", .values = typing_sources },
-            .{ .name = "lambda_SOURCES", .values = lambda_sources },
-            .{ .name = "comp_SOURCES", .values = comp_sources },
-        });
-        const ocamlbytecomp_sources = src_info.parseMakefileList("ocamlbytecomp_SOURCES", &.{});
-        const middle_end_closure_sources = src_info.parseMakefileList("middle_end_closure_SOURCES", &.{});
-        const middle_end_flambda_sources = src_info.parseMakefileList("middle_end_flambda_SOURCES", &.{});
-        const ocamlmiddleend_sources = src_info.parseMakefileList("ocamlmiddleend_SOURCES", &.{
-            .{ .name = "middle_end_closure_SOURCES", .values = middle_end_closure_sources },
-            .{ .name = "middle_end_flambda_SOURCES", .values = middle_end_flambda_sources },
-        });
-        const intel_sources = src_info.parseMakefileList("intel_SOURCES", &.{});
-        const arch_specific_sources: []const []const u8 = if (is_intel) intel_sources else &.{};
-        const asmcomp_sources = src_info.parseMakefileList("asmcomp_SOURCES", &.{
-            .{ .name = "arch_specific_SOURCES", .values = arch_specific_sources },
-        });
-        const ocamloptcomp_sources = src_info.parseMakefileList("ocamloptcomp_SOURCES", &.{
-            .{ .name = "ocamlmiddleend_SOURCES", .values = ocamlmiddleend_sources },
-            .{ .name = "asmcomp_SOURCES", .values = asmcomp_sources },
-        });
-        const ocamltoplevel_sources = src_info.parseMakefileList("ocamltoplevel_SOURCES", &.{});
-        const ocamllex_sources = src_info.parseMakefileList("ocamllex_SOURCES", &.{});
-        const ocamlprof_sources = src_info.parseMakefileList("ocamlprof_SOURCES", &.{});
-        const ocamlcp_common_sources = src_info.parseMakefileList("ocamlcp_ocamloptp_SOURCES", &.{});
-        const ocamlcp_sources = src_info.parseMakefileList("ocamlcp_SOURCES", &.{
-            .{ .name = "ocamlcp_ocamloptp_SOURCES", .values = ocamlcp_common_sources },
-        });
-        const ocamloptp_sources = src_info.parseMakefileList("ocamloptp_SOURCES", &.{
-            .{ .name = "ocamlcp_ocamloptp_SOURCES", .values = ocamlcp_common_sources },
-        });
-        const ocamlmklib_sources = src_info.parseMakefileList("ocamlmklib_SOURCES", &.{});
-        const ocamlmktop_sources = src_info.parseMakefileList("ocamlmktop_SOURCES", &.{});
-
-        const common_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlcommon_sources);
-        const bytecomp_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlbytecomp_sources);
-        const middleend_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlmiddleend_sources);
-        const optcomp_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamloptcomp_sources);
-        const toplevel_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamltoplevel_sources);
-        const lex_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamllex_sources);
-        const prof_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlprof_sources);
-        const cp_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlcp_sources);
-        const optp_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamloptp_sources);
-        const mklib_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlmklib_sources);
-        const mktop_split = try splitSourcesToBytecodeUnits(b, ocaml_dep, ocamlmktop_sources);
-
-        return .{
-            .ocamlcommon_cmos = common_split.cmos,
-            .ocamlcommon_cmis = common_split.extra_cmis,
-            .ocamlbytecomp_cmos = bytecomp_split.cmos,
-            .ocamlmiddleend_cmos = middleend_split.cmos,
-            .ocamlmiddleend_cmis = middleend_split.extra_cmis,
-            .ocamloptcomp_cmos = optcomp_split.cmos,
-            .ocamloptcomp_cmis = optcomp_split.extra_cmis,
-            .ocamltoplevel_cmos = toplevel_split.cmos,
-            .ocamllex_cmos = lex_split.cmos,
-            .ocamlprof_cmos = prof_split.cmos,
-            .ocamlcp_cmos = cp_split.cmos,
-            .ocamloptp_cmos = optp_split.cmos,
-            .ocamlmklib_cmos = mklib_split.cmos,
-            .ocamlmktop_cmos = mktop_split.cmos,
-        };
-    }
-
-    // OCaml 5.0 and 5.1: parse from compilerlibs/Makefile.compilerlibs
-    const cl_file = "compilerlibs/Makefile.compilerlibs";
-    const cl_src = SourceInfo.readFile(b, ocaml_dep, cl_file);
-
-    const utils_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "UTILS", &.{});
-    const utils_cmis = src_info.parseMakefileListFromSourceAllowEmpty(cl_file, cl_src, "UTILS_CMI", &.{});
-    const parsing_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "PARSING", &.{});
-    const parsing_cmis = src_info.parseMakefileListFromSource(cl_file, cl_src, "PARSING_CMI", &.{});
-    const typing_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "TYPING", &.{});
-    const typing_cmis = src_info.parseMakefileListFromSource(cl_file, cl_src, "TYPING_CMI", &.{});
-    const lambda_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "LAMBDA", &.{});
-    const lambda_cmis = src_info.parseMakefileListFromSourceAllowEmpty(cl_file, cl_src, "LAMBDA_CMI", &.{});
-    const comp_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "COMP", &.{});
-    const comp_cmis = src_info.parseMakefileListFromSource(cl_file, cl_src, "COMP_CMI", &.{});
-
-    const common_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "COMMON", &.{
-        .{ .name = "UTILS", .values = utils_cmos },
-        .{ .name = "PARSING", .values = parsing_cmos },
-        .{ .name = "TYPING", .values = typing_cmos },
-        .{ .name = "LAMBDA", .values = lambda_cmos },
-        .{ .name = "COMP", .values = comp_cmos },
-    });
-    const common_cmis = src_info.parseMakefileListFromSource(cl_file, cl_src, "COMMON_CMI", &.{
-        .{ .name = "UTILS_CMI", .values = utils_cmis },
-        .{ .name = "PARSING_CMI", .values = parsing_cmis },
-        .{ .name = "TYPING_CMI", .values = typing_cmis },
-        .{ .name = "LAMBDA_CMI", .values = lambda_cmis },
-        .{ .name = "COMP_CMI", .values = comp_cmis },
-    });
-
-    const bytecomp_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "BYTECOMP", &.{});
-
-    const middle_end_closure = src_info.parseMakefileListFromSource(cl_file, cl_src, "MIDDLE_END_CLOSURE", &.{});
-    const middle_end_closure_cmi = src_info.parseMakefileListFromSourceAllowEmpty(cl_file, cl_src, "MIDDLE_END_CLOSURE_CMI", &.{});
-    const middle_end_flambda = src_info.parseMakefileListFromSource(cl_file, cl_src, "MIDDLE_END_FLAMBDA", &.{});
-    const middle_end_flambda_cmi = src_info.parseMakefileListFromSource(cl_file, cl_src, "MIDDLE_END_FLAMBDA_CMI", &.{});
-    const middle_end_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "MIDDLE_END", &.{
-        .{ .name = "MIDDLE_END_CLOSURE", .values = middle_end_closure },
-        .{ .name = "MIDDLE_END_FLAMBDA", .values = middle_end_flambda },
-    });
-    const middle_end_cmis = src_info.parseMakefileListFromSource(cl_file, cl_src, "MIDDLE_END_CMI", &.{
-        .{ .name = "MIDDLE_END_CLOSURE_CMI", .values = middle_end_closure_cmi },
-        .{ .name = "MIDDLE_END_FLAMBDA_CMI", .values = middle_end_flambda_cmi },
-    });
-
-    const intel_asm = src_info.parseMakefileListFromSource(cl_file, cl_src, "INTEL_ASM", &.{});
-    const intel_asm_cmi = src_info.parseMakefileListFromSource(cl_file, cl_src, "INTEL_ASM_CMI", &.{});
-    const arch_asm: []const []const u8 = if (is_intel) intel_asm else &.{};
-    const arch_asm_cmi: []const []const u8 = if (is_intel) intel_asm_cmi else &.{};
-    const asmcomp_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "ASMCOMP", &.{
-        .{ .name = "ARCH_SPECIFIC_ASMCOMP", .values = arch_asm },
-    });
-    const asmcomp_cmis = src_info.parseMakefileListFromSourceAllowEmpty(cl_file, cl_src, "ASMCOMP_CMI", &.{
-        .{ .name = "ARCH_SPECIFIC_ASMCOMP_CMI", .values = arch_asm_cmi },
-    });
-
-    const optcomp_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "OPTCOMP", &.{
-        .{ .name = "MIDDLE_END", .values = middle_end_cmos },
-        .{ .name = "ASMCOMP", .values = asmcomp_cmos },
-    });
-    const optcomp_cmis = src_info.parseMakefileListFromSource(cl_file, cl_src, "OPTCOMP_CMI", &.{
-        .{ .name = "MIDDLE_END_CMI", .values = middle_end_cmis },
-        .{ .name = "ASMCOMP_CMI", .values = asmcomp_cmis },
-    });
-    const toplevel_cmos = src_info.parseMakefileListFromSource(cl_file, cl_src, "TOPLEVEL", &.{});
-
-    if (is_5_1_or_newer) {
-        const lex_mods = src_info.parseMakefileList("ocamllex_MODULES", &.{});
-        const prof_mods = src_info.parseMakefileList("ocamlprof_MODULES", &.{});
-        const cp_common_mods = src_info.parseMakefileList("ocamlcp_ocamloptp_MODULES", &.{});
-        const cp_mods = src_info.parseMakefileList("ocamlcp_MODULES", &.{
-            .{ .name = "ocamlcp_ocamloptp_MODULES", .values = cp_common_mods },
-        });
-        const optp_mods = src_info.parseMakefileList("ocamloptp_MODULES", &.{
-            .{ .name = "ocamlcp_ocamloptp_MODULES", .values = cp_common_mods },
-        });
-        const mklib_mods = src_info.parseMakefileList("ocamlmklib_MODULES", &.{});
-        const mktop_mods = src_info.parseMakefileList("ocamlmktop_MODULES", &.{});
-
-        return .{
-            .ocamlcommon_cmos = common_cmos,
-            .ocamlcommon_cmis = common_cmis,
-            .ocamlbytecomp_cmos = bytecomp_cmos,
-            .ocamlmiddleend_cmos = middle_end_cmos,
-            .ocamlmiddleend_cmis = middle_end_cmis,
-            .ocamloptcomp_cmos = optcomp_cmos,
-            .ocamloptcomp_cmis = optcomp_cmis,
-            .ocamltoplevel_cmos = toplevel_cmos,
-            .ocamllex_cmos = try resolveModulesToCmos(b, ocaml_dep, lex_mods),
-            .ocamlprof_cmos = try resolveModulesToCmos(b, ocaml_dep, prof_mods),
-            .ocamlcp_cmos = try resolveModulesToCmos(b, ocaml_dep, cp_mods),
-            .ocamloptp_cmos = try resolveModulesToCmos(b, ocaml_dep, optp_mods),
-            .ocamlmklib_cmos = try resolveModulesToCmos(b, ocaml_dep, mklib_mods),
-            .ocamlmktop_cmos = try resolveModulesToCmos(b, ocaml_dep, mktop_mods),
-        };
-    } else {
-        // OCaml 5.0: lex/Makefile and tools/Makefile
-        const lex_objs = src_info.parseMakefileListFromFile("lex/Makefile", "OBJS", &.{});
-        var lex_cmos: std.ArrayList([]const u8) = .empty;
-        for (lex_objs) |obj| {
-            try lex_cmos.append(b.allocator, b.fmt("lex/{s}", .{obj}));
-        }
-
-        const tools_mf = "tools/Makefile";
-        const prof_objs = src_info.parseMakefileListFromFile(tools_mf, "OCAMLPROF", &.{});
-        const cp_common_objs = src_info.parseMakefileListFromFile(tools_mf, "OCAMLCP", &.{});
-        const mklib_objs = src_info.parseMakefileListFromFile(tools_mf, "OCAMLMKLIB", &.{});
-        const mktop_objs = src_info.parseMakefileListFromFile(tools_mf, "OCAMLMKTOP", &.{});
-
-        var cp_objs: std.ArrayList([]const u8) = .empty;
-        try cp_objs.appendSlice(b.allocator, cp_common_objs);
-        try cp_objs.append(b.allocator, "ocamlcp.cmo");
-
-        var optp_objs: std.ArrayList([]const u8) = .empty;
-        try optp_objs.appendSlice(b.allocator, cp_common_objs);
-        try optp_objs.append(b.allocator, "ocamloptp.cmo");
-
-        return .{
-            .ocamlcommon_cmos = common_cmos,
-            .ocamlcommon_cmis = common_cmis,
-            .ocamlbytecomp_cmos = bytecomp_cmos,
-            .ocamlmiddleend_cmos = middle_end_cmos,
-            .ocamlmiddleend_cmis = middle_end_cmis,
-            .ocamloptcomp_cmos = optcomp_cmos,
-            .ocamloptcomp_cmis = optcomp_cmis,
-            .ocamltoplevel_cmos = toplevel_cmos,
-            .ocamllex_cmos = lex_cmos.items,
-            .ocamlprof_cmos = try resolveModulesToCmos(b, ocaml_dep, prof_objs),
-            .ocamlcp_cmos = try resolveModulesToCmos(b, ocaml_dep, cp_objs.items),
-            .ocamloptp_cmos = try resolveModulesToCmos(b, ocaml_dep, optp_objs.items),
-            .ocamlmklib_cmos = try resolveModulesToCmos(b, ocaml_dep, mklib_objs),
-            .ocamlmktop_cmos = try resolveModulesToCmos(b, ocaml_dep, mktop_objs),
-        };
-    }
+    build_ocamlrun: *std.Build.Step.Compile,
+    boot_ocamllex: std.Build.LazyPath,
+    src_mll: std.Build.LazyPath,
+    out_name: []const u8,
+) std.Build.LazyPath {
+    const run = b.addRunArtifact(build_ocamlrun);
+    run.addFileArg(boot_ocamllex);
+    run.addArgs(&.{ "-q", "-o" });
+    const out_lp = run.addOutputFileArg(out_name);
+    run.addFileArg(src_mll);
+    return out_lp;
 }
 
-const SplitUnits = struct {
-    cmos: []const []const u8,
-    extra_cmis: []const []const u8,
-};
-
-fn splitSourcesToBytecodeUnits(
+fn compileSingleFileTool(
     b: *std.Build,
-    ocaml_dep: *std.Build.Dependency,
-    sources: []const []const u8,
-) !SplitUnits {
-    const alloc = b.allocator;
-    var cmos: std.ArrayList([]const u8) = .empty;
-    var cmo_set: std.StringHashMapUnmanaged(void) = .empty;
-    var mli_candidates: std.ArrayList([]const u8) = .empty;
+    options: BuildCompilerOptions,
+    boot_ocamlc: std.Build.LazyPath,
+    primitives: std.Build.LazyPath,
+    stdlib_dir: std.Build.LazyPath,
+    src_ml: std.Build.LazyPath,
+    name: []const u8,
+    has_set_runtime_default: bool,
+    launch_method: []const u8,
+) std.Build.LazyPath {
+    const comp_run = b.addRunArtifact(options.build_ocamlrun);
+    comp_run.addFileArg(boot_ocamlc);
+    comp_run.addArgs(&.{ "-nostdlib", "-I" });
+    comp_run.addDirectoryArg(stdlib_dir);
+    comp_run.addArgs(&.{"-use-prims"});
+    comp_run.addFileArg(primitives);
+    comp_run.addArgs(&.{ "-w", "-70", "-o" });
+    const cmo_lp = comp_run.addOutputFileArg(b.fmt("{s}.cmo", .{name}));
+    comp_run.addArgs(&.{ "-c", "-impl" });
+    comp_run.addFileArg(src_ml);
 
-    for (sources) |raw_src| {
-        if (std.mem.indexOf(u8, raw_src, "/native/") != null) continue;
-        const resolved = resolveVpathSource(b, ocaml_dep, raw_src);
-
-        if (std.mem.endsWith(u8, resolved, ".mly")) {
-            const base = resolved[0 .. resolved.len - 4];
-            const cmo = b.fmt("{s}.cmo", .{base});
-            if (!cmo_set.contains(cmo)) {
-                try cmo_set.put(alloc, cmo, {});
-                try cmos.append(alloc, cmo);
-            }
-        } else if (std.mem.endsWith(u8, resolved, ".mll")) {
-            const base = resolved[0 .. resolved.len - 4];
-            const cmo = b.fmt("{s}.cmo", .{base});
-            if (!cmo_set.contains(cmo)) {
-                try cmo_set.put(alloc, cmo, {});
-                try cmos.append(alloc, cmo);
-            }
-        } else if (std.mem.endsWith(u8, resolved, ".ml.in")) {
-            const base = resolved[0 .. resolved.len - 6];
-            const cmo = b.fmt("{s}.cmo", .{base});
-            if (!cmo_set.contains(cmo)) {
-                try cmo_set.put(alloc, cmo, {});
-                try cmos.append(alloc, cmo);
-            }
-        } else if (std.mem.endsWith(u8, resolved, ".ml")) {
-            const base = resolved[0 .. resolved.len - 3];
-            const cmo = b.fmt("{s}.cmo", .{base});
-            if (!cmo_set.contains(cmo)) {
-                try cmo_set.put(alloc, cmo, {});
-                try cmos.append(alloc, cmo);
-            }
-        } else if (std.mem.endsWith(u8, resolved, ".mli")) {
-            const base = resolved[0 .. resolved.len - 4];
-            try mli_candidates.append(alloc, base);
-        }
+    const link_run = b.addRunArtifact(options.build_ocamlrun);
+    link_run.addFileArg(boot_ocamlc);
+    link_run.addArgs(&.{ "-nostdlib", "-I" });
+    link_run.addDirectoryArg(stdlib_dir);
+    link_run.addArgs(&.{"-use-prims"});
+    link_run.addFileArg(primitives);
+    if (has_set_runtime_default) {
+        link_run.addArgs(&.{
+            "-launch-method",
+            launch_method,
+            "-runtime-search",
+            "fallback",
+        });
     }
-
-    var extra_cmis: std.ArrayList([]const u8) = .empty;
-    for (mli_candidates.items) |base| {
-        const cmo = b.fmt("{s}.cmo", .{base});
-        if (!cmo_set.contains(cmo)) {
-            try extra_cmis.append(alloc, b.fmt("{s}.cmi", .{base}));
-        }
-    }
-
-    return .{
-        .cmos = cmos.items,
-        .extra_cmis = extra_cmis.items,
-    };
+    link_run.addArg("-o");
+    const exe_lp = link_run.addOutputFileArg(b.fmt("{s}.byte", .{name}));
+    link_run.addFileArg(cmo_lp);
+    return exe_lp;
 }
 
-fn resolveModulesToCmos(
+fn linkCma(
     b: *std.Build,
-    ocaml_dep: *std.Build.Dependency,
-    mods: []const []const u8,
-) ![]const []const u8 {
-    var cmos: std.ArrayList([]const u8) = .empty;
-    for (mods) |m| {
-        const stripped = if (std.mem.endsWith(u8, m, ".cmo")) m[0 .. m.len - 4] else m;
-        const ml_name = b.fmt("{s}.ml", .{stripped});
-        const resolved_ml = resolveVpathSource(b, ocaml_dep, ml_name);
-        const base = resolved_ml[0 .. resolved_ml.len - 3];
-        try cmos.append(b.allocator, b.fmt("{s}.cmo", .{base}));
+    options: BuildCompilerOptions,
+    boot_ocamlc: std.Build.LazyPath,
+    primitives: std.Build.LazyPath,
+    stdlib_dir: std.Build.LazyPath,
+    cma_name: []const u8,
+    keys: []const []const u8,
+    cmo_map: *const std.StringHashMapUnmanaged(std.Build.LazyPath),
+    is_intel: bool,
+    extra_flags: []const []const u8,
+) std.Build.LazyPath {
+    const run = b.addRunArtifact(options.build_ocamlrun);
+    run.addFileArg(boot_ocamlc);
+    run.addArgs(&.{ "-nostdlib", "-I" });
+    run.addDirectoryArg(stdlib_dir);
+    run.addArgs(&.{"-use-prims"});
+    run.addFileArg(primitives);
+    run.addArgs(extra_flags);
+    run.addArgs(&.{ "-a", "-o" });
+    const cma_lp = run.addOutputFileArg(cma_name);
+    for (keys) |k| {
+        if (!is_intel and std.mem.startsWith(u8, k, "asmcomp/x86_")) continue;
+        run.addFileArg(cmo_map.get(k).?);
     }
-    return cmos.items;
+    return cma_lp;
 }
 
-fn resolveVpathSource(
+fn linkProgram(
     b: *std.Build,
-    ocaml_dep: *std.Build.Dependency,
-    src_item: []const u8,
-) []const u8 {
-    if (std.mem.indexOfScalar(u8, src_item, '/') != null) return src_item;
-
-    const ext = std.fs.path.extension(src_item);
-    const stem = src_item[0 .. src_item.len - ext.len];
-
-    // Check known generated files in utils/ and parsing/
-    if (std.mem.eql(u8, stem, "config") or std.mem.eql(u8, stem, "domainstate")) {
-        return b.fmt("utils/{s}", .{src_item});
+    options: BuildCompilerOptions,
+    boot_ocamlc: std.Build.LazyPath,
+    primitives: std.Build.LazyPath,
+    stdlib_dir: std.Build.LazyPath,
+    cmi_dir: std.Build.LazyPath,
+    exe_name: []const u8,
+    objs: []const std.Build.LazyPath,
+    extra_flags: []const []const u8,
+    has_set_runtime_default: bool,
+    launch_method: []const u8,
+) std.Build.LazyPath {
+    const run = b.addRunArtifact(options.build_ocamlrun);
+    run.addFileArg(boot_ocamlc);
+    run.addArgs(&.{ "-nostdlib", "-I" });
+    run.addDirectoryArg(stdlib_dir);
+    run.addArg("-I");
+    run.addDirectoryArg(cmi_dir);
+    run.addArgs(&.{"-use-prims"});
+    run.addFileArg(primitives);
+    if (has_set_runtime_default) {
+        run.addArgs(&.{
+            "-set-runtime-default",
+            "standard_library_default=../lib/ocaml",
+            "-launch-method",
+            launch_method,
+            "-runtime-search",
+            "fallback",
+        });
     }
-    if (std.mem.eql(u8, stem, "camlinternalMenhirLib") or
-        std.mem.eql(u8, stem, "parser") or
-        std.mem.eql(u8, stem, "lexer"))
-    {
-        return b.fmt("parsing/{s}", .{src_item});
+    run.addArgs(extra_flags);
+    run.addArg("-o");
+    const exe_lp = run.addOutputFileArg(exe_name);
+    for (objs) |obj| {
+        run.addFileArg(obj);
     }
+    return exe_lp;
+}
 
-    const root_dir = ocaml_dep.builder.build_root.handle;
-    for (core_include_dirs) |dir_name| {
-        const candidate = b.fmt("{s}/{s}", .{ dir_name, src_item });
-        if (root_dir.openFile(b.graph.io, candidate, .{})) |f| {
-            f.close(b.graph.io);
-            return candidate;
-        } else |_| {}
+fn linkProgramFromKeys(
+    b: *std.Build,
+    options: BuildCompilerOptions,
+    boot_ocamlc: std.Build.LazyPath,
+    primitives: std.Build.LazyPath,
+    stdlib_dir: std.Build.LazyPath,
+    cmi_dir: std.Build.LazyPath,
+    exe_name: []const u8,
+    keys: []const []const u8,
+    cmo_map: *const std.StringHashMapUnmanaged(std.Build.LazyPath),
+    extra_flags: []const []const u8,
+    has_set_runtime_default: bool,
+    launch_method: []const u8,
+) std.Build.LazyPath {
+    var objs = b.allocator.alloc(std.Build.LazyPath, keys.len) catch @panic("OOM");
+    for (keys, 0..) |k, i| {
+        objs[i] = cmo_map.get(k).?;
     }
-
-    std.debug.panic("VPATH safety check failed: could not resolve bare source file '{s}' in OCaml tree", .{src_item});
+    return linkProgram(b, options, boot_ocamlc, primitives, stdlib_dir, cmi_dir, exe_name, objs, extra_flags, has_set_runtime_default, launch_method);
 }
 
 fn renderConfigCommonMl(src_info: SourceInfo, is_5_2_or_newer: bool) []const u8 {
@@ -510,19 +678,20 @@ fn renderConfigCommonMl(src_info: SourceInfo, is_5_2_or_newer: bool) []const u8 
         return SourceInfo.readFile(src_info.b, src_info.dep, "utils/config.common.ml");
     }
 
+    const mn = src_info.manifest.magic_numbers.?;
     return src_info.renderAtTemplate("utils/config.common.ml.in", &.{
         .{ .name = "configure_input", .value = "Generated by zcaml from utils/config.common.ml.in" },
-        .{ .name = "EXEC_MAGIC_NUMBER", .value = src_info.magicNumber("EXEC") },
-        .{ .name = "CMI_MAGIC_NUMBER", .value = src_info.magicNumber("CMI") },
-        .{ .name = "CMO_MAGIC_NUMBER", .value = src_info.magicNumber("CMO") },
-        .{ .name = "CMA_MAGIC_NUMBER", .value = src_info.magicNumber("CMA") },
-        .{ .name = "CMX_MAGIC_NUMBER", .value = src_info.magicNumber("CMX_CLAMBDA") },
-        .{ .name = "CMXA_MAGIC_NUMBER", .value = src_info.magicNumber("CMXA_CLAMBDA") },
-        .{ .name = "AST_IMPL_MAGIC_NUMBER", .value = src_info.magicNumber("AST_IMPL") },
-        .{ .name = "AST_INTF_MAGIC_NUMBER", .value = src_info.magicNumber("AST_INTF") },
-        .{ .name = "CMXS_MAGIC_NUMBER", .value = src_info.magicNumber("CMXS") },
-        .{ .name = "CMT_MAGIC_NUMBER", .value = src_info.magicNumber("CMT") },
-        .{ .name = "LINEAR_MAGIC_NUMBER", .value = src_info.magicNumber("LINEAR") },
+        .{ .name = "EXEC_MAGIC_NUMBER", .value = mn.exec },
+        .{ .name = "CMI_MAGIC_NUMBER", .value = mn.cmi },
+        .{ .name = "CMO_MAGIC_NUMBER", .value = mn.cmo },
+        .{ .name = "CMA_MAGIC_NUMBER", .value = mn.cma },
+        .{ .name = "CMX_MAGIC_NUMBER", .value = mn.cmx_clambda },
+        .{ .name = "CMXA_MAGIC_NUMBER", .value = mn.cmxa_clambda },
+        .{ .name = "AST_IMPL_MAGIC_NUMBER", .value = mn.ast_impl },
+        .{ .name = "AST_INTF_MAGIC_NUMBER", .value = mn.ast_intf },
+        .{ .name = "CMXS_MAGIC_NUMBER", .value = mn.cmxs },
+        .{ .name = "CMT_MAGIC_NUMBER", .value = mn.cmt },
+        .{ .name = "LINEAR_MAGIC_NUMBER", .value = mn.linear },
     });
 }
 

@@ -123,11 +123,15 @@ pub const TargetConfig = struct {
             if (std.mem.eql(u8, self.arch, "amd64")) return "amd64nt.asm";
             return null;
         }
-        if (std.mem.eql(u8, self.arch, "amd64")) return "amd64.S";
-        if (std.mem.eql(u8, self.arch, "arm64")) return "arm64.S";
-        if (std.mem.eql(u8, self.arch, "riscv")) return "riscv.S";
-        if (std.mem.eql(u8, self.arch, "power")) return "power.S";
-        if (std.mem.eql(u8, self.arch, "s390x")) return "s390x.S";
+        inline for (&.{
+            .{ "amd64", "amd64.S" },
+            .{ "arm64", "arm64.S" },
+            .{ "riscv", "riscv.S" },
+            .{ "power", "power.S" },
+            .{ "s390x", "s390x.S" },
+        }) |entry| {
+            if (std.mem.eql(u8, self.arch, entry[0])) return entry[1];
+        }
         return null;
     }
 
@@ -371,30 +375,23 @@ pub fn resolveTarget(b: *std.Build, target_str: []const u8) std.Build.ResolvedTa
 }
 
 fn normalizeTriplet(b: *std.Build, str: []const u8) []const u8 {
-    if (std.mem.eql(u8, str, "x86_64-pc-linux-gnu") or std.mem.eql(u8, str, "x86_64-unknown-linux-gnu")) {
-        return "x86_64-linux-gnu";
-    }
-    if (std.mem.eql(u8, str, "x86_64-pc-linux-musl") or std.mem.eql(u8, str, "x86_64-unknown-linux-musl")) {
-        return "x86_64-linux-musl";
-    }
-    if (std.mem.eql(u8, str, "aarch64-unknown-linux-gnu") or std.mem.eql(u8, str, "aarch64-linux-gnu")) {
-        return "aarch64-linux-gnu";
-    }
-    if (std.mem.eql(u8, str, "aarch64-unknown-linux-musl") or std.mem.eql(u8, str, "aarch64-linux-musl")) {
-        return "aarch64-linux-musl";
-    }
-    if (std.mem.eql(u8, str, "aarch64-apple-darwin") or std.mem.eql(u8, str, "arm64-apple-darwin")) {
-        return "aarch64-macos";
-    }
-    if (std.mem.eql(u8, str, "x86_64-apple-darwin")) {
-        return "x86_64-macos";
-    }
-    if (std.mem.eql(u8, str, "x86_64-w64-mingw32")) {
-        return "x86_64-windows-gnu";
-    }
-    if (std.mem.eql(u8, str, "x86_64-pc-windows")) {
-        return "x86_64-windows-msvc";
-    }
     _ = b;
+    inline for (&.{
+        .{ "x86_64-pc-linux-gnu", "x86_64-linux-gnu" },
+        .{ "x86_64-unknown-linux-gnu", "x86_64-linux-gnu" },
+        .{ "x86_64-pc-linux-musl", "x86_64-linux-musl" },
+        .{ "x86_64-unknown-linux-musl", "x86_64-linux-musl" },
+        .{ "aarch64-unknown-linux-gnu", "aarch64-linux-gnu" },
+        .{ "aarch64-linux-gnu", "aarch64-linux-gnu" },
+        .{ "aarch64-unknown-linux-musl", "aarch64-linux-musl" },
+        .{ "aarch64-linux-musl", "aarch64-linux-musl" },
+        .{ "aarch64-apple-darwin", "aarch64-macos" },
+        .{ "arm64-apple-darwin", "aarch64-macos" },
+        .{ "x86_64-apple-darwin", "x86_64-macos" },
+        .{ "x86_64-w64-mingw32", "x86_64-windows-gnu" },
+        .{ "x86_64-pc-windows", "x86_64-windows-msvc" },
+    }) |entry| {
+        if (std.mem.eql(u8, str, entry[0])) return entry[1];
+    }
     return str;
 }

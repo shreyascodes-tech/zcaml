@@ -32,16 +32,10 @@ pub fn buildRuntime(
     const cfg = options.target_cfg;
     const target = cfg.resolved;
 
-    // 1. Parse C source lists directly from the OCaml Makefile with strict variable expansion
-    const common_c_sources = src_info.parseMakefileList("runtime_COMMON_C_SOURCES", &.{
-        .{ .name = "UNIX_OR_WIN32", .values = &.{cfg.unix_or_win32} },
-        .{ .name = "TSAN_NATIVE_RUNTIME_C_SOURCES", .values = &.{} },
-    });
-    const bytecode_only_c_sources = src_info.parseMakefileList("runtime_BYTECODE_ONLY_C_SOURCES", &.{});
-    const native_only_c_sources = src_info.parseMakefileList("runtime_NATIVE_ONLY_C_SOURCES", &.{
-        .{ .name = "TSAN_NATIVE_RUNTIME_C_SOURCES", .values = &.{} },
-    });
-    const yacc_other_modules = src_info.parseMakefileList("ocamlyacc_OTHER_MODULES", &.{});
+    const m = src_info.manifest;
+    const os_c_sources = if (cfg.is_windows) m.runtime_win32_c_sources else m.runtime_unix_c_sources;
+    const bytecode_only_c_sources = m.runtime_bytecode_only_c_sources;
+    const native_only_c_sources = m.runtime_native_only_c_sources;
 
     const has_zstd = blk: {
         for (bytecode_only_c_sources) |name| {
@@ -61,7 +55,12 @@ pub fn buildRuntime(
     var bytecode_c_rel_paths: std.ArrayList([]const u8) = .empty;
     var bytecode_c_inputs: std.ArrayList(Tools.InputFile) = .empty;
 
-    for (common_c_sources) |name| {
+    for (m.runtime_common_c_sources) |name| {
+        const rel = b.fmt("runtime/{s}.c", .{name});
+        try bytecode_c_rel_paths.append(b.allocator, rel);
+        try bytecode_c_inputs.append(b.allocator, .of(ocaml_dep.path(rel)));
+    }
+    for (os_c_sources) |name| {
         const rel = b.fmt("runtime/{s}.c", .{name});
         try bytecode_c_rel_paths.append(b.allocator, rel);
         try bytecode_c_inputs.append(b.allocator, .of(ocaml_dep.path(rel)));
@@ -137,9 +136,7 @@ pub fn buildRuntime(
     if (cfg.is_windows) {
         try yacc_c_files.append(b.allocator, "yacc/wstr.c");
     }
-    for (yacc_other_modules) |mod_path| {
-        try yacc_c_files.append(b.allocator, b.fmt("{s}.c", .{mod_path}));
-    }
+    try yacc_c_files.appendSlice(b.allocator, m.ocamlyacc_c_sources);
 
     const ocamlyacc = b.addExecutable(.{
         .name = "ocamlyacc",
@@ -226,7 +223,10 @@ pub fn buildRuntime(
     // 7. Build libasmrun.a (when target has a native code backend)
     const libasmrun: ?*std.Build.Step.Compile = if (cfg.runtimeAsmFile()) |asm_file| blk: {
         var native_c_rel_paths: std.ArrayList([]const u8) = .empty;
-        for (common_c_sources) |name| {
+        for (m.runtime_common_c_sources) |name| {
+            try native_c_rel_paths.append(b.allocator, b.fmt("runtime/{s}.c", .{name}));
+        }
+        for (os_c_sources) |name| {
             try native_c_rel_paths.append(b.allocator, b.fmt("runtime/{s}.c", .{name}));
         }
         for (native_only_c_sources) |name| {
