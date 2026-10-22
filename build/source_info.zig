@@ -51,15 +51,36 @@ pub const SourceInfo = struct {
     };
 
     /// Parses a variable assignment `var_name = ...` (with `\` line continuations)
-    /// from the OCaml Makefile and expands any allowed `$(VAR)` references.
+    /// from the root OCaml Makefile and expands any allowed `$(VAR)` references.
     /// Panics if the variable is missing, empty, or contains unknown `$(...)` expansions.
     pub fn parseMakefileList(
         self: SourceInfo,
         var_name: []const u8,
         expansions: []const VarExpansion,
     ) []const []const u8 {
+        return self.parseMakefileListFromSource("Makefile", self.makefile_src, var_name, expansions);
+    }
+
+    /// Parses a variable assignment `var_name = ...` from `sub_path` in the OCaml tarball.
+    pub fn parseMakefileListFromFile(
+        self: SourceInfo,
+        sub_path: []const u8,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+    ) []const []const u8 {
+        const src = readFile(self.b, self.dep, sub_path);
+        return self.parseMakefileListFromSource(sub_path, src, var_name, expansions);
+    }
+
+    pub fn parseMakefileListFromSource(
+        self: SourceInfo,
+        file_label: []const u8,
+        src: []const u8,
+        var_name: []const u8,
+        expansions: []const VarExpansion,
+    ) []const []const u8 {
         const alloc = self.b.allocator;
-        var lines = std.mem.splitScalar(u8, self.makefile_src, '\n');
+        var lines = std.mem.splitScalar(u8, src, '\n');
 
         var found = false;
         var raw_body: std.ArrayList(u8) = .empty;
@@ -94,7 +115,10 @@ pub const SourceInfo = struct {
         }
 
         if (!found) {
-            std.debug.panic("Makefile safety check failed: variable '{s}' not found in OCaml Makefile", .{var_name});
+            std.debug.panic(
+                "Makefile safety check failed: variable '{s}' not found in '{s}'",
+                .{ var_name, file_label },
+            );
         }
 
         var body_slice = std.mem.trim(u8, raw_body.items, " \t");
@@ -104,7 +128,7 @@ pub const SourceInfo = struct {
         if (std.mem.startsWith(u8, body_slice, "$(addprefix ") and std.mem.endsWith(u8, body_slice, ")")) {
             const inner = body_slice["$(addprefix ".len .. body_slice.len - 1];
             const comma_idx = std.mem.indexOfScalar(u8, inner, ',') orelse {
-                std.debug.panic("Malformed $(addprefix ...) in Makefile variable '{s}'", .{var_name});
+                std.debug.panic("Malformed $(addprefix ...) in '{s}' variable '{s}'", .{ file_label, var_name });
             };
             prefix_to_add = std.mem.trim(u8, inner[0..comma_idx], " \t");
             body_slice = std.mem.trim(u8, inner[comma_idx + 1 ..], " \t");
@@ -128,14 +152,14 @@ pub const SourceInfo = struct {
                 }
                 if (!expanded) {
                     std.debug.panic(
-                        "Makefile safety check failed: unexpanded variable '$({s})' in '{s}'",
-                        .{ ref_name, var_name },
+                        "Makefile safety check failed: unexpanded variable '$({s})' in '{s}' ('{s}')",
+                        .{ ref_name, var_name, file_label },
                     );
                 }
             } else if (std.mem.indexOfScalar(u8, tok, '$') != null) {
                 std.debug.panic(
-                    "Makefile safety check failed: unexpected macro expression '{s}' in '{s}'",
-                    .{ tok, var_name },
+                    "Makefile safety check failed: unexpected macro expression '{s}' in '{s}' ('{s}')",
+                    .{ tok, var_name, file_label },
                 );
             } else {
                 const final_item = if (prefix_to_add) |p| self.b.fmt("{s}{s}", .{ p, tok }) else tok;
@@ -144,7 +168,7 @@ pub const SourceInfo = struct {
         }
 
         if (result.items.len == 0) {
-            std.debug.panic("Makefile safety check failed: variable '{s}' resolved to 0 items", .{var_name});
+            std.debug.panic("Makefile safety check failed: variable '{s}' in '{s}' resolved to 0 items", .{ var_name, file_label });
         }
 
         return result.items;

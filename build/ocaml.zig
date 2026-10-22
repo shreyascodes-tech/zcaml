@@ -2,10 +2,12 @@ const std = @import("std");
 const target_config = @import("target_config.zig");
 const source_info = @import("source_info.zig");
 const runtime = @import("runtime.zig");
+const stdlib = @import("stdlib.zig");
 
 pub const TargetConfig = target_config.TargetConfig;
 pub const SourceInfo = source_info.SourceInfo;
 pub const RuntimeArtifacts = runtime.RuntimeArtifacts;
+pub const StdlibArtifacts = stdlib.StdlibArtifacts;
 
 const Self = @This();
 
@@ -46,6 +48,7 @@ pub const Toolchain = struct {
     host_cfg: TargetConfig,
     target_cfg: TargetConfig,
     target_rt: RuntimeArtifacts,
+    target_stdlib: StdlibArtifacts,
 
     pub fn addInstall(self: Toolchain, step: *std.Build.Step, options: InstallOptions) void {
         const b = self.b;
@@ -102,12 +105,25 @@ pub const Toolchain = struct {
             .install_dir = ocaml_lib_dir,
             .install_subdir = "caml",
         }).step);
+
+        // Standard library -> <prefix>/lib/ocaml/ and <prefix>/lib/ocaml/stdlib/META
+        step.dependOn(&b.addInstallDirectory(.{
+            .source_dir = self.target_stdlib.stdlib_dir,
+            .install_dir = ocaml_lib_dir,
+            .install_subdir = "",
+        }).step);
+        step.dependOn(&b.addInstallFileWithDir(
+            self.target_stdlib.meta_file,
+            ocaml_lib_dir,
+            "stdlib/META",
+        ).step);
     }
 };
 
 pub fn build(self: *Self, options: BuildOptions) !Toolchain {
     const b = self.b;
 
+    const build_cfg = TargetConfig.fromTarget(b, b.graph.host, self.src_info.version);
     const host_cfg = TargetConfig.fromTarget(b, options.compiler_host, self.src_info.version);
     const target_cfg = TargetConfig.fromTarget(b, options.compiler_target, self.src_info.version);
 
@@ -117,12 +133,33 @@ pub fn build(self: *Self, options: BuildOptions) !Toolchain {
         .optimize = options.optimize,
     });
 
+    const target_is_build = std.mem.eql(u8, target_cfg.triplet, build_cfg.triplet);
+    const build_ocamlrun = if (target_is_build)
+        target_rt.ocamlrun
+    else blk: {
+        const build_rt = try runtime.buildRuntime(b, self.dep, .{
+            .src_info = self.src_info,
+            .target_cfg = build_cfg,
+            .optimize = options.optimize,
+        });
+        break :blk build_rt.ocamlrun;
+    };
+
+    const target_stdlib = try stdlib.buildStdlib(b, self.dep, .{
+        .src_info = self.src_info,
+        .target_cfg = target_cfg,
+        .target_rt = target_rt,
+        .build_ocamlrun = build_ocamlrun,
+        .optimize = options.optimize,
+    });
+
     return .{
         .b = b,
         .ocaml_dep = self.dep,
         .host_cfg = host_cfg,
         .target_cfg = target_cfg,
         .target_rt = target_rt,
+        .target_stdlib = target_stdlib,
     };
 }
 
