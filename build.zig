@@ -2,87 +2,47 @@ const std = @import("std");
 const Ocaml = @import("build/ocaml.zig");
 const Tools = @import("build/tools/root.zig");
 
-pub const OcamlVersion = enum {
-    @"5.5.1",
-    @"5.4.1",
-    @"5.3.0",
-    @"5.2.1",
-    @"5.1.1",
-    @"5.0.0",
-
-    pub fn slug(self: OcamlVersion, b: *std.Build) ![]const u8 {
-        return std.mem.replaceOwned(u8, b.allocator, @tagName(self), ".", "_");
-    }
-
-    pub fn dependencyName(self: OcamlVersion, b: *std.Build) ![]const u8 {
-        return b.fmt("ocaml_{s}", .{try self.slug(b)});
-    }
-};
-
 pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
+    const ocaml_versions: Ocaml.Versions = .init(b);
 
+    // zig build generate: (re)generate build/manifests/*.zon from the upstream sources
     const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
     const update_src = b.addUpdateSourceFiles();
-    for (std.enums.values(OcamlVersion)) |ver| {
-        if (b.lazyDependency(try ver.dependencyName(b), .{})) |dep| {
-            const file_name = b.fmt("v{s}.zon", .{try ver.slug(b)});
-            var cmd = Tools.Command{
-                .gen_manifests = .{
-                    .ocaml_src_dir = .of(dep.path("")),
-                    .out_file = .of(file_name),
-                },
-            };
-            _ = cmd.run(b);
-            update_src.addCopyFileToSource(
-                cmd.gen_manifests.out_file.lazyPath(),
-                b.fmt("build/manifests/{s}", .{file_name}),
-            );
-        }
+    for (Ocaml.Versions.all) |ver| {
+        const dep = ocaml_versions.dependency(ver) orelse continue;
+        const gen, _ = Tools.run(b, .gen_manifests, .{
+            .ocaml_src_dir = .of(dep.path("")),
+            .out_file = .of(std.fs.path.basename(Ocaml.Versions.manifestPath(ver))),
+        });
+        update_src.addCopyFileToSource(gen.out_file.lazyPath(), Ocaml.Versions.manifestPath(ver));
     }
     gen_step.dependOn(&update_src.step);
 
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
-        const ocaml_version = b.option(OcamlVersion, "ocaml-version", "ocaml version to build") orelse .@"5.5.1";
+        const version = b.option(Ocaml.Version, "ocaml-version", "ocaml version to build") orelse Ocaml.Versions.latest;
 
-        const compiler_host = host: {
-            const str = b.option([]const u8, "ocaml-host", "ocaml host") orelse {
-                std.log.err("missing ocaml compiler host", .{});
-                return error.MissingCompilerHost;
-            };
-
-            break :host Ocaml.resolveTarget(b, str);
+        const host_str = b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)") orelse {
+            std.log.err("missing -Docaml-host", .{});
+            return error.MissingCompilerHost;
         };
+        const host = Ocaml.resolveTarget(b, host_str);
+        const target = if (b.option([]const u8, "ocaml-target", "where compiled programs run (default: host)")) |s|
+            Ocaml.resolveTarget(b, s)
+        else
+            host;
 
-        const compiler_target = target: {
-            const str = b.option([]const u8, "ocaml-target", "ocaml target") orelse break :target compiler_host;
-            break :target Ocaml.resolveTarget(b, str);
-        };
+        const sub_path = b.option([]const u8, "ocaml-prefix", "install sub-path under the install prefix") orelse b.fmt(
+            "{t}/host-{s}/target-{s}",
+            .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
+        );
 
-        if (b.lazyDependency(try ocaml_version.dependencyName(b), .{})) |ocaml_dep| {
-            const prefix = b.option([]const u8, "ocaml-prefix", "install sub-prefix under zig-out") orelse b.fmt(
-                "{s}/host-{s}/target-{s}",
-                .{
-                    @tagName(ocaml_version),
-                    try compiler_host.result.linuxTriple(b.allocator),
-                    try compiler_target.result.linuxTriple(b.allocator),
-                },
-            );
-
-            const ocaml = Ocaml.init(b, ocaml_dep);
-
-            const toolchain = try ocaml.build(.{
-                .compiler_host = compiler_host,
-                .compiler_target = compiler_target,
-                .optimize = optimize,
-                .prefix = prefix,
-            });
-
-            toolchain.addInstall(b.getInstallStep(), .{
-                .prefix = prefix,
-            });
-        }
-
-        return;
+        const src = ocaml_versions.source(version) orelse return;
+        const toolchain = try Ocaml.build(src, .{
+            .host = host,
+            .target = target,
+            .optimize = optimize,
+        });
+        toolchain.addInstall(b.getInstallStep(), sub_path);
     }
 }

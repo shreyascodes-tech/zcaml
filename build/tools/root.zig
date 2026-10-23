@@ -17,7 +17,15 @@ pub const Command = union(enum) {
     gen_compiler_sources: gen_ocaml_sources.GenCompilerSources,
     prepend_emit_line: gen_ocaml_sources.PrependEmitLine,
 
-    pub fn run(self: *Command, b: *std.Build) *std.Build.Step.Run {
+    /// Add a step running this command. Returns the command with its output
+    /// fields (`OutputFile` / `OutputDir`) resolved to lazy paths, and the step.
+    pub fn run(cmd: Command, b: *std.Build) struct { Command, *std.Build.Step.Run } {
+        var filled = cmd;
+        const run_tool = filled.addRun(b);
+        return .{ filled, run_tool };
+    }
+
+    fn addRun(self: *Command, b: *std.Build) *std.Build.Step.Run {
         const tool_exe = (struct {
             var tool_exe: ?*std.Build.Step.Compile = null;
 
@@ -27,17 +35,9 @@ pub const Command = union(enum) {
                 const exe = builder.addExecutable(.{
                     .name = "tools",
                     .root_module = builder.createModule(.{
-                        .root_source_file = builder.path("build/tools/root.zig"),
+                        .root_source_file = builder.path("build/tools_main.zig"),
                         .target = builder.graph.host,
                         .optimize = .Debug,
-                        .imports = &.{
-                            .{
-                                .name = "manifest",
-                                .module = builder.createModule(.{
-                                    .root_source_file = builder.path("build/manifests/manifest.zig"),
-                                }),
-                            },
-                        },
                     }),
                 });
 
@@ -79,6 +79,19 @@ pub const Command = union(enum) {
         return run_tool;
     }
 };
+
+pub const Tag = std.meta.Tag(Command);
+
+pub fn Args(comptime tag: Tag) type {
+    return @FieldType(Command, @tagName(tag));
+}
+
+/// `Command.run` for a statically known command:
+/// `const gen, _ = Tools.run(b, .gen_runtime, .{ ... });`
+pub fn run(b: *std.Build, comptime tag: Tag, args: Args(tag)) struct { Args(tag), *std.Build.Step.Run } {
+    const cmd, const step = @unionInit(Command, @tagName(tag), args).run(b);
+    return .{ @field(cmd, @tagName(tag)), step };
+}
 
 fn isListSlice(comptime T: type) bool {
     if (T == []const u8 or T == []u8) return false;
@@ -352,7 +365,7 @@ fn parseSingleValue(comptime ValType: type, raw: ?[]const u8) !ValType {
 
 fn printUsage(gpa: std.mem.Allocator, command: ?[]const u8) noreturn {
     std.log.err(
-        \\Usage: zig run build/tools/tools.zig <command> [args...]
+        \\Usage: tools <command> [args...]
         \\
         \\Available commands:
         \\  {s}

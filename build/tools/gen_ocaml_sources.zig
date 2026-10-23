@@ -5,11 +5,7 @@ const InputDir = utils.InputDir;
 const OutputFile = utils.OutputFile;
 const OutputDir = utils.OutputDir;
 
-pub const HeaderFormat = enum {
-    camlheader_5_0,
-    launch_info_5_2,
-    launch_info_5_5,
-};
+pub const HeaderFormat = @import("../manifests/manifest.zig").HeaderFormat;
 
 pub const GenStdlibSources = struct {
     ocaml_src_dir: InputDir,
@@ -20,16 +16,17 @@ pub const GenStdlibSources = struct {
     expanded_dir: OutputDir,
     launcher_dir: OutputDir,
 
-    const files_to_expand = [_][2][]const u8{
-        .{ "stdlib/stdlib.mli", "stdlib.mli" },
-        .{ "stdlib/stdlib.ml", "stdlib.ml" },
-        .{ "stdlib/arrayLabels.mli", "arrayLabels.mli" },
-        .{ "stdlib/listLabels.mli", "listLabels.mli" },
-        .{ "stdlib/bytesLabels.mli", "bytesLabels.mli" },
-        .{ "stdlib/stringLabels.mli", "stringLabels.mli" },
-        .{ "stdlib/moreLabels.mli", "moreLabels.mli" },
-        .{ "stdlib/stdLabels.mli", "stdLabels.mli" },
-        .{ "otherlibs/unix/unixLabels.mli", "unixLabels.mli" },
+    /// Written to `expanded_dir/<same relative path>` (see `Manifest.Src.expanded`).
+    const files_to_expand = [_][]const u8{
+        "stdlib/stdlib.mli",
+        "stdlib/stdlib.ml",
+        "stdlib/arrayLabels.mli",
+        "stdlib/listLabels.mli",
+        "stdlib/bytesLabels.mli",
+        "stdlib/stringLabels.mli",
+        "stdlib/moreLabels.mli",
+        "stdlib/stdLabels.mli",
+        "otherlibs/unix/unixLabels.mli",
     };
 
     pub fn run(self: *GenStdlibSources, init: std.process.Init) !void {
@@ -44,11 +41,12 @@ pub const GenStdlibSources = struct {
         var exp_dir = try self.expanded_dir.open(io, .{});
         defer exp_dir.close(io);
 
-        for (files_to_expand) |pair| {
-            const raw = try root_dir.readFileAlloc(io, pair[0], gpa, .unlimited);
+        for (files_to_expand) |rel| {
+            const raw = try root_dir.readFileAlloc(io, rel, gpa, .unlimited);
             defer gpa.free(raw);
-            const expanded = try expandModuleAliases(arena, pair[1], raw);
-            try exp_dir.writeFile(io, .{ .sub_path = pair[1], .data = expanded });
+            const expanded = try expandModuleAliases(arena, std.fs.path.basename(rel), raw);
+            if (std.fs.path.dirname(rel)) |dir| try exp_dir.createDirPath(io, dir);
+            try exp_dir.writeFile(io, .{ .sub_path = rel, .data = expanded });
         }
 
         var launch_dir = try self.launcher_dir.open(io, .{});
@@ -86,10 +84,10 @@ pub const GenStdlibSources = struct {
                 try buf.appendSlice(arena, exe_bytes);
                 try launch_dir.writeFile(io, .{ .sub_path = "runtime-launch-info", .data = buf.items });
             },
-            .camlheader_5_0 => {
+            .camlheader => {
                 try launch_dir.writeFile(io, .{ .sub_path = "camlheader_ur", .data = "#!\n" });
                 if (self.is_windows_target) {
-                    const exe_input = self.header_exe orelse @panic("Windows camlheader_5_0 requires header_exe");
+                    const exe_input = self.header_exe orelse @panic("Windows camlheader requires header_exe");
                     const exe_bytes = try exe_input.readAll(io, gpa);
                     defer gpa.free(exe_bytes);
 

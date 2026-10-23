@@ -1,5 +1,5 @@
 const std = @import("std");
-const Manifest = @import("manifest");
+const Manifest = @import("../manifests/manifest.zig");
 const utils = @import("utils.zig");
 const InputDir = utils.InputDir;
 const OutputFile = utils.OutputFile;
@@ -40,7 +40,7 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     const version_file = try root_dir.readFileAlloc(io, "VERSION", arena, .unlimited);
     const ver = try parseOcamlVersion(arena, version_m4, version_file);
 
-    const is_5_3_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 3);
+    const is_5_5_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 5);
     const is_5_2_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 2);
     const is_5_1_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 1);
 
@@ -165,48 +165,13 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         }
     }
 
-    // 6. Stdlib units, Compflags, and .depend waves
-    const stdlib_basenames = root_vars.get("STDLIB_MODULE_BASENAMES").?;
-    const compflags_script = try root_dir.readFileAlloc(io, "stdlib/Compflags", arena, .unlimited);
-    const stdlib_depend = try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited);
-    const stdlib_cmi_dep_map = try parseStdlibDependCmiMap(arena, stdlib_depend);
-    const has_std_exit_mli = fileExists(io, root_dir, "stdlib/std_exit.mli");
-
-    var stdlib_units: std.ArrayList(StdlibUnitData) = .empty;
-    var stdlib_modules: std.ArrayList([]const u8) = .empty;
-    for (stdlib_basenames) |base| {
-        const mod_name = try stdlibModuleName(arena, base);
-        try stdlib_modules.append(arena, mod_name);
-        const mli_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.mli", .{base});
-        const has_mli = fileExists(io, root_dir, mli_rel);
-        const is_stdlib = std.mem.eql(u8, base, "stdlib");
-        const is_labels = std.mem.endsWith(u8, base, "Labels");
-        const cmi_target = try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name});
-        const cmo_target = try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name});
-        try stdlib_units.append(arena, .{
-            .basename = base,
-            .module_name = mod_name,
-            .has_mli = has_mli,
-            .expand_mli_aliases = is_stdlib or is_labels,
-            .expand_ml_aliases = is_stdlib,
-            .cmi_flags = try evalCompflagsScript(arena, compflags_script, cmi_target),
-            .cmo_flags = try evalCompflagsScript(arena, compflags_script, cmo_target),
-        });
-    }
-    const std_exit_compflags = try evalCompflagsScript(arena, compflags_script, "std_exit.cmo");
-    const stdlib_cmi_waves = try computeStdlibCmiWaves(arena, stdlib_units.items, has_std_exit_mli, &stdlib_cmi_dep_map);
+    // 6. Stdlib plan from STDLIB_MODULE_BASENAMES, stdlib/Compflags and stdlib/.depend
+    const stdlib_plan = try computeStdlibPlan(io, arena, root_dir, root_vars.get("STDLIB_MODULE_BASENAMES").?);
 
     var pervasives: std.ArrayList([]const u8) = .empty;
-    try pervasives.appendSlice(arena, stdlib_modules.items);
+    try pervasives.appendSlice(arena, stdlib_plan.cma);
     for (root_vars.get("PERVASIVES").?) |p| {
-        var already = false;
-        for (pervasives.items) |existing| {
-            if (std.mem.eql(u8, existing, p)) {
-                already = true;
-                break;
-            }
-        }
-        if (!already) try pervasives.append(arena, p);
+        if (!containsStr(pervasives.items, p)) try pervasives.append(arena, p);
     }
 
     // 7. Compiler & Tools module lists and waves
@@ -238,79 +203,88 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     );
 
     // 8. Otherlibs C sources & Dynlink 5.0-5.2 pack plan
-    const unix_common_c = unix_unix_vars.get("COMMON_C_SOURCES").?;
-    const unix_unix_c = unix_unix_vars.get("OS_C_SOURCES").?;
-    const unix_win32_c = unix_win32_vars.get("OS_C_SOURCES").?;
-    const unix_headers = unix_unix_vars.get("HEADERS").?;
-    const otherlibs_compflags = str_vars.get("COMPFLAGS").?;
     const str_c = if (str_vars.get("C_SOURCES")) |s| (if (s.len > 0) s else str_vars.get("COBJS").?) else str_vars.get("COBJS").?;
     const re_c = if (re_vars.get("C_SOURCES")) |s| (if (s.len > 0) s else re_vars.get("COBJS").?) else re_vars.get("COBJS").?;
-    const re_headers = re_vars.get("HEADERS").?;
-    const systhreads_compflags = threads_vars.get("COMPFLAGS").?;
-    const threads_header = if (is_5_2_or_newer) "otherlibs/systhreads/caml/threads.h" else "otherlibs/systhreads/threads.h";
 
-    const dynlink_plan = if (!is_5_3_or_newer)
+    const dynlink_standalone = fileExists(io, root_dir, "otherlibs/dynlink/dynlink_config.ml.in");
+    const dynlink_pack: Manifest.Plan = if (!dynlink_standalone)
         try computeDynlinkPackPlan(io, gpa, arena, src_root, root_dir)
     else
-        DynlinkPackPlan{ .waves = &.{}, .units = &.{} };
+        .{ .cmi_waves = &.{}, .cmo_units = &.{} };
 
-    // 9. Serialize Manifest as ZON
+    // 9. Features
+    const features: Manifest.Features = .{
+        .relocatable = is_5_5_or_newer,
+        .header_format = if (is_5_5_or_newer)
+            .launch_info_5_5
+        else if (is_5_2_or_newer)
+            .launch_info_5_2
+        else
+            .camlheader,
+        .gen_primsc = fileExists(io, root_dir, "runtime/gen_primsc.sh"),
+        .byte_program_mode = is_5_5_or_newer,
+        .config_common_template = fileExists(io, root_dir, "utils/config.common.ml.in"),
+        .config_generated_template = fileExists(io, root_dir, "utils/config.generated.ml.in"),
+        .byterntm = fileExists(io, root_dir, "bytecomp/byterntm.mll"),
+        .yacc_strict = is_5_1_or_newer,
+        .byt_stub_suffix = is_5_1_or_newer,
+        .dynlink_standalone = dynlink_standalone,
+        .zstd = containsStr(rt_byt, "zstd"),
+    };
+
+    // 10. Serialize Manifest as ZON
     const manifest: Manifest = .{
-        .version_string = ver.version_string,
-        .major = ver.major,
-        .minor = ver.minor,
-        .patchlevel = ver.patchlevel,
-        .release_number = ver.release_number,
-        .dev_version = ver.dev_version,
-        .extra = ver.extra,
-        .extra_prefix = ver.extra_prefix,
-        .version_number = ver.version_number,
-        .magic_prefix = ver.magic_prefix,
-        .magic_version = ver.magic_version,
-        .exec_format = ver.exec_format,
-        .exec_magic_length = ver.exec_magic_length,
-        .magic_numbers = ver.magic_numbers,
-        .runtime_common_c_sources = rt_common,
-        .runtime_unix_c_sources = rt_unix,
-        .runtime_win32_c_sources = rt_win32,
-        .runtime_bytecode_only_c_sources = rt_byt,
-        .runtime_native_only_c_sources = rt_nat,
-        .comprmarsh_c_sources = comprmarsh,
-        .ocamlyacc_c_sources = ocamlyacc_c_sources.items,
-        .stdlib_compflags = stdlib_vars.get("COMPFLAGS").?,
-        .stdlib_units = stdlib_units.items,
-        .stdlib_cmi_waves = stdlib_cmi_waves,
-        .has_std_exit_mli = has_std_exit_mli,
-        .std_exit_compflags = std_exit_compflags,
-        .pervasives_modules = pervasives.items,
-        .compiler_compflags = compiler_compflags,
-        .compiler_cmi_waves = compiler_plan.cmi_waves,
-        .compiler_cmo_units = compiler_plan.cmo_units,
-        .ocamlcommon_cmos = comp_lists.ocamlcommon_cmos,
-        .ocamlbytecomp_cmos = comp_lists.ocamlbytecomp_cmos,
-        .ocamlmiddleend_cmos = comp_lists.ocamlmiddleend_cmos,
-        .ocamloptcomp_cmos = comp_lists.ocamloptcomp_cmos,
-        .ocamltoplevel_cmos = comp_lists.ocamltoplevel_cmos,
-        .ocamlprof_cmos = comp_lists.ocamlprof_cmos,
-        .ocamlcp_cmos = comp_lists.ocamlcp_cmos,
-        .ocamloptp_cmos = comp_lists.ocamloptp_cmos,
-        .ocamlmklib_cmos = comp_lists.ocamlmklib_cmos,
-        .ocamlmktop_cmos = comp_lists.ocamlmktop_cmos,
-        .lex_cmi_waves = lex_plan.cmi_waves,
-        .lex_cmo_units = lex_plan.cmo_units,
-        .ocamllex_cmos = comp_lists.ocamllex_cmos,
-        .otherlibs_compflags = otherlibs_compflags,
-        .systhreads_compflags = systhreads_compflags,
-        .unix_common_c_sources = unix_common_c,
-        .unix_unix_c_sources = unix_unix_c,
-        .unix_win32_c_sources = unix_win32_c,
-        .str_c_sources = str_c,
-        .runtime_events_c_sources = re_c,
-        .unix_headers = unix_headers,
-        .runtime_events_headers = re_headers,
-        .threads_header = threads_header,
-        .dynlink_pack_cmi_waves = dynlink_plan.waves,
-        .dynlink_pack_units = dynlink_plan.units,
+        .version = ver,
+        .features = features,
+        .runtime = .{
+            .common_c_sources = rt_common,
+            .unix_c_sources = rt_unix,
+            .win32_c_sources = rt_win32,
+            .bytecode_only_c_sources = rt_byt,
+            .native_only_c_sources = rt_nat,
+            .comprmarsh_c_sources = comprmarsh,
+            .ocamlyacc_c_sources = ocamlyacc_c_sources.items,
+        },
+        .stdlib = .{
+            .compflags = stdlib_vars.get("COMPFLAGS").?,
+            .plan = stdlib_plan.plan,
+            .cma = stdlib_plan.cma,
+            .pervasives = pervasives.items,
+        },
+        .compiler = .{
+            .compflags = compiler_compflags,
+            .plan = compiler_plan,
+            .ocamlcommon = comp_lists.ocamlcommon_cmos,
+            .ocamlbytecomp = comp_lists.ocamlbytecomp_cmos,
+            .ocamlmiddleend = comp_lists.ocamlmiddleend_cmos,
+            .ocamloptcomp = comp_lists.ocamloptcomp_cmos,
+            .ocamltoplevel = comp_lists.ocamltoplevel_cmos,
+            .ocamlprof = comp_lists.ocamlprof_cmos,
+            .ocamlcp = comp_lists.ocamlcp_cmos,
+            .ocamloptp = comp_lists.ocamloptp_cmos,
+            .ocamlmklib = comp_lists.ocamlmklib_cmos,
+            .ocamlmktop = comp_lists.ocamlmktop_cmos,
+        },
+        .lex = .{
+            .plan = lex_plan,
+            .ocamllex = comp_lists.ocamllex_cmos,
+        },
+        .otherlibs = .{
+            .compflags = str_vars.get("COMPFLAGS").?,
+            .systhreads_compflags = threads_vars.get("COMPFLAGS").?,
+            .unix_common_c_sources = unix_unix_vars.get("COMMON_C_SOURCES").?,
+            .unix_unix_c_sources = unix_unix_vars.get("OS_C_SOURCES").?,
+            .unix_win32_c_sources = unix_win32_vars.get("OS_C_SOURCES").?,
+            .unix_headers = unix_unix_vars.get("HEADERS").?,
+            .str_c_sources = str_c,
+            .runtime_events_c_sources = re_c,
+            .runtime_events_headers = re_vars.get("HEADERS").?,
+            .threads_header = if (fileExists(io, root_dir, "otherlibs/systhreads/caml/threads.h"))
+                "otherlibs/systhreads/caml/threads.h"
+            else
+                "otherlibs/systhreads/threads.h",
+            .dynlink_pack = dynlink_pack,
+        },
     };
 
     var write_buf: [8192]u8 = undefined;
@@ -318,20 +292,25 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     defer fw.file.close(io);
     const w = &fw.interface;
 
+    @setEvalBranchQuota(10_000);
     try std.zon.stringify.serialize(manifest, .{ .whitespace = true }, w);
     try w.writeByte('\n');
     try fw.flush();
 }
 
-const StdlibUnitData = Manifest.StdlibUnit;
-const CompilerCmiUnitData = Manifest.CompilerCmiUnit;
-const CompilerCmoUnitData = Manifest.CompilerCmoUnit;
-const DynlinkPackUnitData = Manifest.DynlinkPackUnit;
+const Unit = Manifest.Unit;
+const WaveUnit = Manifest.WaveUnit;
+const Src = Manifest.Src;
 
-const DynlinkPackPlan = struct {
-    waves: []const []const []const u8,
-    units: []const DynlinkPackUnitData,
-};
+/// x86-only backend modules (`asmcomp/x86_*`)
+const intel_archs: []const Manifest.Arch = &.{ .amd64, .i386 };
+
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| {
+        if (std.mem.eql(u8, s, needle)) return true;
+    }
+    return false;
+}
 
 fn queryMakeVars(
     io: std.Io,
@@ -590,18 +569,13 @@ fn resolveVpathKey(
     std.debug.panic("resolveVpathKey failed for '{s}'", .{stem});
 }
 
-const CompilerPlan = struct {
-    cmi_waves: []const []const CompilerCmiUnitData,
-    cmo_units: []const CompilerCmoUnitData,
-};
-
 fn computeCompilerPlan(
     io: std.Io,
     arena: std.mem.Allocator,
     root_dir: std.Io.Dir,
     arch_specific: []const []const u8,
     lists: *const CompilerLists,
-) !CompilerPlan {
+) !Manifest.Plan {
     // Parse .depend (and tools/.depend if present) taking union across all architectures
     const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
     var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
@@ -713,75 +687,61 @@ fn computeCompilerPlan(
         }
     }
 
-    // Build the set of CMI-producing units (key -> CompilerCmiUnitData)
-    var cmi_units: std.ArrayList(CompilerCmiUnitData) = .empty;
+    // Build the set of CMI-producing units
+    var cmi_units: std.ArrayList(WaveUnit) = .empty;
     var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty; // "misc.cmi" -> "utils/misc"
-    var ml_without_mli_set: std.StringHashMapUnmanaged(void) = .empty;
 
     for (cmi_only_keys.items) |k| {
-        const base = std.fs.path.basename(k);
-        const cmi_name = try std.fmt.allocPrint(arena, "{s}.cmi", .{base});
         const mli_src = (try resolveMliSource(io, arena, root_dir, &arch_spec_set, k)) orelse continue;
-        try cmi_units.append(arena, .{
-            .key = k,
-            .cmi_name = cmi_name,
-            .src_path = mli_src,
-            .is_ml_without_mli = false,
-            .only_intel = std.mem.startsWith(u8, k, "asmcomp/x86_"),
-        });
-        try cmi_by_basename.put(arena, cmi_name, k);
+        try cmi_units.append(arena, .{ .kind = .intf, .unit = compilerUnit(k, mli_src) });
+        try cmi_by_basename.put(arena, try cmiName(arena, k), k);
     }
 
-    var cmo_units: std.ArrayList(CompilerCmoUnitData) = .empty;
+    var cmo_units: std.ArrayList(Unit) = .empty;
     for (cmo_keys.items) |k| {
         const cmi_key = if (std.mem.startsWith(u8, k, "toplevel/byte/"))
             try std.fmt.allocPrint(arena, "toplevel/{s}", .{std.fs.path.basename(k)})
         else
             k;
-        const base = std.fs.path.basename(k);
-        const cmi_name = try std.fmt.allocPrint(arena, "{s}.cmi", .{base});
-        const cmo_name = try std.fmt.allocPrint(arena, "{s}.cmo", .{base});
-        const only_intel = std.mem.startsWith(u8, k, "asmcomp/x86_");
+        const cmi_name = try cmiName(arena, k);
         const ml_src = try resolveMlSource(arena, &arch_spec_set, k);
 
         if (try resolveMliSource(io, arena, root_dir, &arch_spec_set, cmi_key)) |mli_src| {
             if (!cmi_by_basename.contains(cmi_name)) {
-                try cmi_units.append(arena, .{
-                    .key = cmi_key,
-                    .cmi_name = cmi_name,
-                    .src_path = mli_src,
-                    .is_ml_without_mli = false,
-                    .only_intel = only_intel,
-                });
+                try cmi_units.append(arena, .{ .kind = .intf, .unit = compilerUnit(cmi_key, mli_src) });
                 try cmi_by_basename.put(arena, cmi_name, cmi_key);
             }
-            try cmo_units.append(arena, .{
-                .key = k,
-                .cmo_name = cmo_name,
-                .src_path = ml_src,
-                .only_intel = only_intel,
-            });
+            try cmo_units.append(arena, compilerUnit(k, ml_src));
         } else {
-            // No .mli exists! Check if any other module depends on this module's .cmi/.cmo
-            // Putting it in cmi_waves with is_ml_without_mli = true produces both .cmo and .cmi in its wave!
-            try cmi_units.append(arena, .{
-                .key = k,
-                .cmi_name = cmi_name,
-                .cmo_name = cmo_name,
-                .src_path = ml_src,
-                .is_ml_without_mli = true,
-                .only_intel = only_intel,
-            });
+            // No .mli: compiling the .ml produces both .cmi and .cmo, so it goes into the waves.
+            try cmi_units.append(arena, .{ .kind = .impl, .unit = compilerUnit(k, ml_src) });
             try cmi_by_basename.put(arena, cmi_name, k);
-            try ml_without_mli_set.put(arena, k, {});
         }
     }
 
-    const waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename);
     return .{
-        .cmi_waves = waves,
+        .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
     };
+}
+
+fn compilerUnit(key: []const u8, src: Src) Unit {
+    return .{
+        .key = key,
+        .name = std.fs.path.basename(key),
+        .src = src,
+        .archs = if (std.mem.startsWith(u8, key, "asmcomp/x86_")) intel_archs else &.{},
+        .dest = if (std.mem.eql(u8, key, "tools/profiling"))
+            .profiling
+        else if (std.mem.startsWith(u8, key, "tools/"))
+            .none
+        else
+            .lib,
+    };
+}
+
+fn cmiName(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}.cmi", .{std.fs.path.basename(key)});
 }
 
 fn computeLexPlan(
@@ -789,7 +749,7 @@ fn computeLexPlan(
     arena: std.mem.Allocator,
     root_dir: std.Io.Dir,
     lex_cmo_keys: []const []const u8,
-) !CompilerPlan {
+) !Manifest.Plan {
     var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
     const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
     try parseDependUnionInto(arena, root_dep_src, "", &dep_map);
@@ -798,70 +758,54 @@ fn computeLexPlan(
     } else |_| {}
 
     var empty_arch: std.StringHashMapUnmanaged(void) = .empty;
-    var cmi_units: std.ArrayList(CompilerCmiUnitData) = .empty;
-    var cmo_units: std.ArrayList(CompilerCmoUnitData) = .empty;
+    var cmi_units: std.ArrayList(WaveUnit) = .empty;
+    var cmo_units: std.ArrayList(Unit) = .empty;
     var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty;
 
     for (lex_cmo_keys) |k| {
-        const base = std.fs.path.basename(k);
-        const cmi_name = try std.fmt.allocPrint(arena, "{s}.cmi", .{base});
-        const cmo_name = try std.fmt.allocPrint(arena, "{s}.cmo", .{base});
+        const name = std.fs.path.basename(k);
+        const ml_src = try resolveMlSource(arena, &empty_arch, k);
+        try cmi_by_basename.put(arena, try cmiName(arena, k), k);
 
         if (try resolveMliSource(io, arena, root_dir, &empty_arch, k)) |mli_src| {
-            try cmi_units.append(arena, .{
-                .key = k,
-                .cmi_name = cmi_name,
-                .src_path = mli_src,
-                .is_ml_without_mli = false,
-            });
-            try cmi_by_basename.put(arena, cmi_name, k);
-            try cmo_units.append(arena, .{
-                .key = k,
-                .cmo_name = cmo_name,
-                .src_path = try resolveMlSource(arena, &empty_arch, k),
-            });
+            try cmi_units.append(arena, .{ .kind = .intf, .unit = .{ .key = k, .name = name, .src = mli_src } });
+            try cmo_units.append(arena, .{ .key = k, .name = name, .src = ml_src });
         } else {
-            try cmi_units.append(arena, .{
-                .key = k,
-                .cmi_name = cmi_name,
-                .cmo_name = cmo_name,
-                .src_path = try resolveMlSource(arena, &empty_arch, k),
-                .is_ml_without_mli = true,
-            });
-            try cmi_by_basename.put(arena, cmi_name, k);
+            try cmi_units.append(arena, .{ .kind = .impl, .unit = .{ .key = k, .name = name, .src = ml_src } });
         }
     }
 
-    const waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename);
     return .{
-        .cmi_waves = waves,
+        .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
     };
 }
 
 fn sortCmiWaves(
     arena: std.mem.Allocator,
-    units: []const CompilerCmiUnitData,
+    units: []const WaveUnit,
     dep_map: *const std.StringHashMapUnmanaged([]const []const u8),
     cmi_by_basename: *const std.StringHashMapUnmanaged([]const u8),
-) ![]const []const CompilerCmiUnitData {
+) ![]const []const WaveUnit {
     const total = units.len;
     var done = try arena.alloc(bool, total);
     @memset(done, false);
     var built_cmis: std.StringHashMapUnmanaged(void) = .empty;
-    var waves: std.ArrayList([]const CompilerCmiUnitData) = .empty;
+    var waves: std.ArrayList([]const WaveUnit) = .empty;
     var completed: usize = 0;
 
     while (completed < total) {
-        var wave: std.ArrayList(CompilerCmiUnitData) = .empty;
+        var wave: std.ArrayList(WaveUnit) = .empty;
         var wave_indices: std.ArrayList(usize) = .empty;
 
-        for (units, 0..) |u, idx| {
+        for (units, 0..) |wu, idx| {
             if (done[idx]) continue;
-            const dep_lookup_key = if (u.is_ml_without_mli)
-                try std.fmt.allocPrint(arena, "{s}.cmo", .{u.key})
-            else
-                try std.fmt.allocPrint(arena, "{s}.cmi", .{u.key});
+            const u = wu.unit;
+            const cmi_name = try std.fmt.allocPrint(arena, "{s}.cmi", .{u.name});
+            const dep_lookup_key = switch (wu.kind) {
+                .impl => try std.fmt.allocPrint(arena, "{s}.cmo", .{u.key}),
+                .intf => try std.fmt.allocPrint(arena, "{s}.cmi", .{u.key}),
+            };
 
             var ready = true;
             if (dep_map.get(dep_lookup_key)) |deps| {
@@ -871,7 +815,7 @@ fn sortCmiWaves(
                         try std.fmt.allocPrint(arena, "{s}.cmi", .{dep_base[0 .. dep_base.len - 4]})
                     else
                         dep_base;
-                    if (std.mem.eql(u8, dep_cmi, u.cmi_name)) continue;
+                    if (std.mem.eql(u8, dep_cmi, cmi_name)) continue;
                     if (cmi_by_basename.contains(dep_cmi) and !built_cmis.contains(dep_cmi)) {
                         ready = false;
                         break;
@@ -879,21 +823,21 @@ fn sortCmiWaves(
                 }
             }
             if (ready) {
-                try wave.append(arena, u);
+                try wave.append(arena, wu);
                 try wave_indices.append(arena, idx);
             }
         }
 
         if (wave.items.len == 0) {
-            for (units, 0..) |u, idx| {
-                if (!done[idx]) std.log.err("Unresolved CMI wave unit: {s} ({s})", .{ u.key, u.cmi_name });
+            for (units, 0..) |wu, idx| {
+                if (!done[idx]) std.log.err("Unresolved CMI wave unit: {s} ({s})", .{ wu.unit.key, wu.unit.name });
             }
             @panic("sortCmiWaves cycle detected");
         }
 
         for (wave_indices.items) |idx| {
             done[idx] = true;
-            try built_cmis.put(arena, units[idx].cmi_name, {});
+            try built_cmis.put(arena, try std.fmt.allocPrint(arena, "{s}.cmi", .{units[idx].unit.name}), {});
             completed += 1;
         }
         try waves.append(arena, wave.items);
@@ -908,26 +852,26 @@ fn resolveMliSource(
     root_dir: std.Io.Dir,
     arch_spec_set: *const std.StringHashMapUnmanaged(void),
     key: []const u8,
-) !?[]const u8 {
+) !?Src {
     inline for (&.{
-        .{ "utils/config", "utils/config.mli" },
-        .{ "utils/config_main", "utils/config.mli" },
-        .{ "utils/config_boot", "utils/config.mli" },
-        .{ "utils/domainstate", "@gen/domainstate.mli" },
-        .{ "parsing/camlinternalMenhirLib", "@gen/camlinternalMenhirLib.mli" },
-        .{ "parsing/parser", "@gen/parser.mli" },
-        .{ "bytecomp/opcodes", "@gen/opcodes.mli" },
-        .{ "lex/parser", "@gen/lex_parser.mli" },
+        .{ "utils/config", Src{ .upstream = "utils/config.mli" } },
+        .{ "utils/config_main", Src{ .upstream = "utils/config.mli" } },
+        .{ "utils/config_boot", Src{ .upstream = "utils/config.mli" } },
+        .{ "utils/domainstate", Src{ .gen = .domainstate_mli } },
+        .{ "parsing/camlinternalMenhirLib", Src{ .gen = .camlinternalMenhirLib_mli } },
+        .{ "parsing/parser", Src{ .gen = .parser_mli } },
+        .{ "bytecomp/opcodes", Src{ .gen = .opcodes_mli } },
+        .{ "lex/parser", Src{ .gen = .lex_parser_mli } },
     }) |entry| {
         if (std.mem.eql(u8, key, entry[0])) return entry[1];
     }
 
     const mli_rel = try std.fmt.allocPrint(arena, "{s}.mli", .{key});
     if (arch_spec_set.contains(mli_rel)) {
-        return try std.fmt.allocPrint(arena, "@arch/{s}.mli", .{std.fs.path.basename(key)});
+        return .{ .arch = try std.fmt.allocPrint(arena, "{s}.mli", .{std.fs.path.basename(key)}) };
     }
     if (fileExists(io, root_dir, mli_rel)) {
-        return mli_rel;
+        return .{ .upstream = mli_rel };
     }
     return null;
 }
@@ -936,31 +880,31 @@ fn resolveMlSource(
     arena: std.mem.Allocator,
     arch_spec_set: *const std.StringHashMapUnmanaged(void),
     key: []const u8,
-) ![]const u8 {
+) !Src {
     inline for (&.{
-        .{ "utils/config", "@gen/config_main.ml" },
-        .{ "utils/config_main", "@gen/config_main.ml" },
-        .{ "utils/config_boot", "@gen/config_boot.ml" },
-        .{ "utils/domainstate", "@gen/domainstate.ml" },
-        .{ "parsing/camlinternalMenhirLib", "boot/menhir/menhirLib.ml" },
-        .{ "parsing/parser", "@gen/parser.ml" },
-        .{ "parsing/lexer", "@gen/parsing_lexer.ml" },
-        .{ "bytecomp/byterntm", "@gen/byterntm.ml" },
-        .{ "bytecomp/opcodes", "@gen/opcodes.ml" },
-        .{ "lambda/runtimedef", "@gen/runtimedef.ml" },
-        .{ "tools/opnames", "@gen/opnames.ml" },
-        .{ "asmcomp/emit", "@gen/emit.ml" },
-        .{ "lex/parser", "@gen/lex_parser.ml" },
-        .{ "lex/lexer", "@gen/lex_lexer.ml" },
+        .{ "utils/config", Src{ .gen = .config_main_ml } },
+        .{ "utils/config_main", Src{ .gen = .config_main_ml } },
+        .{ "utils/config_boot", Src{ .gen = .config_boot_ml } },
+        .{ "utils/domainstate", Src{ .gen = .domainstate_ml } },
+        .{ "parsing/camlinternalMenhirLib", Src{ .upstream = "boot/menhir/menhirLib.ml" } },
+        .{ "parsing/parser", Src{ .gen = .parser_ml } },
+        .{ "parsing/lexer", Src{ .gen = .parsing_lexer_ml } },
+        .{ "bytecomp/byterntm", Src{ .gen = .byterntm_ml } },
+        .{ "bytecomp/opcodes", Src{ .gen = .opcodes_ml } },
+        .{ "lambda/runtimedef", Src{ .gen = .runtimedef_ml } },
+        .{ "tools/opnames", Src{ .gen = .opnames_ml } },
+        .{ "asmcomp/emit", Src{ .gen = .emit_ml } },
+        .{ "lex/parser", Src{ .gen = .lex_parser_ml } },
+        .{ "lex/lexer", Src{ .gen = .lex_lexer_ml } },
     }) |entry| {
         if (std.mem.eql(u8, key, entry[0])) return entry[1];
     }
 
     const ml_rel = try std.fmt.allocPrint(arena, "{s}.ml", .{key});
     if (arch_spec_set.contains(ml_rel)) {
-        return std.fmt.allocPrint(arena, "@arch/{s}.ml", .{std.fs.path.basename(key)});
+        return .{ .arch = try std.fmt.allocPrint(arena, "{s}.ml", .{std.fs.path.basename(key)}) };
     }
-    return ml_rel;
+    return .{ .upstream = ml_rel };
 }
 
 fn computeDynlinkPackPlan(
@@ -969,7 +913,7 @@ fn computeDynlinkPackPlan(
     arena: std.mem.Allocator,
     src_root: []const u8,
     root_dir: std.Io.Dir,
-) !DynlinkPackPlan {
+) !Manifest.Plan {
     const dyn_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/dynlink/Makefile", &.{
         "O=o", "A=a", "S=s", "SO=so", "EXE=",
     }, &.{ "COMPILERLIBS_INTFS", "COMPILERLIBS_SOURCES" });
@@ -978,20 +922,16 @@ fn computeDynlinkPackPlan(
     const sources = dyn_vars.get("COMPILERLIBS_SOURCES").?;
 
     var empty_arch: std.StringHashMapUnmanaged(void) = .empty;
-    var units: std.ArrayList(DynlinkPackUnitData) = .empty;
+    var intf_units: std.ArrayList(Unit) = .empty;
+    var cmo_units: std.ArrayList(Unit) = .empty;
     var stem_set: std.StringHashMapUnmanaged(void) = .empty;
 
     for (sources) |ml_rel| {
         const key = ml_rel[0 .. ml_rel.len - 3]; // strip .ml
         const stem = std.fs.path.basename(key);
         const mli_src = (try resolveMliSource(io, arena, root_dir, &empty_arch, key)).?;
-        const ml_src = try resolveMlSource(arena, &empty_arch, key);
-        try units.append(arena, .{
-            .stem = stem,
-            .mli_src = mli_src,
-            .ml_src = ml_src,
-            .ml_is_intf = false,
-        });
+        try intf_units.append(arena, .{ .key = key, .name = stem, .src = mli_src });
+        try cmo_units.append(arena, .{ .key = key, .name = stem, .src = try resolveMlSource(arena, &empty_arch, key) });
         try stem_set.put(arena, stem, {});
     }
 
@@ -999,12 +939,9 @@ fn computeDynlinkPackPlan(
         const key = mli_rel[0 .. mli_rel.len - 4]; // strip .mli
         const stem = std.fs.path.basename(key);
         const mli_src = (try resolveMliSource(io, arena, root_dir, &empty_arch, key)).?;
-        try units.append(arena, .{
-            .stem = stem,
-            .mli_src = mli_src,
-            .ml_src = mli_src,
-            .ml_is_intf = true,
-        });
+        try intf_units.append(arena, .{ .key = key, .name = stem, .src = mli_src });
+        // interface-only modules are compiled with `-impl` on the .mli
+        try cmo_units.append(arena, .{ .key = key, .name = stem, .src = mli_src });
         try stem_set.put(arena, stem, {});
     }
 
@@ -1029,23 +966,23 @@ fn computeDynlinkPackPlan(
         try bare_cmi_deps.put(arena, stem, dlist.items);
     }
 
-    const total = units.items.len;
+    const total = intf_units.items.len;
     var done = try arena.alloc(bool, total);
     @memset(done, false);
     var built: std.StringHashMapUnmanaged(void) = .empty;
-    var waves: std.ArrayList([]const []const u8) = .empty;
+    var waves: std.ArrayList([]const WaveUnit) = .empty;
     var completed: usize = 0;
 
     while (completed < total) {
-        var wave: std.ArrayList([]const u8) = .empty;
+        var wave: std.ArrayList(WaveUnit) = .empty;
         var wave_indices: std.ArrayList(usize) = .empty;
 
-        for (units.items, 0..) |u, idx| {
+        for (intf_units.items, 0..) |u, idx| {
             if (done[idx]) continue;
             var ready = true;
-            if (bare_cmi_deps.get(u.stem)) |deps| {
+            if (bare_cmi_deps.get(u.name)) |deps| {
                 for (deps) |dep_stem| {
-                    if (std.mem.eql(u8, dep_stem, u.stem)) continue;
+                    if (std.mem.eql(u8, dep_stem, u.name)) continue;
                     if (stem_set.contains(dep_stem) and !built.contains(dep_stem)) {
                         ready = false;
                         break;
@@ -1053,22 +990,22 @@ fn computeDynlinkPackPlan(
                 }
             }
             if (ready) {
-                try wave.append(arena, u.stem);
+                try wave.append(arena, .{ .kind = .intf, .unit = u });
                 try wave_indices.append(arena, idx);
             }
         }
         if (wave.items.len == 0) @panic("Dynlink pack cycle");
         for (wave_indices.items) |idx| {
             done[idx] = true;
-            try built.put(arena, units.items[idx].stem, {});
+            try built.put(arena, intf_units.items[idx].name, {});
             completed += 1;
         }
         try waves.append(arena, wave.items);
     }
 
     return .{
-        .waves = waves.items,
-        .units = units.items,
+        .cmi_waves = waves.items,
+        .cmo_units = cmo_units.items,
     };
 }
 
@@ -1285,30 +1222,119 @@ fn parseStdlibDependCmiMap(
     return map;
 }
 
+const StdlibPlan = struct {
+    plan: Manifest.Plan,
+    /// module names archived into stdlib.cma, in link order
+    cma: []const []const u8,
+};
+
+fn computeStdlibPlan(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    root_dir: std.Io.Dir,
+    basenames: []const []const u8,
+) !StdlibPlan {
+    const compflags_script = try root_dir.readFileAlloc(io, "stdlib/Compflags", arena, .unlimited);
+    const stdlib_depend = try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited);
+    const cmi_dep_map = try parseStdlibDependCmiMap(arena, stdlib_depend);
+
+    var wave_units: std.ArrayList(WaveUnit) = .empty;
+    var cmo_units: std.ArrayList(Unit) = .empty;
+    var cma: std.ArrayList([]const u8) = .empty;
+
+    for (basenames) |base| {
+        const mod_name = try stdlibModuleName(arena, base);
+        const is_stdlib = std.mem.eql(u8, base, "stdlib");
+        const is_labels = std.mem.endsWith(u8, base, "Labels");
+        const cmi_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}));
+        const cmo_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name}));
+
+        const ml_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.ml", .{base});
+        const mli_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.mli", .{base});
+        const ml_src: Src = if (std.mem.eql(u8, base, "sys"))
+            .{ .gen = .stdlib_sys_ml }
+        else if (is_stdlib)
+            .{ .expanded = ml_rel }
+        else
+            .{ .upstream = ml_rel };
+
+        if (fileExists(io, root_dir, mli_rel)) {
+            const mli_src: Src = if (is_stdlib or is_labels) .{ .expanded = mli_rel } else .{ .upstream = mli_rel };
+            try wave_units.append(arena, .{ .kind = .intf, .unit = .{
+                .key = mod_name,
+                .name = mod_name,
+                .src = mli_src,
+                .flags = cmi_flags,
+                .dest = .lib,
+            } });
+            try cmo_units.append(arena, .{
+                .key = mod_name,
+                .name = mod_name,
+                .src = ml_src,
+                .flags = cmo_flags,
+                .dest = .lib,
+            });
+        } else {
+            try wave_units.append(arena, .{ .kind = .impl, .unit = .{
+                .key = mod_name,
+                .name = mod_name,
+                .src = ml_src,
+                .flags = cmi_flags,
+                .dest = .lib,
+            } });
+        }
+        try cma.append(arena, mod_name);
+    }
+
+    // std_exit is not part of stdlib.cma; it is linked last into every executable.
+    const std_exit_flags = try evalCompflagsScript(arena, compflags_script, "std_exit.cmo");
+    if (fileExists(io, root_dir, "stdlib/std_exit.mli")) {
+        try wave_units.append(arena, .{ .kind = .intf, .unit = .{
+            .key = "std_exit",
+            .name = "std_exit",
+            .src = .{ .upstream = "stdlib/std_exit.mli" },
+            .flags = std_exit_flags,
+            .dest = .lib,
+        } });
+    }
+    try cmo_units.append(arena, .{
+        .key = "std_exit",
+        .name = "std_exit",
+        .src = .{ .upstream = "stdlib/std_exit.ml" },
+        .flags = std_exit_flags,
+        .dest = .lib,
+    });
+
+    return .{
+        .plan = .{
+            .cmi_waves = try computeStdlibCmiWaves(arena, wave_units.items, &cmi_dep_map),
+            .cmo_units = cmo_units.items,
+        },
+        .cma = cma.items,
+    };
+}
+
 fn computeStdlibCmiWaves(
     arena: std.mem.Allocator,
-    units: []const StdlibUnitData,
-    has_std_exit_mli: bool,
+    units: []const WaveUnit,
     cmi_dep_map: *const std.StringHashMapUnmanaged([]const []const u8),
-) ![]const []const []const u8 {
-    var all_mods: std.ArrayList([]const u8) = .empty;
-    for (units) |u| try all_mods.append(arena, u.module_name);
-    if (has_std_exit_mli) try all_mods.append(arena, "std_exit");
-
-    const total = all_mods.items.len;
+) ![]const []const WaveUnit {
+    const total = units.len;
     var done = try arena.alloc(bool, total);
     @memset(done, false);
     var built: std.StringHashMapUnmanaged(void) = .empty;
-    var waves: std.ArrayList([]const []const u8) = .empty;
+    var waves: std.ArrayList([]const WaveUnit) = .empty;
     var completed: usize = 0;
 
     while (completed < total) {
-        var wave: std.ArrayList([]const u8) = .empty;
+        var wave: std.ArrayList(WaveUnit) = .empty;
         var wave_indices: std.ArrayList(usize) = .empty;
 
-        for (all_mods.items, 0..) |mod_name, idx| {
+        for (units, 0..) |wu, idx| {
             if (done[idx]) continue;
+            const mod_name = wu.unit.name;
             var ready = true;
+            // everything but these two is compiled with the `Stdlib` module opened
             if (!std.mem.eql(u8, mod_name, "camlinternalFormatBasics") and !std.mem.eql(u8, mod_name, "stdlib")) {
                 if (!built.contains("stdlib")) ready = false;
             }
@@ -1323,14 +1349,14 @@ fn computeStdlibCmiWaves(
                 }
             }
             if (ready) {
-                try wave.append(arena, mod_name);
+                try wave.append(arena, wu);
                 try wave_indices.append(arena, idx);
             }
         }
         if (wave.items.len == 0) @panic("Stdlib .depend cycle");
         for (wave_indices.items) |idx| {
             done[idx] = true;
-            try built.put(arena, all_mods.items[idx], {});
+            try built.put(arena, units[idx].unit.name, {});
             completed += 1;
         }
         try waves.append(arena, wave.items);
@@ -1377,28 +1403,8 @@ fn parseSimpleMakefileVar(arena: std.mem.Allocator, src: []const u8, var_name: [
     return out.items;
 }
 
-const MagicNumbersData = Manifest.MagicNumbers;
-
-const ParsedVersion = struct {
-    version_string: []const u8,
-    major: u32,
-    minor: u32,
-    patchlevel: u32,
-    release_number: ?u32,
-    dev_version: bool,
-    extra: []const u8,
-    extra_prefix: []const u8,
-    version_number: u32,
-    magic_prefix: ?[]const u8,
-    magic_version: ?[]const u8,
-    exec_format: ?[]const u8,
-    exec_magic_length: ?usize,
-    magic_numbers: ?MagicNumbersData,
-};
-
-fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_file: []const u8) !ParsedVersion {
+fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_file: []const u8) !Manifest.Version {
     const dev_str = extractM4Define(version_m4, "OCAML__DEVELOPMENT_VERSION") orelse @panic("Missing OCAML__DEVELOPMENT_VERSION");
-    const dev_version = std.mem.eql(u8, dev_str, "true");
     const major = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MAJOR").?, 10);
     const minor = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MINOR").?, 10);
     const patchlevel = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_PATCHLEVEL").?, 10);
@@ -1416,44 +1422,41 @@ fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_f
     const first_line = std.mem.trim(u8, std.mem.sliceTo(version_file, '\n'), " \t\r");
     if (!std.mem.eql(u8, first_line, version_string)) @panic("VERSION mismatch");
 
-    const version_number: u32 = major * 10000 + minor * 100 + patchlevel;
-    const magic_prefix = extractM4Define(version_m4, "MAGIC_NUMBER__PREFIX");
-    const magic_version = extractM4Define(version_m4, "MAGIC_NUMBER__VERSION");
-    const exec_format = extractM4Define(version_m4, "EXEC__FORMAT");
-    const exec_magic_length: ?usize = if (magic_prefix != null and magic_version != null and exec_format != null)
-        magic_prefix.?.len + exec_format.?.len + magic_version.?.len
-    else
-        null;
-
-    const magic_numbers: ?MagicNumbersData = if (magic_prefix != null) .{
-        .exec = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "EXEC"),
-        .cmi = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMI"),
-        .cmo = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMO"),
-        .cma = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMA"),
-        .cmx_clambda = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMX_CLAMBDA"),
-        .cmxa_clambda = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMXA_CLAMBDA"),
-        .ast_impl = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "AST_IMPL"),
-        .ast_intf = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "AST_INTF"),
-        .cmxs = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMXS"),
-        .cmt = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "CMT"),
-        .linear = try extractMagicNumber(arena, version_m4, magic_prefix.?, magic_version.?, exec_format.?, "LINEAR"),
+    const magic: ?Manifest.Magic = if (extractM4Define(version_m4, "MAGIC_NUMBER__PREFIX")) |prefix| blk: {
+        const ver = extractM4Define(version_m4, "MAGIC_NUMBER__VERSION").?;
+        const exec_format = extractM4Define(version_m4, "EXEC__FORMAT").?;
+        break :blk .{
+            .prefix = prefix,
+            .version = ver,
+            .exec_format = exec_format,
+            .exec_length = prefix.len + exec_format.len + ver.len,
+            .numbers = .{
+                .exec = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "EXEC"),
+                .cmi = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMI"),
+                .cmo = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMO"),
+                .cma = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMA"),
+                .cmx_clambda = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMX_CLAMBDA"),
+                .cmxa_clambda = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMXA_CLAMBDA"),
+                .ast_impl = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "AST_IMPL"),
+                .ast_intf = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "AST_INTF"),
+                .cmxs = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMXS"),
+                .cmt = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMT"),
+                .linear = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "LINEAR"),
+            },
+        };
     } else null;
 
     return .{
-        .version_string = version_string,
+        .string = version_string,
         .major = major,
         .minor = minor,
         .patchlevel = patchlevel,
         .release_number = release_number,
-        .dev_version = dev_version,
+        .dev = std.mem.eql(u8, dev_str, "true"),
         .extra = extra,
         .extra_prefix = extra_prefix,
-        .version_number = version_number,
-        .magic_prefix = magic_prefix,
-        .magic_version = magic_version,
-        .exec_format = exec_format,
-        .exec_magic_length = exec_magic_length,
-        .magic_numbers = magic_numbers,
+        .number = major * 10000 + minor * 100 + patchlevel,
+        .magic = magic,
     };
 }
 
