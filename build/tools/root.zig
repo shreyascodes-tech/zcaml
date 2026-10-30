@@ -271,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
                         const field_info = std.meta.fieldInfo(T, f);
                         const FieldType = field_info.type;
 
-                        if (field_info.defaultValue()) |default_val| {
+                        if (field_info.attrs.defaultValue(FieldType)) |default_val| {
                             @field(result, @tagName(f)) = default_val;
                         } else if (@typeInfo(FieldType) == .optional) {
                             @field(result, @tagName(f)) = null;

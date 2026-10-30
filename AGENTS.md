@@ -1,6 +1,14 @@
-This is a zig 0.16+ project. And the APIs may not be the same as your training data.
+This is a Zig 0.17+ project (see build.zig.zon). Do not assume APIs from Zig 0.15/0.16 or older still apply.
 
 use zig env to get the lib dir and look into the source for new apis.
+
+## Zig 0.17 notes
+
+- Enum/integer conversion builtins changed: use `@backingInt(value)` instead of `@intFromEnum(value)`, and `@fromBackingInt(integer)` instead of `@enumFromInt(integer)`. The result type is inferred from context; cast the integer when needed (e.g. `const v: Version = @fromBackingInt(@as(u8, 0));`).
+- Struct reflection no longer exposes a `.fields` array of field records. `@typeInfo(T).@"struct"` has parallel `field_names`, `field_types`, and `field_attrs` slices. Use `std.meta.fieldNames(T)` when only names are needed. Prefer `@FieldType(T, name)` when only a field's type is needed.
+- Field defaults live in field attributes and require the field type: `info.field_attrs[i].defaultValue(info.field_types[i])`. Existing code using `std.meta.fieldInfo(T, field)` must use `field_info.attrs.defaultValue(field_info.type)`, not `field_info.defaultValue()`. `std.meta.fieldInfo` itself is deprecated in favor of `@typeInfo`.
+
+## I/O and process APIs
 
 ./zig-pkg/ is the new place where zig puts the extracted dependencies.
 

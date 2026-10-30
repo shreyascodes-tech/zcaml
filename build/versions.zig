@@ -35,8 +35,8 @@ const dep_prefix = "ocaml_";
 
 const dep_names = blk: {
     var names: []const []const u8 = &.{};
-    for (@typeInfo(@TypeOf(zon.dependencies)).@"struct".fields) |f| {
-        if (std.mem.startsWith(u8, f.name, dep_prefix)) names = names ++ .{f.name};
+    for (std.meta.fieldNames(@TypeOf(zon.dependencies))) |f| {
+        if (std.mem.startsWith(u8, f, dep_prefix)) names = names ++ .{f};
     }
     if (names.len == 0) @compileError("build.zig.zon has no `ocaml_*` dependencies");
     break :blk names;
@@ -64,7 +64,7 @@ pub const all = std.enums.values(Version);
 /// Name of the source dependency in `build.zig.zon`, e.g. `ocaml_5_5_1`.
 pub fn dependencyName(v: Version) []const u8 {
     return switch (v) {
-        inline else => |tag| comptime dep_names[@intFromEnum(tag)],
+        inline else => |tag| comptime dep_names[@backingInt(tag)],
     };
 }
 
@@ -81,4 +81,4 @@ pub fn manifestPath(v: Version) []const u8 {
 }
 
 /// Newest release (first `ocaml_*` dependency).
-pub const latest: Version = @enumFromInt(0);
+pub const latest: Version = @fromBackingInt(@intCast(0));

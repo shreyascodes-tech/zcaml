@@ -14,22 +14,29 @@ manifest: Manifest,
 
 pub fn load(b: *std.Build, dep: *std.Build.Dependency, version: Versions.Version) Source {
     const manifest_path = Versions.manifestPath(version);
-    const zon_src = b.build_root.handle.readFileAllocOptions(
-        b.graph.io,
-        manifest_path,
-        b.allocator,
-        .unlimited,
-        .of(u8),
-        0,
-    ) catch |err| std.debug.panic(
+    const zon_src_file = b.root.openFile(b.graph.io, manifest_path, .{ .mode = .read_only }) catch |err| std.debug.panic(
+        "Failed to open manifest '{s}' for OCaml {t} ({t}). Run `zig build generate`.",
+        .{ manifest_path, version, err },
+    );
+    defer zon_src_file.close(b.graph.io);
+
+    var zon_src_read_buf: [2048]u8 = undefined;
+    var zon_src_reader = zon_src_file.reader(b.graph.io, &zon_src_read_buf);
+    const zon_src = zon_src_reader.interface.allocRemainingAlignedSentinel(b.allocator, .unlimited, .of(u8), 0) catch |err| std.debug.panic(
         "Failed to read manifest '{s}' for OCaml {t} ({t}). Run `zig build generate`.",
         .{ manifest_path, version, err },
     );
 
     @setEvalBranchQuota(20_000);
-    var diag: std.zon.parse.Diagnostics = .{};
-    const manifest = std.zon.parse.fromSliceAlloc(Manifest, b.allocator, zon_src, &diag, .{}) catch |err| {
-        std.debug.panic("Failed to parse manifest '{s}': {t}\n{f}\nRun `zig build generate`.", .{ manifest_path, err, &diag });
+    var diag: std.zon.parse.Diagnostics = undefined;
+    const manifest = std.zon.parse.fromSlice(Manifest, .{
+        .gpa = b.allocator,
+        .arena = b.graph.arena,
+        .diagnostics = &diag,
+        .source = zon_src,
+        .ignore_unknown_fields = true,
+    }) catch |err| {
+        std.debug.panic("Failed to parse manifest '{s}': {t}\n{f}\nRun `zig build generate`.", .{ manifest_path, err, diag.fmt(manifest_path) });
     };
 
     if (!std.mem.eql(u8, manifest.version.string, @tagName(version))) std.debug.panic(
@@ -46,10 +53,17 @@ pub fn path(self: Source, sub_path: []const u8) std.Build.LazyPath {
 
 /// Read a file from the source tree at configure time.
 pub fn read(self: Source, sub_path: []const u8) []const u8 {
-    const dir = self.dep.builder.build_root.handle;
-    return dir.readFileAlloc(self.b.graph.io, sub_path, self.b.allocator, .unlimited) catch |err| {
-        std.debug.panic("Failed to read '{s}' from OCaml source dependency: {t}", .{ sub_path, err });
-    };
+    const file = self.dep.builder.root.openFile(self.b.graph.io, sub_path, .{ .mode = .read_only }) catch |err| std.debug.panic(
+        "Failed to read '{s}' from OCaml source dependency: {t}",
+        .{ sub_path, err },
+    );
+    defer file.close(self.b.graph.io);
+    var buf: [2048]u8 = undefined;
+    var reader = file.reader(self.b.graph.io, &buf);
+    return reader.interface.allocRemainingAlignedSentinel(self.b.allocator, .unlimited, .of(u8), 0) catch |err| std.debug.panic(
+        "Failed to read '{s}' from OCaml source dependency: {t}",
+        .{ sub_path, err },
+    );
 }
 
 /// Render a `@var@` template from the source tree.

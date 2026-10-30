@@ -137,7 +137,7 @@ fn buildHeaderExe(src: Source, target_rt: runtime.Artifacts, header_format: Sour
     if (p.is_windows) {
         if (header_format == .launch_info_5_5) extra = &.{"-DwmainCRTStartup=wmain"};
         exe.mingw_unicode_entry_point = true;
-        exe.subsystem = .Console;
+        exe.subsystem = .console;
     }
     exe.root_module.addCSourceFile(.{
         .file = src.path(if (p.is_windows and header_format != .launch_info_5_5) "stdlib/headernt.c" else "stdlib/header.c"),
