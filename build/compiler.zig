@@ -15,7 +15,7 @@ pub const Artifacts = struct {
     programs: Programs,
     compilerlibs_dir: LazyPath,
     profiling_dir: LazyPath,
-    /// Source resolver for compiler modules (otherlibs reuse it for dynlink).
+    /// Source resolver for compiler modules.
     sources: Source.Resolver,
     /// The freshly built `ocamlc`, for compiling libraries against the new stdlib.
     ocamlc: Ocamlc,
@@ -65,12 +65,11 @@ pub const stdlib_dir_from_bin = "../lib/ocaml";
 pub fn build(src: *const Source, options: Options) Artifacts {
     const b = src.b;
     const m = src.manifest;
-    const features = m.features;
     const host = options.host;
     const target = options.target_rt.platform;
 
     // 1. utils/config_main.ml, utils/config_boot.ml, compilerlibs/META
-    const config_common = if (features.config_common_template) renderConfigCommon(src.*) else src.read("utils/config.common.ml");
+    const config_common = renderConfigCommon(src.*);
     const config_wf = b.addWriteFiles();
     const config_main_ml = config_wf.add("config_main.ml", b.fmt("{s}\n{s}", .{ renderConfigGenerated(src.*, host, target), config_common }));
     const config_boot_ml = config_wf.add("config_boot.ml", b.fmt("{s}\n{s}", .{ src.read("utils/config.fixed.ml"), config_common }));
@@ -90,8 +89,7 @@ pub fn build(src: *const Source, options: Options) Artifacts {
 
     // 3. ocamlyacc / ocamllex outputs
     const yacc_run = b.addRunArtifact(options.build_ocamlyacc);
-    if (features.yacc_strict) yacc_run.addArg("--strict");
-    yacc_run.addArg("-b");
+    yacc_run.addArgs(&.{ "--strict", "-b" });
     const yacc_prefix = yacc_run.addOutputFileArg("parser");
     yacc_run.addFileArg(src.path("lex/parser.mly"));
 
@@ -105,7 +103,7 @@ pub fn build(src: *const Source, options: Options) Artifacts {
         .stdlib_dir = options.stdlib.dir,
         .primitives = options.target_rt.primitives,
     };
-    const launch_flags = launchFlags(b, src.*, host);
+    const launch_flags = launchFlags(b, host);
     const make_opcodes = buildTool(boot, lexer.run(src.path("tools/make_opcodes.mll"), "make_opcodes.ml"), "make_opcodes", launch_flags);
     const cvt_emit = buildTool(boot, lexer.run(src.path("tools/cvt_emit.mll"), "cvt_emit.ml"), "cvt_emit", launch_flags);
     const instruct_h = src.path("runtime/caml/instruct.h");
@@ -137,7 +135,7 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     sources.gen.put(.parser_ml, gen.parser_ml.lazyPath());
     sources.gen.put(.parser_mli, gen.parser_mli.lazyPath());
     sources.gen.put(.parsing_lexer_ml, lexer.run(src.path("parsing/lexer.mll"), "lexer.ml"));
-    if (features.byterntm) sources.gen.put(.byterntm_ml, lexer.run(src.path("bytecomp/byterntm.mll"), "byterntm.ml"));
+    sources.gen.put(.byterntm_ml, lexer.run(src.path("bytecomp/byterntm.mll"), "byterntm.ml"));
     sources.gen.put(.opcodes_ml, opcodes_ml);
     sources.gen.put(.opcodes_mli, opcodes_mli);
     sources.gen.put(.opnames_ml, opnames_ml);
@@ -255,49 +253,60 @@ pub fn build(src: *const Source, options: Options) Artifacts {
 }
 
 /// `opt` determines the machine code, while `byte.sources` determines the
-/// compiler's code generator. They differ when building host-native cross tools.
-pub fn buildNative(src: *const Source, byte: Artifacts, opt: Ocamlopt, rt: runtime.Artifacts, dynlink_dir: LazyPath, programs: bool) Artifacts {
+/// compiler's code generator. Pass `dynlink_dir = null` when only building
+/// host-native cross-compiler executables (`programs = true`).
+pub fn buildNative(src: *const Source, byte: Artifacts, opt: Ocamlopt, rt: runtime.Artifacts, dynlink_dir: ?LazyPath, programs: bool) Artifacts {
     const b = src.b;
     const cc = src.manifest.compiler;
     const compiled = opt.compilePlan(cc.plan, byte.sources, byte.compiled, .{
-        .includes = &.{dynlink_dir},
+        .includes = if (dynlink_dir) |d| &.{d} else &.{},
         .flags = cc.compflags,
+        .skip_toplevel = dynlink_dir == null,
     });
-    const libs = b.addWriteFiles();
-    const profiling = b.addWriteFiles();
-    _ = libs.addCopyDirectory(byte.compilerlibs_dir, "", .{});
-    _ = profiling.addCopyDirectory(byte.profiling_dir, "", .{});
-    for (compiled.impls.values()) |u| {
-        const dest = switch (u.unit.dest) {
-            .none => continue,
-            .lib => libs,
-            .profiling => profiling,
-        };
-        _ = dest.addCopyFile(u.impl.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
-        _ = dest.addCopyFile(u.impl.obj, b.fmt("{s}.o", .{u.unit.name}));
+
+    const libs: ?*std.Build.Step.WriteFile = if (dynlink_dir != null) b.addWriteFiles() else null;
+    const profiling: ?*std.Build.Step.WriteFile = if (dynlink_dir != null) b.addWriteFiles() else null;
+    if (libs) |l| {
+        _ = l.addCopyDirectory(byte.compilerlibs_dir, "", .{});
+        _ = profiling.?.addCopyDirectory(byte.profiling_dir, "", .{});
+        for (compiled.impls.values()) |u| {
+            const dest = switch (u.unit.dest) {
+                .none => continue,
+                .lib => l,
+                .profiling => profiling.?,
+            };
+            _ = dest.addCopyFile(u.impl.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
+            _ = dest.addCopyFile(u.impl.obj, b.fmt("{s}.o", .{u.unit.name}));
+        }
     }
+
     const archive = struct {
-        fn f(o: Ocamlopt, c: Ocamlopt.Compiled, wf: *std.Build.Step.WriteFile, name: []const u8, keys: []const []const u8, flags: []const []const u8) LazyPath {
+        fn f(o: Ocamlopt, c: Ocamlopt.Compiled, wf: ?*std.Build.Step.WriteFile, name: []const u8, keys: []const []const u8, flags: []const []const u8) LazyPath {
             const a = o.archive(name, c.cmxs(o.b, keys), .{ .flags = flags });
-            _ = wf.addCopyFile(a.cmxa, o.b.fmt("{s}.cmxa", .{name}));
-            _ = wf.addCopyFile(a.lib, o.b.fmt("{s}.a", .{name}));
+            if (wf) |w| {
+                _ = w.addCopyFile(a.cmxa, o.b.fmt("{s}.cmxa", .{name}));
+                _ = w.addCopyFile(a.lib, o.b.fmt("{s}.a", .{name}));
+            }
             return a.cmxa;
         }
     }.f;
-    const common = archive(opt, compiled, libs, "ocamlcommon", cc.ocamlcommon, if (src.manifest.features.zstd) &.{ "-linkall", "-cclib", "-lcomprmarsh", "-cclib", "-lzstd" } else &.{"-linkall"});
+    const common = archive(opt, compiled, libs, "ocamlcommon", cc.ocamlcommon, &.{ "-linkall", "-cclib", "-lcomprmarsh", "-cclib", "-lzstd" });
     const bytecomp = archive(opt, compiled, libs, "ocamlbytecomp", cc.ocamlbytecomp, &.{});
     const middleend = archive(opt, compiled, libs, "ocamlmiddleend", cc.ocamlmiddleend, &.{});
     const optcomp = archive(opt, compiled, libs, "ocamloptcomp", cc.ocamloptcomp, &.{});
-    _ = archive(opt, compiled, libs, "ocamltoplevel", cc.ocamltoplevel_native, &.{});
+    if (libs != null) _ = archive(opt, compiled, libs, "ocamltoplevel", cc.ocamltoplevel_native, &.{});
+
     var result = byte;
-    result.compilerlibs_dir = libs.getDirectory();
-    result.profiling_dir = profiling.getDirectory();
+    if (libs) |l| {
+        result.compilerlibs_dir = l.getDirectory();
+        result.profiling_dir = profiling.?.getDirectory();
+    }
     if (programs) {
         const lex = opt.compilePlan(src.manifest.lex.plan, byte.sources, byte.lex, .{ .flags = cc.compflags });
         const runtime_dir = b.addWriteFiles();
         _ = runtime_dir.addCopyFile(rt.libasmrun.?.getEmittedBin(), "libasmrun.a");
-        if (rt.libcomprmarsh) |a| _ = runtime_dir.addCopyFile(a.getEmittedBin(), "libcomprmarsh.a");
-        if (rt.zstd_lib) |a| _ = runtime_dir.addCopyFile(a.getEmittedBin(), "libzstd.a");
+        _ = runtime_dir.addCopyFile(rt.libcomprmarsh.getEmittedBin(), "libcomprmarsh.a");
+        _ = runtime_dir.addCopyFile(rt.zstd_lib.getEmittedBin(), "libzstd.a");
         const opts: Ocamlopt.Options = .{
             .includes = &.{ byte.compiled.cmis_dir, compiled.dir, runtime_dir.getDirectory(), lex.dir },
             .flags = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ stdlib_dir_from_bin },
@@ -345,8 +354,7 @@ const Linker = struct {
 /// releases are linked so nothing depends on the install prefix: the stdlib is
 /// `../lib/ocaml` relative to `ocamlrun`, and the launcher looks for `ocamlrun`
 /// next to the program, then on `PATH`.
-fn launchFlags(b: *std.Build, src: Source, host: Platform) []const []const u8 {
-    if (!src.manifest.features.relocatable) return &.{};
+fn launchFlags(b: *std.Build, host: Platform) []const []const u8 {
     return b.allocator.dupe([]const u8, &.{
         "-set-runtime-default",
         "standard_library_default=" ++ stdlib_dir_from_bin,
@@ -378,7 +386,7 @@ fn runCapture(
 }
 
 fn renderConfigCommon(src: Source) []const u8 {
-    const mn = src.manifest.version.magic.?.numbers;
+    const mn = src.manifest.version.magic.numbers;
     return src.renderAt("utils/config.common.ml.in", &.{
         .{ .name = "configure_input", .value = "Generated by zcaml from utils/config.common.ml.in" },
         .{ .name = "EXEC_MAGIC_NUMBER", .value = mn.exec },
@@ -403,7 +411,6 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
     // Relocatable releases resolve these at runtime: `bindir` from the relative
     // stdlib, `target_bindir = "."` as the directory of the running compiler.
     const bindir = ".";
-    const libdir = stdlib_dir_from_bin;
 
     const cflags = c.cflagsString(b);
     const cppflags = c.cppflagsString(b);
@@ -424,85 +431,27 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         }
     }.f;
 
-    if (!src.manifest.features.config_generated_template) {
-        return src.renderPercent("utils/config.mlp", &.{
-            .{ .name = "BINDIR", .value = bindir },
-            .{ .name = "LIBDIR", .value = libdir },
-            .{ .name = "CCOMPTYPE", .value = "cc" },
-            .{ .name = "CC", .value = cc },
-            .{ .name = "OUTPUTOBJ", .value = "-o " },
-            .{ .name = "CC_HAS_DEBUG_PREFIX_MAP", .value = "true" },
-            .{ .name = "AS_HAS_DEBUG_PREFIX_MAP", .value = "true" },
-            .{ .name = "OCAMLC_CFLAGS", .value = cflags },
-            .{ .name = "OCAMLC_CPPFLAGS", .value = cppflags },
-            .{ .name = "OCAMLOPT_CPPFLAGS", .value = cppflags },
-            .{ .name = "BYTECCLIBS", .value = cclibs },
-            .{ .name = "NATIVECCLIBS", .value = cclibs },
-            .{ .name = "PACKLD", .value = packld },
-            .{ .name = "RPATH", .value = rpath },
-            .{ .name = "MKSHAREDLIBRPATH", .value = rpath },
-            .{ .name = "ARCMD", .value = "zig ar" },
-            .{ .name = "SUPPORTS_SHARED_LIBRARIES", .value = "true" },
-            .{ .name = "FLEXDLL_CHAIN", .value = if (target.is_windows) "mingw64" else "" },
-            .{ .name = "FLEXLINK_FLAGS", .value = if (target.is_windows) "-stack 33554432" else "" },
-            .{ .name = "FLEXLINK_DLL_LDFLAGS", .value = "" },
-            .{ .name = "FLEXLINK_LDFLAGS", .value = if (target.is_windows) " -link -municode" else "" },
-            .{ .name = "MKDLL_EXP", .value = mkdll },
-            .{ .name = "MKEXE_EXP", .value = mkexe },
-            .{ .name = "MKMAINDLL", .value = mkdll },
-            .{ .name = "FLAMBDA", .value = "false" },
-            .{ .name = "WITH_FLAMBDA_INVARIANTS", .value = "false" },
-            .{ .name = "WITH_CMM_INVARIANTS", .value = "false" },
-            .{ .name = "WINDOWS_UNICODE", .value = if (target.is_windows) "1" else "0" },
-            .{ .name = "FLAT_FLOAT_ARRAY", .value = "true" },
-            .{ .name = "FUNCTION_SECTIONS", .value = bool_str(target.is_elf) },
-            .{ .name = "AFL_INSTRUMENT", .value = "false" },
-            .{ .name = "ARCH", .value = target.archName() },
-            .{ .name = "MODEL", .value = target.model },
-            .{ .name = "SYSTEM", .value = target.system },
-            .{ .name = "ASM", .value = asm_cmd },
-            .{ .name = "ASM_CFI_SUPPORTED", .value = bool_str(!target.is_windows) },
-            .{ .name = "WITH_FRAME_POINTERS", .value = "false" },
-            .{ .name = "WITH_PROFINFO", .value = "false" },
-            .{ .name = "PROFINFO_WIDTH", .value = "0" },
-            .{ .name = "EXE", .value = target.exeExt() },
-            .{ .name = "EXT_OBJ", .value = ".o" },
-            .{ .name = "EXT_ASM", .value = ".s" },
-            .{ .name = "EXT_LIB", .value = ".a" },
-            .{ .name = "EXT_DLL", .value = b.fmt(".{s}", .{so_ext}) },
-            .{ .name = "HOST", .value = host.triplet },
-            .{ .name = "TARGET", .value = target.triplet },
-            .{ .name = "SYSTHREAD_SUPPORT", .value = "true" },
-            .{ .name = "FLEXDLL_DIR", .value = "" },
-        });
-    }
-
     const runtime_id = target.runtimeId(b, src.manifest.version);
     return src.renderAt("utils/config.generated.ml.in", &.{
         .{ .name = "configure_input", .value = "Generated by zcaml from utils/config.generated.ml.in" },
         .{ .name = "QS", .value = "" },
         .{ .name = "ocaml_bindir", .value = bindir },
-        .{ .name = "TARGET_BINDIR", .value = bindir, .version_specific = true },
-        .{ .name = "ocaml_libdir", .value = libdir, .version_specific = true },
-        .{ .name = "ccomptype", .value = "cc", .version_specific = true },
-        .{ .name = "ccomp_type", .value = "cc", .version_specific = true },
+        .{ .name = "TARGET_BINDIR", .value = bindir },
+        .{ .name = "ccomp_type", .value = "cc" },
         .{ .name = "CC", .value = cc },
-        .{ .name = "ocaml_cc_vendor", .value = "clang-19", .version_specific = true },
+        .{ .name = "ocaml_cc_vendor", .value = "clang-19" },
         .{ .name = "outputobj", .value = "-o " },
         .{ .name = "cc_has_debug_prefix_map", .value = "true" },
-        .{ .name = "as_has_debug_prefix_map", .value = "true", .version_specific = true },
-        .{ .name = "ocaml_cv_prog_as_debug_prefix_map", .value = "true", .version_specific = true },
-        .{ .name = "as_is_cc", .value = "true", .version_specific = true },
-        .{ .name = "ocamlc_cflags", .value = cflags, .version_specific = true },
-        .{ .name = "ocamlc_cppflags", .value = cppflags, .version_specific = true },
-        .{ .name = "bytecode_cflags", .value = cflags, .version_specific = true },
-        .{ .name = "bytecode_cppflags", .value = cppflags, .version_specific = true },
-        .{ .name = "native_cflags", .value = cflags, .version_specific = true },
-        .{ .name = "native_cppflags", .value = cppflags, .version_specific = true },
-        .{ .name = "zstd_libs", .value = if (src.manifest.features.zstd) "-lzstd" else "" },
+        .{ .name = "ocaml_cv_prog_as_debug_prefix_map", .value = "true" },
+        .{ .name = "as_is_cc", .value = "true" },
+        .{ .name = "bytecode_cflags", .value = cflags },
+        .{ .name = "bytecode_cppflags", .value = cppflags },
+        .{ .name = "native_cflags", .value = cflags },
+        .{ .name = "native_cppflags", .value = cppflags },
+        .{ .name = "zstd_libs", .value = "-lzstd" },
         .{ .name = "cclibs", .value = cclibs },
-        .{ .name = "native_ldflags", .value = native_ldflags, .version_specific = true },
-        .{ .name = "with_nonexecstack_note", .value = bool_str(target.is_linux and target.is_elf), .version_specific = true },
+        .{ .name = "native_ldflags", .value = native_ldflags },
+        .{ .name = "with_nonexecstack_note", .value = bool_str(target.is_linux and target.is_elf) },
         .{ .name = "PACKLD", .value = packld },
         .{ .name = "rpath", .value = rpath },
         .{ .name = "mksharedlibrpath", .value = rpath },
@@ -512,36 +461,30 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "mkdll_exp", .value = mkdll },
         .{ .name = "mkexe_exp", .value = mkexe },
         .{ .name = "mkmaindll_exp", .value = mkdll },
-        .{ .name = "flexdll_chain", .value = if (target.is_windows) "mingw64" else "", .version_specific = true },
-        .{ .name = "flexlink_flags", .value = if (target.is_windows) "-stack 33554432" else "", .version_specific = true },
-        .{ .name = "mkdll_ldflags_exp", .value = "", .version_specific = true },
-        .{ .name = "mkexe_extra_flags", .value = if (target.is_windows) "-link -municode" else "", .version_specific = true },
-        .{ .name = "mkexe_ldflags_exp", .value = "", .version_specific = true },
         .{ .name = "flambda", .value = "false" },
         .{ .name = "flambda_invariants", .value = "false" },
         .{ .name = "cmm_invariants", .value = "false" },
-        .{ .name = "codegen_invariants", .value = "false", .version_specific = true },
+        .{ .name = "codegen_invariants", .value = "false" },
         .{ .name = "windows_unicode", .value = if (target.is_windows) "1" else "0" },
         .{ .name = "flat_float_array", .value = "true" },
-        .{ .name = "align_double", .value = bool_str(!target.arch64), .version_specific = true },
-        .{ .name = "align_int64", .value = bool_str(!target.arch64), .version_specific = true },
+        .{ .name = "align_double", .value = bool_str(!target.arch64) },
+        .{ .name = "align_int64", .value = bool_str(!target.arch64) },
         .{ .name = "function_sections", .value = bool_str(target.is_elf) },
         .{ .name = "afl", .value = "false" },
-        .{ .name = "bytecode_runtime_id", .value = runtime_id, .version_specific = true },
-        .{ .name = "native_runtime_id", .value = runtime_id, .version_specific = true },
+        .{ .name = "bytecode_runtime_id", .value = runtime_id },
+        .{ .name = "native_runtime_id", .value = runtime_id },
         .{ .name = "native_compiler", .value = bool_str(target.hasNativeCompiler()) },
         .{ .name = "arch", .value = target.archName() },
         .{ .name = "model", .value = target.model },
         .{ .name = "system", .value = target.system },
-        .{ .name = "target_os_type", .value = target.osType(), .version_specific = true },
+        .{ .name = "target_os_type", .value = target.osType() },
         .{ .name = "AS", .value = asm_cmd },
         .{ .name = "asm_cfi_supported", .value = bool_str(!target.is_windows) },
-        .{ .name = "asm_size_type_directives", .value = bool_str(target.is_elf), .version_specific = true },
-        .{ .name = "asm_dwarf_version", .value = "None", .version_specific = true },
+        .{ .name = "asm_size_type_directives", .value = bool_str(target.is_elf) },
+        .{ .name = "asm_dwarf_version", .value = "None" },
         .{ .name = "frame_pointers", .value = "false" },
         .{ .name = "reserved_header_bits", .value = "0" },
-        .{ .name = "exeext", .value = target.exeExt(), .version_specific = true },
-        .{ .name = "EXEEXT", .value = target.exeExt(), .version_specific = true },
+        .{ .name = "EXEEXT", .value = target.exeExt() },
         .{ .name = "OBJEXT", .value = "o" },
         .{ .name = "S", .value = "s" },
         .{ .name = "libext", .value = "a" },
@@ -551,10 +494,10 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "systhread_support", .value = "true" },
         .{ .name = "flexdll_dir", .value = "" },
         .{ .name = "ar_supports_response_files", .value = "true" },
-        .{ .name = "tsan", .value = "false", .version_specific = true },
-        .{ .name = "shebangscripts", .value = bool_str(!host.is_windows), .version_specific = true },
-        .{ .name = "suffixing", .value = "false", .version_specific = true },
-        .{ .name = "launch_method_target", .value = if (target.is_windows) "exe" else "sh", .version_specific = true },
-        .{ .name = "runtime_search_target", .value = "fallback", .version_specific = true },
+        .{ .name = "tsan", .value = "false" },
+        .{ .name = "shebangscripts", .value = bool_str(!host.is_windows) },
+        .{ .name = "suffixing", .value = "false" },
+        .{ .name = "launch_method_target", .value = if (target.is_windows) "exe" else "sh" },
+        .{ .name = "runtime_search_target", .value = "fallback" },
     });
 }

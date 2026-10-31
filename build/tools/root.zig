@@ -5,12 +5,9 @@ pub const OutputFile = utils.OutputFile;
 pub const InputDir = utils.InputDir;
 pub const OutputDir = utils.OutputDir;
 
-const Self = @This();
-
 const gen_ocaml_sources = @import("gen_ocaml_sources.zig");
 
 pub const Command = union(enum) {
-    hello: @import("hello.zig"),
     gen_runtime: @import("gen_runtime.zig"),
     gen_manifests: @import("gen_manifests.zig"),
     gen_stdlib_sources: gen_ocaml_sources.GenStdlibSources,
@@ -57,21 +54,7 @@ pub const Command = union(enum) {
                 const T = std.meta.fieldInfo(Command, tag).type;
 
                 inline for (comptime std.meta.fieldNames(T)) |field| {
-                    if (comptime !std.mem.eql(u8, field, "--")) {
-                        addNamedFieldArg(b, run_tool, field, &@field(tool_args, field));
-                    }
-                }
-
-                if (@hasField(T, "--")) {
-                    const rest_ptr = &@field(tool_args, "--");
-                    const RestType = @TypeOf(rest_ptr.*);
-                    const items = if (comptime isArrayList(RestType)) rest_ptr.items else rest_ptr.*;
-                    if (items.len > 0) {
-                        run_tool.addArg("--");
-                        for (items) |*item| {
-                            addPositionalArg(b, run_tool, item);
-                        }
-                    }
+                    addNamedFieldArg(b, run_tool, field, &@field(tool_args, field));
                 }
             },
         }
@@ -98,15 +81,6 @@ fn isListSlice(comptime T: type) bool {
     return @typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice;
 }
 
-fn isArrayList(comptime T: type) bool {
-    if (@typeInfo(T) != .@"struct") return false;
-    if (!@hasField(T, "items") or !@hasField(T, "capacity")) return false;
-    const ItemsType = @FieldType(T, "items");
-    if (@typeInfo(ItemsType) != .pointer or @typeInfo(ItemsType).pointer.size != .slice) return false;
-    const Elem = @typeInfo(ItemsType).pointer.child;
-    return T == std.ArrayList(Elem);
-}
-
 fn addNamedFieldArg(
     b: *std.Build,
     run_tool: *std.Build.Step.Run,
@@ -124,13 +98,6 @@ fn addNamedFieldArg(
 
     if (comptime isListSlice(FieldType)) {
         for (field_ptr.*) |*elem| {
-            addSingleNamedArg(b, run_tool, field_name, elem);
-        }
-        return;
-    }
-
-    if (comptime isArrayList(FieldType)) {
-        for (field_ptr.items) |*elem| {
             addSingleNamedArg(b, run_tool, field_name, elem);
         }
         return;
@@ -166,38 +133,12 @@ fn addSingleNamedArg(
         if (val_ptr.*) {
             run_tool.addArg(flag);
         }
-    } else if (@typeInfo(ValType) == .int or @typeInfo(ValType) == .float) {
+    } else if (@typeInfo(ValType) == .int) {
         run_tool.addArgs(&.{ flag, b.fmt("{d}", .{val_ptr.*}) });
     } else if (@typeInfo(ValType) == .@"enum") {
         run_tool.addArgs(&.{ flag, @tagName(val_ptr.*) });
     } else {
         @compileError("Unsupported tool field type: " ++ @typeName(ValType) ++ " for field '" ++ field_name ++ "'");
-    }
-}
-
-fn addPositionalArg(
-    b: *std.Build,
-    run_tool: *std.Build.Step.Run,
-    val_ptr: anytype,
-) void {
-    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
-
-    if (ValType == InputFile) {
-        run_tool.addFileArg(val_ptr.lazy);
-    } else if (ValType == OutputFile) {
-        val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
-    } else if (ValType == InputDir) {
-        run_tool.addDirectoryArg(val_ptr.lazy);
-    } else if (ValType == OutputDir) {
-        val_ptr.lazy.path = run_tool.addOutputDirectoryArg(val_ptr.lazy.basename);
-    } else if (ValType == []const u8 or ValType == []u8) {
-        run_tool.addArg(val_ptr.*);
-    } else if (@typeInfo(ValType) == .int or @typeInfo(ValType) == .float) {
-        run_tool.addArg(b.fmt("{d}", .{val_ptr.*}));
-    } else if (@typeInfo(ValType) == .@"enum") {
-        run_tool.addArg(@tagName(val_ptr.*));
-    } else {
-        @compileError("Unsupported positional element type: " ++ @typeName(ValType));
     }
 }
 
@@ -209,13 +150,10 @@ pub fn main(init: std.process.Init) !void {
 
     var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
-    _ = args.skip(); // skip the program name
+    _ = args.skip();
 
     const command_name = args.next() orelse return printUsage(gpa, null);
-    const command_tag = std.meta.stringToEnum(
-        std.meta.Tag(Command),
-        command_name,
-    ) orelse return printUsage(gpa, command_name);
+    const command_tag = std.meta.stringToEnum(Tag, command_name) orelse return printUsage(gpa, command_name);
 
     var parser = ArgParser{ .args_it = &args };
     @setEvalBranchQuota(100_000);
@@ -226,45 +164,28 @@ pub fn main(init: std.process.Init) !void {
 
             var result: T = undefined;
             var found: std.EnumSet(TFieldEnum) = .empty;
-            while (true) {
-                switch (parser.next() orelse break) {
-                    .named => |named| {
-                        const field = std.meta.stringToEnum(TFieldEnum, named.name) orelse {
-                            std.log.warn("unknown option: '{s}' for command '{s}'", .{ named.name, command_name });
+            while (parser.next()) |named| {
+                const field = std.meta.stringToEnum(TFieldEnum, named.name) orelse {
+                    std.log.warn("unknown option: '{s}' for command '{s}'", .{ named.name, command_name });
+                    continue;
+                };
+
+                switch (field) {
+                    inline else => |f| {
+                        const FieldType = std.meta.fieldInfo(T, f).type;
+                        if (found.contains(field) and !comptime isListSlice(FieldType)) {
+                            std.log.warn("option '{s}' specified multiple times, ignoring", .{named.name});
                             continue;
-                        };
-
-                        switch (field) {
-                            inline else => |f| {
-                                const FieldType = std.meta.fieldInfo(T, f).type;
-                                const is_multi = comptime (isListSlice(FieldType) or isArrayList(FieldType));
-
-                                if (found.contains(field) and !is_multi) {
-                                    std.log.warn("option '{s}' specified multiple times, ignoring", .{named.name});
-                                    continue;
-                                }
-
-                                try assignFieldValue(arena, FieldType, &@field(result, @tagName(f)), named.value, found.contains(field));
-                                found.insert(field);
-                            },
                         }
-                    },
-                    .positional => |positional| {
-                        if (@hasField(T, "--")) {
-                            const RestField = @field(TFieldEnum, "--");
-                            const RestType = std.meta.fieldInfo(T, RestField).type;
-                            try assignFieldValue(arena, RestType, &@field(result, "--"), positional, found.contains(RestField));
-                            found.insert(RestField);
-                        } else {
-                            std.debug.panic("positional argument '{s}' not allowed", .{positional});
-                        }
+
+                        try assignFieldValue(arena, FieldType, &@field(result, @tagName(f)), named.value, found.contains(field));
+                        found.insert(field);
                     },
                 }
             }
 
             var missing_required = false;
-            const not_found = found.complement();
-            var not_found_it = not_found.iterator();
+            var not_found_it = found.complement().iterator();
             while (not_found_it.next()) |field| {
                 switch (field) {
                     inline else => |f| {
@@ -277,8 +198,6 @@ pub fn main(init: std.process.Init) !void {
                             @field(result, @tagName(f)) = null;
                         } else if (comptime isListSlice(FieldType)) {
                             @field(result, @tagName(f)) = &.{};
-                        } else if (comptime isArrayList(FieldType)) {
-                            @field(result, @tagName(f)) = .empty;
                         } else {
                             std.log.err("missing required option '--{t}' for command '{s}'", .{ f, command_name });
                             missing_required = true;
@@ -287,10 +206,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
 
-            if (missing_required) {
-                std.process.exit(1);
-            }
-
+            if (missing_required) std.process.exit(1);
             try result.run(init);
         },
     }
@@ -320,27 +236,11 @@ fn assignFieldValue(
         return;
     }
 
-    if (comptime isArrayList(FieldType)) {
-        const Elem = @typeInfo(@FieldType(FieldType, "items")).pointer.child;
-        const parsed = try parseSingleValue(Elem, raw_value);
-        if (!already_found) {
-            field_ptr.* = .empty;
-        }
-        try field_ptr.append(arena, parsed);
-        return;
-    }
-
     field_ptr.* = try parseSingleValue(FieldType, raw_value);
 }
 
 fn parseSingleValue(comptime ValType: type, raw: ?[]const u8) !ValType {
-    if (ValType == InputFile) {
-        return .{ .cli = raw orelse return error.MissingOptionValue };
-    } else if (ValType == OutputFile) {
-        return .{ .cli = raw orelse return error.MissingOptionValue };
-    } else if (ValType == InputDir) {
-        return .{ .cli = raw orelse return error.MissingOptionValue };
-    } else if (ValType == OutputDir) {
+    if (ValType == InputFile or ValType == OutputFile or ValType == InputDir or ValType == OutputDir) {
         return .{ .cli = raw orelse return error.MissingOptionValue };
     } else if (ValType == []const u8) {
         return raw orelse return error.MissingOptionValue;
@@ -350,14 +250,9 @@ fn parseSingleValue(comptime ValType: type, raw: ?[]const u8) !ValType {
         if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "0")) return false;
         return error.InvalidBooleanValue;
     } else if (@typeInfo(ValType) == .int) {
-        const val = raw orelse return error.MissingOptionValue;
-        return std.fmt.parseInt(ValType, val, 0);
-    } else if (@typeInfo(ValType) == .float) {
-        const val = raw orelse return error.MissingOptionValue;
-        return std.fmt.parseFloat(ValType, val);
+        return std.fmt.parseInt(ValType, raw orelse return error.MissingOptionValue, 0);
     } else if (@typeInfo(ValType) == .@"enum") {
-        const val = raw orelse return error.MissingOptionValue;
-        return std.meta.stringToEnum(ValType, val) orelse error.InvalidEnumValue;
+        return std.meta.stringToEnum(ValType, raw orelse return error.MissingOptionValue) orelse error.InvalidEnumValue;
     } else {
         @compileError("Unsupported tool value type: " ++ @typeName(ValType));
     }
@@ -369,83 +264,45 @@ fn printUsage(gpa: std.mem.Allocator, command: ?[]const u8) noreturn {
         \\
         \\Available commands:
         \\  {s}
-    , .{std.mem.join(gpa, " ", std.meta.fieldNames(std.meta.Tag(Command))) catch @panic("OOM")});
+    , .{std.mem.join(gpa, " ", std.meta.fieldNames(Tag)) catch @panic("OOM")});
 
-    if (command) |c| {
-        std.log.err("Unknown command: '{s}'", .{c});
-    }
+    if (command) |c| std.log.err("Unknown command: '{s}'", .{c});
     std.process.exit(1);
 }
 
 const ArgParser = struct {
-    state: State = .arg_or_rest,
+    pending: ?[]const u8 = null,
     args_it: *std.process.Args.Iterator,
 
-    pub fn next(self: *ArgParser) ?Result {
+    const Named = struct {
+        name: []const u8,
+        value: ?[]const u8,
+    };
+
+    pub fn next(self: *ArgParser) ?Named {
         while (true) {
             const arg = self.args_it.next() orelse {
-                if (self.state == .arg) {
-                    const name = self.state.arg;
-                    self.state = .arg_or_rest;
-                    return Result{ .named = .{ .name = name, .value = null } };
+                if (self.pending) |name| {
+                    self.pending = null;
+                    return .{ .name = name, .value = null };
                 }
-
                 return null;
             };
 
-            switch (self.state) {
-                .rest => {
-                    return Result{ .positional = arg };
-                },
-                .arg_or_rest => {
-                    if (arg.len < 2) {
-                        return Result{ .positional = arg };
-                    }
-                    if (std.mem.eql(u8, arg, "--")) {
-                        self.state = .rest;
-                        continue;
-                    }
-                    if (std.mem.startsWith(u8, arg, "--")) {
-                        self.state = .{ .arg = arg[2..] };
-                        continue;
-                    }
-
-                    return Result{ .positional = arg };
-                },
-                .arg => |name| {
-                    if (arg.len < 2) {
-                        self.state = .arg_or_rest;
-                        return Result{ .named = .{ .name = name, .value = arg } };
-                    }
-
-                    if (std.mem.eql(u8, arg, "--")) {
-                        self.state = .rest;
-                        return Result{ .named = .{ .name = name, .value = null } };
-                    }
-
-                    if (std.mem.startsWith(u8, arg, "--")) {
-                        self.state = .{ .arg = arg[2..] };
-                        return Result{ .named = .{ .name = name, .value = null } };
-                    }
-
-                    self.state = .arg_or_rest;
-                    return Result{ .named = .{ .name = name, .value = arg } };
-                },
+            if (self.pending) |name| {
+                if (std.mem.startsWith(u8, arg, "--")) {
+                    self.pending = arg[2..];
+                    return .{ .name = name, .value = null };
+                }
+                self.pending = null;
+                return .{ .name = name, .value = arg };
             }
+
+            if (std.mem.startsWith(u8, arg, "--")) {
+                self.pending = arg[2..];
+                continue;
+            }
+            std.debug.panic("unexpected positional argument '{s}'", .{arg});
         }
     }
-
-    const Result = union(enum) {
-        named: struct {
-            name: []const u8,
-            value: ?[]const u8,
-        },
-        positional: []const u8,
-    };
-
-    const State = union(enum) {
-        rest,
-        arg_or_rest,
-        arg: []const u8,
-    };
 };

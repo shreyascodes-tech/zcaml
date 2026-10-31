@@ -3,7 +3,7 @@
 //! ```zig
 //! const ocaml_versions: Ocaml.Versions = .init(b);
 //! const src = ocaml_versions.source(.@"5.5.1") orelse return;
-//! const toolchain = try Ocaml.build(src, .{ .host = host, .target = target, .optimize = optimize });
+//! const toolchain = Ocaml.build(src, .{ .host = host, .target = target, .optimize = optimize });
 //! toolchain.addInstall(b.getInstallStep(), "5.5.1/host-x86_64-linux-gnu/target-x86_64-linux-gnu");
 //! ```
 //!
@@ -52,21 +52,9 @@ pub const Toolchain = struct {
     }
 };
 
-pub const Error = error{
-    /// See `Manifest.Features.relocatable`.
-    NotRelocatable,
-};
-
 /// Get `src` from `Versions.source`.
-pub fn build(src: *const Source, options: Options) Error!Toolchain {
+pub fn build(src: *const Source, options: Options) Toolchain {
     const b = src.b;
-    if (!src.manifest.features.relocatable) {
-        // Older releases bake absolute install paths into the runtime and the
-        // compilers. Supporting them needs relocation at install time.
-        std.log.err("OCaml {s} does not support relocatable installs (5.5+ required)", .{src.manifest.version.string});
-        return error.NotRelocatable;
-    }
-
     const build_platform: Platform = .init(b, b.graph.host);
     const host: Platform = .init(b, options.host);
     const target: Platform = .init(b, options.target);
@@ -121,13 +109,7 @@ pub fn build(src: *const Source, options: Options) Error!Toolchain {
         });
         const host_stdlib = stdlib.buildNative(src, host_byte_stdlib, host_comp.ocamlopt, host);
         host_comp.ocamlopt.stdlib_dir = host_stdlib.dir;
-        const host_libs = otherlibs.build(src, .{
-            .target_rt = host_rt,
-            .stdlib = host_stdlib,
-            .compiler = host_comp,
-            .optimize = options.optimize,
-        });
-        const host_native = compiler.buildNative(src, comp, host_comp.ocamlopt, host_rt, host_libs.dynlink_dir, true);
+        const host_native = compiler.buildNative(src, comp, host_comp.ocamlopt, host_rt, null, true);
         comp.native_programs = host_native.native_programs;
     }
 
@@ -211,8 +193,8 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
     // lib/ocaml/: target runtime libraries, primitives, ld.conf, C headers
     layout.artifact(tc.target_rt.libcamlrun, lib);
     if (tc.target_rt.libasmrun) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libcomprmarsh) |a| layout.artifact(a, lib);
-    if (tc.target_rt.zstd_lib) |a| layout.artifact(a, lib);
+    layout.artifact(tc.target_rt.libcomprmarsh, lib);
+    layout.artifact(tc.target_rt.zstd_lib, lib);
     layout.file(tc.target_rt.primitives, lib ++ "/primitives");
     layout.file(b.addWriteFiles().add("ld.conf", "./stublibs\n.\n"), lib ++ "/ld.conf");
     layout.dir(src.path("runtime/caml"), lib ++ "/caml", &.{ ".in", "dune" });

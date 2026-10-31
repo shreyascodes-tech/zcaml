@@ -13,6 +13,7 @@ pub const Artifacts = struct {
     meta: std.Build.LazyPath,
     /// Module-alias-expanded sources (`Manifest.Src.expanded`), also used by otherlibs.
     expanded_dir: std.Build.LazyPath,
+    sources: Source.Resolver,
     /// Bootstrap interfaces and sources reused by the native compiler.
     compiled: Ocamlc.Compiled,
 };
@@ -47,23 +48,15 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     }));
     const meta = config.add("META", src.renderMeta("stdlib/META.in", &.{}));
 
-    // 2. Alias-expanded sources and bytecode launcher headers
-    const header_format = m.features.header_format;
-    const header_exe: ?*std.Build.Step.Compile = if (header_format != .camlheader or p.is_windows)
-        buildHeaderExe(src.*, options.target_rt, header_format)
-    else
-        null;
-
+    // 2. Alias-expanded sources and bytecode launcher header
+    const header_exe = buildHeaderExe(src.*, options.target_rt);
     const gen, _ = Tools.run(b, .gen_stdlib_sources, .{
         .ocaml_src_dir = .of(src.path("")),
-        .header_exe = if (header_exe) |exe| .of(exe.getEmittedBin()) else null,
-        .header_format = header_format,
-        .is_windows_target = p.is_windows,
+        .header_exe = .of(header_exe.getEmittedBin()),
         .expanded_dir = .of("stdlib_expanded"),
-        .launcher_dir = .of("stdlib_launcher"),
+        .runtime_launch_info = .of("runtime-launch-info"),
     });
     const expanded_dir = gen.expanded_dir.lazyPath();
-    const launcher_dir = gen.launcher_dir.lazyPath();
 
     var sources: Source.Resolver = .{ .source = src, .arch = p.arch, .expanded_dir = expanded_dir };
     sources.gen.put(.stdlib_sys_ml, sys_ml);
@@ -91,24 +84,14 @@ pub fn build(src: *const Source, options: Options) Artifacts {
         installSource(out, sources, u.unit.src);
     }
     _ = out.addCopyFile(compiled.cmo("std_exit").?, "std_exit.cmo");
-
-    // 4. stdlib.cma
     _ = out.addCopyFile(boot.archive("stdlib.cma", compiled.cmos(b, m.stdlib.cma), .{}), "stdlib.cma");
-
-    // 5. Launcher headers
-    switch (header_format) {
-        .launch_info_5_5, .launch_info_5_2 => {
-            _ = out.addCopyFile(launcher_dir.path(b, "runtime-launch-info"), "runtime-launch-info");
-        },
-        .camlheader => for ([_][]const u8{ "camlheader", "camlheaderd", "camlheaderi", "camlheader_ur" }) |name| {
-            _ = out.addCopyFile(launcher_dir.path(b, name), name);
-        },
-    }
+    _ = out.addCopyFile(gen.runtime_launch_info.lazyPath(), "runtime-launch-info");
 
     return .{
         .dir = out.getDirectory(),
         .meta = meta,
         .expanded_dir = expanded_dir,
+        .sources = sources,
         .compiled = compiled,
     };
 }
@@ -119,27 +102,16 @@ pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: P
     const b = src.b;
     var opt = compiler;
     opt.stdlib_dir = null;
+    const compiled = opt.compilePlan(src.manifest.stdlib.plan, byte.sources, byte.compiled, .{
+        .flags = Ocamlc.concat(b, src.manifest.stdlib.compflags, if (p.is_elf) &.{"-function-sections"} else &.{}),
+    });
     const out = b.addWriteFiles();
     _ = out.addCopyDirectory(byte.dir, "", .{});
-    var includes: std.ArrayList(std.Build.LazyPath) = .empty;
-    includes.append(b.allocator, byte.compiled.cmis_dir) catch @panic("OOM");
-    var cmxs: std.ArrayList(std.Build.LazyPath) = .empty;
-    // STDLIB_MODULE_BASENAMES is in implementation dependency order, with
-    // camlinternalFormatBasics and stdlib first (the implicit -open Stdlib edge).
-    const keys = Ocamlc.concat(b, src.manifest.stdlib.cma, &.{"std_exit"});
-    for (keys) |key| {
-        const u = byte.compiled.impls.get(key).?;
-        const flags = Ocamlc.concat(b, src.manifest.stdlib.compflags, u.unit.native_flags);
-        const compiled = opt.impl(u.src, u.unit.name, byte.compiled.intfs.get(key).?.cmi, .{
-            .includes = includes.items,
-            .flags = Ocamlc.concat(b, flags, if (p.is_elf) &.{"-function-sections"} else &.{}),
-        });
-        _ = out.addCopyFile(compiled.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
-        _ = out.addCopyFile(compiled.obj, b.fmt("{s}.o", .{u.unit.name}));
-        includes.append(b.allocator, compiled.cmx.dirname()) catch @panic("OOM");
-        if (!std.mem.eql(u8, key, "std_exit")) cmxs.append(b.allocator, compiled.cmx) catch @panic("OOM");
+    for (compiled.impls.values()) |u| {
+        _ = out.addCopyFile(u.impl.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
+        _ = out.addCopyFile(u.impl.obj, b.fmt("{s}.o", .{u.unit.name}));
     }
-    const archive = opt.archive("stdlib", cmxs.items, .{});
+    const archive = opt.archive("stdlib", compiled.cmxs(b, src.manifest.stdlib.cma), .{});
     _ = out.addCopyFile(archive.cmxa, "stdlib.cmxa");
     _ = out.addCopyFile(archive.lib, "stdlib.a");
     var result = byte;
@@ -161,7 +133,7 @@ fn installSource(out: *std.Build.Step.WriteFile, sources: Source.Resolver, src: 
 }
 
 /// The executable embedded into bytecode programs that launches `ocamlrun`.
-fn buildHeaderExe(src: Source, target_rt: runtime.Artifacts, header_format: Source.Manifest.HeaderFormat) *std.Build.Step.Compile {
+fn buildHeaderExe(src: Source, target_rt: runtime.Artifacts) *std.Build.Step.Compile {
     const b = src.b;
     const p = target_rt.platform;
 
@@ -173,12 +145,12 @@ fn buildHeaderExe(src: Source, target_rt: runtime.Artifacts, header_format: Sour
 
     var extra: []const []const u8 = &.{};
     if (p.is_windows) {
-        if (header_format == .launch_info_5_5) extra = &.{"-DwmainCRTStartup=wmain"};
+        extra = &.{"-DwmainCRTStartup=wmain"};
         exe.mingw_unicode_entry_point = true;
         exe.subsystem = .console;
     }
     exe.root_module.addCSourceFile(.{
-        .file = src.path(if (p.is_windows and header_format != .launch_info_5_5) "stdlib/headernt.c" else "stdlib/header.c"),
+        .file = src.path("stdlib/header.c"),
         .flags = p.c.flags(b, extra),
     });
     return exe;

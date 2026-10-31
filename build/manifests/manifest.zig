@@ -1,4 +1,4 @@
-//! Build plan for a single OCaml source release.
+//! Build plan for a single OCaml 5.5+ source release.
 //!
 //! Generated from the upstream Makefiles / .depend files by `zig build generate`
 //! (see `build/tools/gen_manifests.zig`) and checked in as `vX_Y_Z.zon`. The build
@@ -6,7 +6,6 @@
 const std = @import("std");
 
 version: Version,
-features: Features,
 runtime: Runtime,
 stdlib: Stdlib,
 compiler: Compiler,
@@ -18,13 +17,13 @@ pub const Version = struct {
     major: u32,
     minor: u32,
     patchlevel: u32,
-    release_number: ?u32,
+    release_number: u32,
     dev: bool,
     extra: []const u8,
     extra_prefix: []const u8,
     /// `major * 10000 + minor * 100 + patchlevel`
     number: u32,
-    magic: ?Magic,
+    magic: Magic,
 
     pub fn semVer(self: Version) std.SemanticVersion {
         return .{
@@ -56,44 +55,6 @@ pub const MagicNumbers = struct {
     cmxs: []const u8,
     cmt: []const u8,
     linear: []const u8,
-};
-
-/// Capabilities of the source tree. This is the only place where release differences
-/// are encoded; the build never compares version numbers.
-pub const Features = struct {
-    /// Relocatable installs (5.5+): relative stdlib dir, `-set-runtime-default`,
-    /// `-launch-method` / `-runtime-search` linker flags.
-    relocatable: bool,
-    /// Format of the bytecode launcher header in the stdlib dir.
-    header_format: HeaderFormat,
-    /// `prims.c` uses the `gen_primsc` layout (5.2+).
-    gen_primsc: bool,
-    /// `prims.c` must define `caml_byte_program_mode` (5.5+).
-    byte_program_mode: bool,
-    /// `utils/config.common.ml.in` is a template (else a plain `.ml`).
-    config_common_template: bool,
-    /// `utils/config.generated.ml.in` exists (else `utils/config.mlp`).
-    config_generated_template: bool,
-    /// `bytecomp/byterntm.mll` exists.
-    byterntm: bool,
-    /// `ocamlyacc` understands `--strict`.
-    yacc_strict: bool,
-    /// Bytecode C stub libraries carry a `byt` suffix (`libunixbyt.a`, `dllunixbyt.so`).
-    byt_stub_suffix: bool,
-    /// Dynlink is built standalone from `dynlink_config.ml.in` (else it packs
-    /// `Dynlink_compilerlibs`, see `otherlibs.dynlink_pack`).
-    dynlink_standalone: bool,
-    /// Runtime supports zstd-compressed marshaling (`runtime/zstd.c`).
-    zstd: bool,
-};
-
-pub const HeaderFormat = enum {
-    /// `camlheader`, `camlheaderd`, ... (5.0 / 5.1)
-    camlheader,
-    /// `runtime-launch-info` with launch method + bindir prefix (5.2 - 5.4)
-    launch_info_5_2,
-    /// `runtime-launch-info` without bindir (5.5+)
-    launch_info_5_5,
 };
 
 /// OCaml native-code backend architectures (`asmcomp/<arch>`).
@@ -195,7 +156,6 @@ pub const Runtime = struct {
     win32_c_sources: []const []const u8,
     bytecode_only_c_sources: []const []const u8,
     native_only_c_sources: []const []const u8,
-    comprmarsh_c_sources: []const []const u8,
     ocamlyacc_c_sources: []const []const u8,
 };
 
@@ -243,7 +203,4 @@ pub const Otherlibs = struct {
     runtime_events_c_sources: []const []const u8,
     runtime_events_headers: []const []const u8,
     threads_header: []const u8,
-    /// Compiler modules packed into `Dynlink_compilerlibs` (only when
-    /// `!features.dynlink_standalone`).
-    dynlink_pack: Plan,
 };

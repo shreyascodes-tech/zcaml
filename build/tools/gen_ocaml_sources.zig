@@ -5,16 +5,11 @@ const InputDir = utils.InputDir;
 const OutputFile = utils.OutputFile;
 const OutputDir = utils.OutputDir;
 
-pub const HeaderFormat = @import("../manifests/manifest.zig").HeaderFormat;
-
 pub const GenStdlibSources = struct {
     ocaml_src_dir: InputDir,
-    header_exe: ?InputFile = null,
-    header_format: HeaderFormat = .launch_info_5_5,
-    is_windows_target: bool = false,
-    target_bindir: []const u8 = "/usr/local/bin",
+    header_exe: InputFile,
     expanded_dir: OutputDir,
-    launcher_dir: OutputDir,
+    runtime_launch_info: OutputFile,
 
     /// Written to `expanded_dir/<same relative path>` (see `Manifest.Src.expanded`).
     const files_to_expand = [_][]const u8{
@@ -49,63 +44,13 @@ pub const GenStdlibSources = struct {
             try exp_dir.writeFile(io, .{ .sub_path = rel, .data = expanded });
         }
 
-        var launch_dir = try self.launcher_dir.open(io, .{});
-        defer launch_dir.close(io);
-        try self.writeLauncherHeaders(io, gpa, arena, launch_dir);
-    }
+        const exe_bytes = try self.header_exe.readAll(io, gpa);
+        defer gpa.free(exe_bytes);
 
-    fn writeLauncherHeaders(
-        self: *GenStdlibSources,
-        io: std.Io,
-        gpa: std.mem.Allocator,
-        arena: std.mem.Allocator,
-        launch_dir: std.Io.Dir,
-    ) !void {
-        switch (self.header_format) {
-            .launch_info_5_5 => {
-                const exe_input = self.header_exe orelse @panic("launch_info_5_5 requires header_exe");
-                const exe_bytes = try exe_input.readAll(io, gpa);
-                defer gpa.free(exe_bytes);
-
-                var buf: std.ArrayList(u8) = .empty;
-                try buf.append(arena, 0);
-                try buf.appendSlice(arena, exe_bytes);
-                try launch_dir.writeFile(io, .{ .sub_path = "runtime-launch-info", .data = buf.items });
-            },
-            .launch_info_5_2 => {
-                const exe_input = self.header_exe orelse @panic("launch_info_5_2 requires header_exe");
-                const exe_bytes = try exe_input.readAll(io, gpa);
-                defer gpa.free(exe_bytes);
-
-                var buf: std.ArrayList(u8) = .empty;
-                try buf.appendSlice(arena, if (self.is_windows_target) "exe\n" else "sh\n");
-                try buf.appendSlice(arena, self.target_bindir);
-                try buf.appendSlice(arena, "\x00\n");
-                try buf.appendSlice(arena, exe_bytes);
-                try launch_dir.writeFile(io, .{ .sub_path = "runtime-launch-info", .data = buf.items });
-            },
-            .camlheader => {
-                try launch_dir.writeFile(io, .{ .sub_path = "camlheader_ur", .data = "#!\n" });
-                if (self.is_windows_target) {
-                    const exe_input = self.header_exe orelse @panic("Windows camlheader requires header_exe");
-                    const exe_bytes = try exe_input.readAll(io, gpa);
-                    defer gpa.free(exe_bytes);
-
-                    for (&[_][]const u8{ "", "d", "i" }) |suffix| {
-                        const rn_name = try std.fmt.allocPrint(arena, "ocamlrun{s}.exe", .{suffix});
-                        const hdr = try patchWindowsHeaderExe(arena, exe_bytes, rn_name);
-                        const file_name = try std.fmt.allocPrint(arena, "camlheader{s}", .{suffix});
-                        try launch_dir.writeFile(io, .{ .sub_path = file_name, .data = hdr });
-                    }
-                } else {
-                    for (&[_][]const u8{ "", "d", "i" }) |suffix| {
-                        const content = try std.fmt.allocPrint(arena, "#!{s}/ocamlrun{s}\n", .{ self.target_bindir, suffix });
-                        const file_name = try std.fmt.allocPrint(arena, "camlheader{s}", .{suffix});
-                        try launch_dir.writeFile(io, .{ .sub_path = file_name, .data = content });
-                    }
-                }
-            },
-        }
+        var launch_buf: std.ArrayList(u8) = .empty;
+        try launch_buf.append(arena, 0);
+        try launch_buf.appendSlice(arena, exe_bytes);
+        try writeOutputFile(io, self.runtime_launch_info, launch_buf.items);
     }
 };
 
@@ -381,14 +326,4 @@ fn rewriteModuleAliasLine(arena: std.mem.Allocator, line: []const u8) !?[]const 
         "\n(** @canonical Stdlib.{s} *)\nmodule {s} = Stdlib__{s}",
         .{ mod_name, mod_name, target_mod },
     );
-}
-
-fn patchWindowsHeaderExe(arena: std.mem.Allocator, exe_bytes: []const u8, runtime_name: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, exe_bytes);
-    const placeholder = "default_runtime_name";
-    if (std.mem.indexOf(u8, out, placeholder)) |idx| {
-        @memset(out[idx .. idx + placeholder.len], 0);
-        @memcpy(out[idx .. idx + runtime_name.len], runtime_name);
-    }
-    return out;
 }

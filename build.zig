@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) !void {
         );
 
         const src = ocaml_versions.source(version) orelse return;
-        const toolchain = try Ocaml.build(src, .{
+        const toolchain = Ocaml.build(src, .{
             .host = host,
             .target = target,
             .optimize = optimize,

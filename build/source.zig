@@ -68,12 +68,7 @@ pub fn read(self: Source, sub_path: []const u8) []const u8 {
 
 /// Render a `@var@` template from the source tree.
 pub fn renderAt(self: Source, template: []const u8, vars: []const Var) []const u8 {
-    return templates.renderText(self.b.allocator, template, self.read(template), .at, vars);
-}
-
-/// Render a `%%VAR%%` template from the source tree (e.g. `utils/config.mlp` in 5.0).
-pub fn renderPercent(self: Source, template: []const u8, vars: []const Var) []const u8 {
-    return templates.renderText(self.b.allocator, template, self.read(template), .percent, vars);
+    return templates.renderText(self.b.allocator, template, self.read(template), vars);
 }
 
 /// Render an autoconf `#undef` C header template from the source tree.

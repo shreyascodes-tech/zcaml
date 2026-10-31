@@ -15,8 +15,8 @@ pub const Artifacts = struct {
     libcamlrun: *std.Build.Step.Compile,
     ocamlrun: *std.Build.Step.Compile,
     libasmrun: ?*std.Build.Step.Compile,
-    libcomprmarsh: ?*std.Build.Step.Compile,
-    zstd_lib: ?*std.Build.Step.Compile,
+    libcomprmarsh: *std.Build.Step.Compile,
+    zstd_lib: *std.Build.Step.Compile,
 
     /// Include paths for C code built against the runtime (runtime, stubs, ...).
     pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
@@ -40,17 +40,14 @@ pub fn build(src: Source, options: Options) Artifacts {
     const rt = m.runtime;
     const os_c_sources = if (p.is_windows) rt.win32_c_sources else rt.unix_c_sources;
 
-    const zstd_lib: ?*std.Build.Step.Compile = if (m.features.zstd)
-        b.dependency("zstd", .{
-            .target = p.resolved,
-            .optimize = options.optimize,
-            .pie = true,
-        }).artifact("zstd")
-    else
-        null;
+    const zstd_lib = b.dependency("zstd", .{
+        .target = p.resolved,
+        .optimize = options.optimize,
+        .pie = true,
+    }).artifact("zstd");
     // OCaml links this archive through `zig cc`, not Zig's build linker.
     // Match the runtime's C flags and avoid a dependency on Zig's UBSan runtime.
-    if (zstd_lib) |z| z.root_module.sanitize_c = .off;
+    zstd_lib.root_module.sanitize_c = .off;
 
     // 1. Bytecode runtime sources (also scanned for primitives)
     const bytecode_c = runtimeSources(b, &.{ rt.common_c_sources, os_c_sources, rt.bytecode_only_c_sources }, null);
@@ -64,8 +61,6 @@ pub fn build(src: Source, options: Options) Artifacts {
         .jumptbl_h = .of("jumptbl.h"),
         .primitives = .of("primitives"),
         .prims_c = .of("prims.c"),
-        .has_gen_primsc = m.features.gen_primsc,
-        .has_byte_program_mode = m.features.byte_program_mode,
         .c_files = c_inputs,
     });
 
@@ -74,7 +69,7 @@ pub fn build(src: Source, options: Options) Artifacts {
     _ = headers.add("caml/m.h", config_headers.machineH(src, p));
     _ = headers.add("caml/s.h", config_headers.systemH(src, p));
     _ = headers.add("caml/version.h", config_headers.versionH(src));
-    if (config_headers.execH(src)) |exec_h| _ = headers.add("caml/exec.h", exec_h);
+    _ = headers.add("caml/exec.h", config_headers.execH(src));
     _ = headers.add("build_config.h", config_headers.buildConfigH(b, p, options.stdlib_dir, p.runtimeId(b, m.version)));
     _ = headers.addCopyFile(gen.opnames_h.lazyPath(), "caml/opnames.h");
     _ = headers.addCopyFile(gen.jumptbl_h.lazyPath(), "caml/jumptbl.h");
@@ -87,7 +82,7 @@ pub fn build(src: Source, options: Options) Artifacts {
         .libcamlrun = undefined,
         .ocamlrun = undefined,
         .libasmrun = null,
-        .libcomprmarsh = null,
+        .libcomprmarsh = undefined,
         .zstd_lib = zstd_lib,
     };
 
@@ -120,7 +115,7 @@ pub fn build(src: Source, options: Options) Artifacts {
         .root_module = cModule(b, p, options.optimize, .{}),
     });
     self.addIncludes(src, self.libcamlrun.root_module);
-    if (zstd_lib) |z| self.libcamlrun.root_module.linkLibrary(z);
+    self.libcamlrun.root_module.linkLibrary(zstd_lib);
     self.libcamlrun.root_module.addCSourceFiles(.{
         .root = src.path(""),
         .files = bytecode_c,
@@ -135,7 +130,7 @@ pub fn build(src: Source, options: Options) Artifacts {
     self.addIncludes(src, self.ocamlrun.root_module);
     self.ocamlrun.root_module.addCSourceFile(.{ .file = gen.prims_c.lazyPath(), .flags = cflags });
     self.ocamlrun.root_module.linkLibrary(self.libcamlrun);
-    if (zstd_lib) |z| self.ocamlrun.root_module.linkLibrary(z);
+    self.ocamlrun.root_module.linkLibrary(zstd_lib);
     p.c.linkLibs(self.ocamlrun.root_module);
     if (p.is_elf) self.ocamlrun.rdynamic = true;
     if (p.is_windows) self.ocamlrun.mingw_unicode_entry_point = true;
@@ -161,17 +156,14 @@ pub fn build(src: Source, options: Options) Artifacts {
     }
 
     // 8. libcomprmarsh.a
-    if (zstd_lib) |z| {
-        const cm = b.addLibrary(.{
-            .linkage = .static,
-            .name = "comprmarsh",
-            .root_module = cModule(b, p, options.optimize, .{ .pic = true }),
-        });
-        self.addIncludes(src, cm.root_module);
-        cm.root_module.linkLibrary(z);
-        cm.root_module.addCSourceFile(.{ .file = src.path("runtime/zstd.c"), .flags = cflags });
-        self.libcomprmarsh = cm;
-    }
+    self.libcomprmarsh = b.addLibrary(.{
+        .linkage = .static,
+        .name = "comprmarsh",
+        .root_module = cModule(b, p, options.optimize, .{ .pic = true }),
+    });
+    self.addIncludes(src, self.libcomprmarsh.root_module);
+    self.libcomprmarsh.root_module.linkLibrary(zstd_lib);
+    self.libcomprmarsh.root_module.addCSourceFile(.{ .file = src.path("runtime/zstd.c"), .flags = cflags });
 
     return self;
 }

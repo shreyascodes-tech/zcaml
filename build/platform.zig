@@ -144,9 +144,8 @@ pub fn nativeDefines(self: Platform, b: *std.Build) []const []const u8 {
 /// Runtime ID used to name versioned runtimes (`ocamlrun-<id>`), 5.5+.
 /// Mirrors the base32 computation in `configure.ac`.
 pub fn runtimeId(self: Platform, b: *std.Build, version: Manifest.Version) []const u8 {
-    const rn = version.release_number orelse return "";
     const alphabet = "0123456789abcdefghijklmnopqrstuv";
-    const id_version: u32 = (rn << 1) + @intFromBool(version.dev);
+    const id_version: u32 = (version.release_number << 1) + @intFromBool(version.dev);
     return b.fmt("{c}{c}{c}{c}", .{
         alphabet[id_version & 31],
         alphabet[(id_version >> 5) & 31], // reserved_header_bits = 0

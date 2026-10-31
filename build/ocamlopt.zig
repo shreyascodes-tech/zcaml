@@ -10,7 +10,12 @@ ocamlrun: *std.Build.Step.Compile,
 exe: LazyPath,
 stdlib_dir: ?LazyPath,
 
-pub const Options = Ocamlc.Options;
+pub const Options = struct {
+    includes: []const LazyPath = &.{},
+    flags: []const []const u8 = &.{},
+    /// Skip `toplevel/` units when only building the compiler executables.
+    skip_toplevel: bool = false,
+};
 
 pub fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
     const run = self.b.addRunArtifact(self.ocamlrun);
@@ -115,7 +120,7 @@ pub fn compilePlan(self: Ocamlopt, plan: Manifest.Plan, sources: @import("source
     for (plan.cmx_waves) |wave| {
         const stage = b.addWriteFiles();
         for (wave) |u| {
-            if (!u.enabledFor(sources.arch)) {
+            if (!u.enabledFor(sources.arch) or (opts.skip_toplevel and std.mem.startsWith(u8, u.key, "toplevel/"))) {
                 out.skipped.put(b.allocator, u.key, {}) catch @panic("OOM");
                 continue;
             }

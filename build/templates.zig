@@ -14,41 +14,28 @@ pub const Var = struct {
     version_specific: bool = false,
 };
 
-pub const Syntax = enum {
-    /// `@name@`
-    at,
-    /// `%%NAME%%`
-    percent,
-};
-
-/// Render a text template with `@var@` or `%%VAR%%` placeholders.
+/// Render a text template with `@var@` placeholders.
 pub fn renderText(
     gpa: std.mem.Allocator,
     template_name: []const u8,
     template: []const u8,
-    syntax: Syntax,
     vars: []const Var,
 ) []const u8 {
     checkDuplicates(template_name, vars);
     const used = gpa.alloc(bool, vars.len) catch @panic("OOM");
     @memset(used, false);
 
-    const open, const close = switch (syntax) {
-        .at => .{ "@", "@" },
-        .percent => .{ "%%", "%%" },
-    };
-
     var out: std.ArrayList(u8) = .empty;
     var i: usize = 0;
     while (i < template.len) {
-        if (std.mem.startsWith(u8, template[i..], open)) {
-            const name_start = i + open.len;
+        if (template[i] == '@') {
+            const name_start = i + 1;
             const name_end = identEnd(template, name_start);
-            if (name_end > name_start and std.mem.startsWith(u8, template[name_end..], close)) {
+            if (name_end > name_start and name_end < template.len and template[name_end] == '@') {
                 const name = template[name_start..name_end];
                 const idx = findVar(vars, name) orelse std.debug.panic(
-                    "Template safety check failed in '{s}': placeholder '{s}{s}{s}' is not handled in zcaml substitution table",
-                    .{ template_name, open, name, close },
+                    "Template safety check failed in '{s}': placeholder '@{s}@' is not handled in zcaml substitution table",
+                    .{ template_name, name },
                 );
                 used[idx] = true;
                 const value = vars[idx].value orelse std.debug.panic(
@@ -56,7 +43,7 @@ pub fn renderText(
                     .{ name, template_name },
                 );
                 out.appendSlice(gpa, value) catch @panic("OOM");
-                i = name_end + close.len;
+                i = name_end + 1;
                 continue;
             }
         }
@@ -175,7 +162,7 @@ test renderText {
     const gpa = std.testing.allocator;
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
-    const out = renderText(arena.allocator(), "t", "a @x@ b @y z %%Q%%", .at, &.{
+    const out = renderText(arena.allocator(), "t", "a @x@ b @y z %%Q%%", &.{
         .{ .name = "x", .value = "1" },
         .{ .name = "v", .value = "2", .version_specific = true },
     });

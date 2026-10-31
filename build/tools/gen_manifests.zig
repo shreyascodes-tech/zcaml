@@ -40,11 +40,7 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     const version_file = try root_dir.readFileAlloc(io, "VERSION", arena, .unlimited);
     const ver = try parseOcamlVersion(arena, version_m4, version_file);
 
-    const is_5_5_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 5);
-    const is_5_2_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 2);
-    const is_5_1_or_newer = ver.major > 5 or (ver.major == 5 and ver.minor >= 1);
-
-    // 2. Query root Makefile via `make -s -n clean`
+    // 2. Query root Makefile and Makefile.build_config.in via `make -s -n clean`
     const root_vars = try queryMakeVars(io, gpa, arena, src_root, "Makefile", &.{
         "ARCH=amd64",
         "NATIVE_COMPILER=true",
@@ -64,17 +60,17 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "runtime_WIN32_C_SOURCES",
         "runtime_BYTECODE_ONLY_C_SOURCES",
         "runtime_NATIVE_ONLY_C_SOURCES",
-        "comprmarsh_C_SOURCES",
         "ocamlyacc_OTHER_MODULES",
         "STDLIB_MODULE_BASENAMES",
         "PERVASIVES",
         "ARCH_SPECIFIC",
-        "COMPFLAGS",
-        // 5.2+
         "ocamlcommon_CMO_FILES",
+        "ocamlcommon_BYTE_CMI_FILES",
         "ocamlbytecomp_CMO_FILES",
         "ocamlmiddleend_CMO_FILES",
+        "ocamlmiddleend_BYTE_CMI_FILES",
         "ocamloptcomp_CMO_FILES",
+        "ocamloptcomp_BYTE_CMI_FILES",
         "ocamltoplevel_CMO_FILES",
         "ocamllex_CMO_FILES",
         "ocamlprof_CMO_FILES",
@@ -82,31 +78,19 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "ocamloptp_CMO_FILES",
         "ocamlmklib_CMO_FILES",
         "ocamlmktop_CMO_FILES",
-        // 5.0 - 5.1
-        "COMMON",
-        "COMMON_CMI",
-        "BYTECOMP",
-        "MIDDLE_END",
-        "MIDDLE_END_CMI",
-        "OPTCOMP",
-        "OPTCOMP_CMI",
-        "TOPLEVEL",
-        "ocamllex_MODULES",
-        "ocamlprof_MODULES",
-        "ocamlcp_MODULES",
-        "ocamloptp_MODULES",
-        "ocamlmklib_MODULES",
-        "ocamlmktop_MODULES",
     });
 
+    const bc_vars = try queryMakeVars(io, gpa, arena, src_root, "Makefile.build_config.in", &.{
+        "ROOTDIR=.",
+    }, &.{"OC_COMMON_COMPFLAGS"});
+
     // 3. Query stdlib and otherlibs Makefiles
-    const stdlib_vars = try queryMakeVars(io, gpa, arena, src_root, "stdlib/Makefile", &.{
-        "O=o", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{"COMPFLAGS"});
+    const stdlib_basenames = root_vars.get("STDLIB_MODULE_BASENAMES").?;
+    const stdlib_plan = try computeStdlibPlan(io, gpa, arena, src_root, root_dir, stdlib_basenames);
 
     const unix_unix_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/unix/Makefile", &.{
         "UNIX_OR_WIN32=unix", "EXTRACAMLFLAGS=", "O=o", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{ "COMMON_C_SOURCES", "OS_C_SOURCES", "HEADERS", "COMPFLAGS" });
+    }, &.{ "COMMON_C_SOURCES", "OS_C_SOURCES", "HEADERS" });
 
     const unix_win32_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/unix/Makefile", &.{
         "UNIX_OR_WIN32=win32", "EXTRACAMLFLAGS=", "O=o", "A=a", "S=s", "SO=so", "EXE=",
@@ -114,46 +98,22 @@ pub fn run(self: *Self, init: std.process.Init) !void {
 
     const str_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/str/Makefile", &.{
         "EXTRACAMLFLAGS=", "O=c", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{ "C_SOURCES", "COBJS", "COMPFLAGS" });
+    }, &.{ "C_SOURCES", "COMPFLAGS" });
 
     const re_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/runtime_events/Makefile", &.{
         "EXTRACAMLFLAGS=", "O=c", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{ "C_SOURCES", "COBJS", "HEADERS" });
+    }, &.{ "C_SOURCES", "HEADERS" });
 
     const threads_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/systhreads/Makefile", &.{
         "EXTRACAMLFLAGS=", "O=o", "A=a", "S=s", "SO=so", "EXE=",
     }, &.{"COMPFLAGS"});
 
-    // 4. Parse compiler_compflags
-    const compiler_compflags = if (is_5_1_or_newer) blk: {
-        const bc_src = try root_dir.readFileAlloc(io, "Makefile.build_config.in", arena, .unlimited);
-        break :blk try parseSimpleMakefileVar(arena, bc_src, "OC_COMMON_COMPFLAGS");
-    } else blk: {
-        // Filter out -I flags from 5.0 COMPFLAGS
-        const raw = root_vars.get("COMPFLAGS").?;
-        var filtered: std.ArrayList([]const u8) = .empty;
-        var skip_next = false;
-        for (raw) |tok| {
-            if (skip_next) {
-                skip_next = false;
-                continue;
-            }
-            if (std.mem.eql(u8, tok, "-I")) {
-                skip_next = true;
-                continue;
-            }
-            try filtered.append(arena, tok);
-        }
-        break :blk filtered.items;
-    };
-
-    // 5. Runtime C sources
+    // 4. Runtime C sources
     const rt_common = root_vars.get("runtime_COMMON_C_SOURCES").?;
     const rt_unix = if (root_vars.get("runtime_UNIX_C_SOURCES")) |s| (if (s.len > 0) s else &[_][]const u8{"unix"}) else &[_][]const u8{"unix"};
     const rt_win32 = if (root_vars.get("runtime_WIN32_C_SOURCES")) |s| (if (s.len > 0) s else &[_][]const u8{"win32"}) else &[_][]const u8{"win32"};
     const rt_byt = root_vars.get("runtime_BYTECODE_ONLY_C_SOURCES").?;
     const rt_nat = root_vars.get("runtime_NATIVE_ONLY_C_SOURCES").?;
-    const comprmarsh = if (root_vars.get("comprmarsh_C_SOURCES")) |s| s else &[_][]const u8{};
 
     const yacc_raw = root_vars.get("ocamlyacc_OTHER_MODULES").?;
     var ocamlyacc_c_sources: std.ArrayList([]const u8) = .empty;
@@ -165,94 +125,53 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         }
     }
 
-    // 6. Stdlib plan from STDLIB_MODULE_BASENAMES, stdlib/Compflags and stdlib/.depend
-    const stdlib_plan = try computeStdlibPlan(io, arena, root_dir, root_vars.get("STDLIB_MODULE_BASENAMES").?);
-
     var pervasives: std.ArrayList([]const u8) = .empty;
     try pervasives.appendSlice(arena, stdlib_plan.cma);
     for (root_vars.get("PERVASIVES").?) |p| {
         if (!containsStr(pervasives.items, p)) try pervasives.append(arena, p);
     }
 
-    // 7. Compiler & Tools module lists and waves
+    // 5. Compiler & Tools module lists and waves
     const arch_specific = root_vars.get("ARCH_SPECIFIC").?;
-    const comp_lists = try extractCompilerLists(
-        io,
-        gpa,
-        arena,
-        src_root,
-        root_dir,
-        &root_vars,
-        is_5_2_or_newer,
-        is_5_1_or_newer,
-    );
-
-    const compiler_plan = try computeCompilerPlan(
-        io,
-        arena,
-        root_dir,
-        arch_specific,
-        &comp_lists,
-    );
-
-    const lex_plan = try computeLexPlan(
-        io,
-        arena,
-        root_dir,
-        comp_lists.ocamllex_cmos,
-    );
-
-    // 8. Otherlibs C sources & Dynlink 5.0-5.2 pack plan
-    const str_c = if (str_vars.get("C_SOURCES")) |s| (if (s.len > 0) s else str_vars.get("COBJS").?) else str_vars.get("COBJS").?;
-    const re_c = if (re_vars.get("C_SOURCES")) |s| (if (s.len > 0) s else re_vars.get("COBJS").?) else re_vars.get("COBJS").?;
-
-    const dynlink_standalone = fileExists(io, root_dir, "otherlibs/dynlink/dynlink_config.ml.in");
-    const dynlink_pack: Manifest.Plan = if (!dynlink_standalone)
-        try computeDynlinkPackPlan(io, gpa, arena, src_root, root_dir)
-    else
-        .{ .cmi_waves = &.{}, .cmo_units = &.{} };
-
-    // 9. Features
-    const features: Manifest.Features = .{
-        .relocatable = is_5_5_or_newer,
-        .header_format = if (is_5_5_or_newer)
-            .launch_info_5_5
-        else if (is_5_2_or_newer)
-            .launch_info_5_2
-        else
-            .camlheader,
-        .gen_primsc = fileExists(io, root_dir, "runtime/gen_primsc.sh"),
-        .byte_program_mode = is_5_5_or_newer,
-        .config_common_template = fileExists(io, root_dir, "utils/config.common.ml.in"),
-        .config_generated_template = fileExists(io, root_dir, "utils/config.generated.ml.in"),
-        .byterntm = fileExists(io, root_dir, "bytecomp/byterntm.mll"),
-        .yacc_strict = is_5_1_or_newer,
-        .byt_stub_suffix = is_5_1_or_newer,
-        .dynlink_standalone = dynlink_standalone,
-        .zstd = containsStr(rt_byt, "zstd"),
+    const comp_lists: CompilerLists = .{
+        .ocamlcommon_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlcommon_CMO_FILES").?, ".cmo"),
+        .ocamlcommon_cmis = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlcommon_BYTE_CMI_FILES").?, ".cmi"),
+        .ocamlbytecomp_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlbytecomp_CMO_FILES").?, ".cmo"),
+        .ocamlmiddleend_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlmiddleend_CMO_FILES").?, ".cmo"),
+        .ocamlmiddleend_cmis = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlmiddleend_BYTE_CMI_FILES").?, ".cmi"),
+        .ocamloptcomp_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamloptcomp_CMO_FILES").?, ".cmo"),
+        .ocamloptcomp_cmis = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamloptcomp_BYTE_CMI_FILES").?, ".cmi"),
+        .ocamltoplevel_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamltoplevel_CMO_FILES").?, ".cmo"),
+        .ocamllex_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamllex_CMO_FILES").?, ".cmo"),
+        .ocamlprof_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlprof_CMO_FILES").?, ".cmo"),
+        .ocamlcp_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlcp_CMO_FILES").?, ".cmo"),
+        .ocamloptp_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamloptp_CMO_FILES").?, ".cmo"),
+        .ocamlmklib_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlmklib_CMO_FILES").?, ".cmo"),
+        .ocamlmktop_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlmktop_CMO_FILES").?, ".cmo"),
     };
 
-    // 10. Serialize Manifest as ZON
+    const compiler_plan = try computeCompilerPlan(io, arena, root_dir, arch_specific, &comp_lists);
+    const lex_plan = try computeLexPlan(io, arena, root_dir, comp_lists.ocamllex_cmos);
+
+    // 6. Serialize Manifest as ZON
     const manifest: Manifest = .{
         .version = ver,
-        .features = features,
         .runtime = .{
             .common_c_sources = rt_common,
             .unix_c_sources = rt_unix,
             .win32_c_sources = rt_win32,
             .bytecode_only_c_sources = rt_byt,
             .native_only_c_sources = rt_nat,
-            .comprmarsh_c_sources = comprmarsh,
             .ocamlyacc_c_sources = ocamlyacc_c_sources.items,
         },
         .stdlib = .{
-            .compflags = stdlib_vars.get("COMPFLAGS").?,
+            .compflags = stdlib_plan.compflags,
             .plan = stdlib_plan.plan,
             .cma = stdlib_plan.cma,
             .pervasives = pervasives.items,
         },
         .compiler = .{
-            .compflags = compiler_compflags,
+            .compflags = bc_vars.get("OC_COMMON_COMPFLAGS").?,
             .plan = compiler_plan,
             .ocamlcommon = comp_lists.ocamlcommon_cmos,
             .ocamlbytecomp = comp_lists.ocamlbytecomp_cmos,
@@ -277,14 +196,10 @@ pub fn run(self: *Self, init: std.process.Init) !void {
             .unix_unix_c_sources = unix_unix_vars.get("OS_C_SOURCES").?,
             .unix_win32_c_sources = unix_win32_vars.get("OS_C_SOURCES").?,
             .unix_headers = unix_unix_vars.get("HEADERS").?,
-            .str_c_sources = str_c,
-            .runtime_events_c_sources = re_c,
+            .str_c_sources = str_vars.get("C_SOURCES").?,
+            .runtime_events_c_sources = re_vars.get("C_SOURCES").?,
             .runtime_events_headers = re_vars.get("HEADERS").?,
-            .threads_header = if (fileExists(io, root_dir, "otherlibs/systhreads/caml/threads.h"))
-                "otherlibs/systhreads/caml/threads.h"
-            else
-                "otherlibs/systhreads/threads.h",
-            .dynlink_pack = dynlink_pack,
+            .threads_header = "otherlibs/systhreads/caml/threads.h",
         },
     };
 
@@ -322,17 +237,28 @@ fn queryMakeVars(
     make_overrides: []const []const u8,
     var_names: []const []const u8,
 ) !std.StringHashMapUnmanaged([]const []const u8) {
+    var stdin_buf: std.ArrayList(u8) = .empty;
+    for (var_names) |vname| {
+        try stdin_buf.appendSlice(arena, try std.fmt.allocPrint(arena, "$(info ZCAML:{s}=$({s}))\n", .{ vname, vname }));
+    }
+    return queryMakeRaw(io, gpa, arena, src_root, makefile_rel, make_overrides, stdin_buf.items);
+}
+
+fn queryMakeRaw(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    src_root: []const u8,
+    makefile_rel: []const u8,
+    make_overrides: []const []const u8,
+    stdin_lines: []const u8,
+) !std.StringHashMapUnmanaged([]const []const u8) {
     const dir_rel = std.fs.path.dirname(makefile_rel) orelse "";
     const work_dir = if (dir_rel.len > 0)
         try std.fmt.allocPrint(arena, "{s}/{s}", .{ src_root, dir_rel })
     else
         src_root;
     const mf_base = std.fs.path.basename(makefile_rel);
-
-    var stdin_buf: std.ArrayList(u8) = .empty;
-    for (var_names) |vname| {
-        try stdin_buf.appendSlice(arena, try std.fmt.allocPrint(arena, "$(info ZCAML:{s}=$({s}))\n", .{ vname, vname }));
-    }
 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ "make", "-C", work_dir, "-s", "-n", "clean" });
@@ -346,7 +272,7 @@ fn queryMakeVars(
         .stderr = .pipe,
     });
     if (child.stdin) |stdin_file| {
-        try stdin_file.writeStreamingAll(io, stdin_buf.items);
+        try stdin_file.writeStreamingAll(io, stdin_lines);
         stdin_file.close(io);
         child.stdin = null;
     }
@@ -369,7 +295,10 @@ fn queryMakeVars(
         const rest = line["ZCAML:".len..];
         const eq_idx = std.mem.indexOfScalar(u8, rest, '=') orelse continue;
         const k = try arena.dupe(u8, rest[0..eq_idx]);
-        const val_str = rest[eq_idx + 1 ..];
+        var val_str = rest[eq_idx + 1 ..];
+        if (std.mem.indexOf(u8, val_str, "-pp ")) |pp_idx| {
+            val_str = val_str[0..pp_idx];
+        }
 
         var list: std.ArrayList([]const u8) = .empty;
         var it = std.mem.tokenizeAny(u8, val_str, " \t");
@@ -399,133 +328,16 @@ const CompilerLists = struct {
     ocamlmktop_cmos: []const []const u8,
 };
 
-fn extractCompilerLists(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    arena: std.mem.Allocator,
-    src_root: []const u8,
-    root_dir: std.Io.Dir,
-    root_vars: *const std.StringHashMapUnmanaged([]const []const u8),
-    is_5_2_or_newer: bool,
-    is_5_1_or_newer: bool,
-) !CompilerLists {
-    if (is_5_2_or_newer) {
-        // Also get *_BYTE_CMI_FILES from make
-        const cmi_vars = try queryMakeVars(io, gpa, arena, src_root, "Makefile", &.{
-            "ARCH=amd64",
-            "NATIVE_COMPILER=true",
-            "arch_specific_SOURCES=$(intel_SOURCES)",
-            "O=o",
-            "A=a",
-            "S=s",
-            "SO=so",
-            "EXE=",
-        }, &.{
-            "ocamlcommon_BYTE_CMI_FILES",
-            "ocamlmiddleend_BYTE_CMI_FILES",
-            "ocamloptcomp_BYTE_CMI_FILES",
-        });
-
-        return .{
-            .ocamlcommon_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlcommon_CMO_FILES").?),
-            .ocamlcommon_cmis = try normalizeCmiKeys(io, arena, root_dir, cmi_vars.get("ocamlcommon_BYTE_CMI_FILES").?),
-            .ocamlbytecomp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlbytecomp_CMO_FILES").?),
-            .ocamlmiddleend_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlmiddleend_CMO_FILES").?),
-            .ocamlmiddleend_cmis = try normalizeCmiKeys(io, arena, root_dir, cmi_vars.get("ocamlmiddleend_BYTE_CMI_FILES").?),
-            .ocamloptcomp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamloptcomp_CMO_FILES").?),
-            .ocamloptcomp_cmis = try normalizeCmiKeys(io, arena, root_dir, cmi_vars.get("ocamloptcomp_BYTE_CMI_FILES").?),
-            .ocamltoplevel_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamltoplevel_CMO_FILES").?),
-            .ocamllex_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamllex_CMO_FILES").?),
-            .ocamlprof_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlprof_CMO_FILES").?),
-            .ocamlcp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlcp_CMO_FILES").?),
-            .ocamloptp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamloptp_CMO_FILES").?),
-            .ocamlmklib_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlmklib_CMO_FILES").?),
-            .ocamlmktop_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlmktop_CMO_FILES").?),
-        };
-    }
-
-    if (is_5_1_or_newer) {
-        return .{
-            .ocamlcommon_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("COMMON").?),
-            .ocamlcommon_cmis = try normalizeCmiKeys(io, arena, root_dir, root_vars.get("COMMON_CMI").?),
-            .ocamlbytecomp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("BYTECOMP").?),
-            .ocamlmiddleend_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("MIDDLE_END").?),
-            .ocamlmiddleend_cmis = try normalizeCmiKeys(io, arena, root_dir, root_vars.get("MIDDLE_END_CMI").?),
-            .ocamloptcomp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("OPTCOMP").?),
-            .ocamloptcomp_cmis = try normalizeCmiKeys(io, arena, root_dir, root_vars.get("OPTCOMP_CMI").?),
-            .ocamltoplevel_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("TOPLEVEL").?),
-            .ocamllex_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamllex_MODULES").?),
-            .ocamlprof_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlprof_MODULES").?),
-            .ocamlcp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlcp_MODULES").?),
-            .ocamloptp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamloptp_MODULES").?),
-            .ocamlmklib_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlmklib_MODULES").?),
-            .ocamlmktop_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("ocamlmktop_MODULES").?),
-        };
-    }
-
-    // OCaml 5.0: query lex/Makefile and tools/Makefile
-    const lex_vars = try queryMakeVars(io, gpa, arena, src_root, "lex/Makefile", &.{
-        "O=o", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{"OBJS"});
-    var lex_raw: std.ArrayList([]const u8) = .empty;
-    for (lex_vars.get("OBJS").?) |obj| {
-        try lex_raw.append(arena, try std.fmt.allocPrint(arena, "lex/{s}", .{obj}));
-    }
-
-    const tools_vars = try queryMakeVars(io, gpa, arena, src_root, "tools/Makefile", &.{
-        "O=o", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{ "OCAMLPROF", "OCAMLCP", "OCAMLMKLIB", "OCAMLMKTOP" });
-
-    var cp_raw: std.ArrayList([]const u8) = .empty;
-    try cp_raw.appendSlice(arena, tools_vars.get("OCAMLCP").?);
-    try cp_raw.append(arena, "tools/ocamlcp.cmo");
-
-    var optp_raw: std.ArrayList([]const u8) = .empty;
-    try optp_raw.appendSlice(arena, tools_vars.get("OCAMLCP").?);
-    try optp_raw.append(arena, "tools/ocamloptp.cmo");
-
-    return .{
-        .ocamlcommon_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("COMMON").?),
-        .ocamlcommon_cmis = try normalizeCmiKeys(io, arena, root_dir, root_vars.get("COMMON_CMI").?),
-        .ocamlbytecomp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("BYTECOMP").?),
-        .ocamlmiddleend_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("MIDDLE_END").?),
-        .ocamlmiddleend_cmis = try normalizeCmiKeys(io, arena, root_dir, root_vars.get("MIDDLE_END_CMI").?),
-        .ocamloptcomp_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("OPTCOMP").?),
-        .ocamloptcomp_cmis = try normalizeCmiKeys(io, arena, root_dir, root_vars.get("OPTCOMP_CMI").?),
-        .ocamltoplevel_cmos = try normalizeCmoKeys(io, arena, root_dir, root_vars.get("TOPLEVEL").?),
-        .ocamllex_cmos = try normalizeCmoKeys(io, arena, root_dir, lex_raw.items),
-        .ocamlprof_cmos = try normalizeCmoKeys(io, arena, root_dir, tools_vars.get("OCAMLPROF").?),
-        .ocamlcp_cmos = try normalizeCmoKeys(io, arena, root_dir, cp_raw.items),
-        .ocamloptp_cmos = try normalizeCmoKeys(io, arena, root_dir, optp_raw.items),
-        .ocamlmklib_cmos = try normalizeCmoKeys(io, arena, root_dir, tools_vars.get("OCAMLMKLIB").?),
-        .ocamlmktop_cmos = try normalizeCmoKeys(io, arena, root_dir, tools_vars.get("OCAMLMKTOP").?),
-    };
-}
-
-fn normalizeCmoKeys(
+fn normalizeKeys(
     io: std.Io,
     arena: std.mem.Allocator,
     root_dir: std.Io.Dir,
     items: []const []const u8,
+    ext: []const u8,
 ) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (items) |item| {
-        const stem = if (std.mem.endsWith(u8, item, ".cmo")) item[0 .. item.len - 4] else item;
-        const resolved = try resolveVpathKey(io, arena, root_dir, stem);
-        try out.append(arena, resolved);
-    }
-    return out.items;
-}
-
-fn normalizeCmiKeys(
-    io: std.Io,
-    arena: std.mem.Allocator,
-    root_dir: std.Io.Dir,
-    items: []const []const u8,
-) ![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    for (items) |item| {
-        const stem = if (std.mem.endsWith(u8, item, ".cmi")) item[0 .. item.len - 4] else item;
+        const stem = if (std.mem.endsWith(u8, item, ext)) item[0 .. item.len - ext.len] else item;
         const resolved = try resolveVpathKey(io, arena, root_dir, stem);
         try out.append(arena, resolved);
     }
@@ -577,21 +389,15 @@ fn computeCompilerPlan(
     arch_specific: []const []const u8,
     lists: *const CompilerLists,
 ) !Manifest.Plan {
-    // Parse .depend (and tools/.depend if present) taking union across all architectures
     const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
     var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
     try parseDependUnionInto(arena, root_dep_src, "", &dep_map);
-
-    if (root_dir.readFileAlloc(io, "tools/.depend", arena, .unlimited)) |tools_dep_src| {
-        try parseDependUnionInto(arena, tools_dep_src, "tools/", &dep_map);
-    } else |_| {}
 
     var arch_spec_set: std.StringHashMapUnmanaged(void) = .empty;
     for (arch_specific) |f| {
         try arch_spec_set.put(arena, f, {});
     }
 
-    // Collect all required unit keys
     var cmo_keys: std.ArrayList([]const u8) = .empty;
     var cmo_key_set: std.StringHashMapUnmanaged(void) = .empty;
     var cmi_only_keys: std.ArrayList([]const u8) = .empty;
@@ -642,6 +448,7 @@ fn computeCompilerPlan(
         lists.ocamlcommon_cmis,
         lists.ocamlmiddleend_cmis,
         lists.ocamloptcomp_cmis,
+        &.{"toplevel/native/tophooks"},
     };
     for (cmi_slices) |slice| {
         for (slice) |k| {
@@ -650,10 +457,6 @@ fn computeCompilerPlan(
                 try cmi_only_keys.append(arena, k);
             }
         }
-    }
-    if (fileExists(io, root_dir, "toplevel/native/tophooks.mli")) {
-        try cmi_only_keys.append(arena, "toplevel/native/tophooks");
-        try cmi_only_set.put(arena, "toplevel/native/tophooks", {});
     }
 
     // Transitively walk dep_map from all cmo_keys and cmi_only_keys to pull in any .mli-only or .ml dependencies
@@ -692,9 +495,8 @@ fn computeCompilerPlan(
         }
     }
 
-    // Build the set of CMI-producing units
     var cmi_units: std.ArrayList(WaveUnit) = .empty;
-    var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty; // "misc.cmi" -> "utils/misc"
+    var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty;
 
     for (cmi_only_keys.items) |k| {
         const mli_src = (try resolveMliSource(io, arena, root_dir, &arch_spec_set, k)) orelse continue;
@@ -718,7 +520,6 @@ fn computeCompilerPlan(
             }
             try cmo_units.append(arena, compilerUnit(k, ml_src));
         } else {
-            // No .mli: compiling the .ml produces both .cmi and .cmo, so it goes into the waves.
             try cmi_units.append(arena, .{ .kind = .impl, .unit = compilerUnit(k, ml_src) });
             try cmi_by_basename.put(arena, cmi_name, k);
         }
@@ -766,9 +567,6 @@ fn nativeWaves(arena: std.mem.Allocator, cmis: []const WaveUnit, cmos: []const U
             if (!pending.contains(key)) continue;
             var ready = true;
             if (deps.get(key)) |imports| for (imports) |dep| {
-                // Shared toplevel modules refer to the byte variant in .depend.
-                // .depend has only the shared .cmi for VPATH toplevel
-                // imports; Makefile adds the native implementation edges.
                 const actual = if (compiler_plan and (std.mem.eql(u8, dep, "toplevel/topmain.cmi") or std.mem.eql(u8, dep, "toplevel/topeval.cmi") or std.mem.eql(u8, dep, "toplevel/trace.cmi")))
                     try std.fmt.allocPrint(arena, "toplevel/native/{s}.cmx", .{std.fs.path.stem(dep)})
                 else if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/") and !std.mem.startsWith(u8, u.key, "toplevel/byte/") and std.mem.startsWith(u8, dep, "toplevel/byte/"))
@@ -817,9 +615,6 @@ fn computeLexPlan(
     var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
     const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
     try parseDependUnionInto(arena, root_dep_src, "", &dep_map);
-    if (root_dir.readFileAlloc(io, "lex/.depend", arena, .unlimited)) |lex_dep_src| {
-        try parseDependUnionInto(arena, lex_dep_src, "lex/", &dep_map);
-    } else |_| {}
 
     var empty_arch: std.StringHashMapUnmanaged(void) = .empty;
     var cmi_units: std.ArrayList(WaveUnit) = .empty;
@@ -972,108 +767,6 @@ fn resolveMlSource(
     return .{ .upstream = ml_rel };
 }
 
-fn computeDynlinkPackPlan(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    arena: std.mem.Allocator,
-    src_root: []const u8,
-    root_dir: std.Io.Dir,
-) !Manifest.Plan {
-    const dyn_vars = try queryMakeVars(io, gpa, arena, src_root, "otherlibs/dynlink/Makefile", &.{
-        "O=o", "A=a", "S=s", "SO=so", "EXE=",
-    }, &.{ "COMPILERLIBS_INTFS", "COMPILERLIBS_SOURCES" });
-
-    const intfs = dyn_vars.get("COMPILERLIBS_INTFS").?;
-    const sources = dyn_vars.get("COMPILERLIBS_SOURCES").?;
-
-    var empty_arch: std.StringHashMapUnmanaged(void) = .empty;
-    var intf_units: std.ArrayList(Unit) = .empty;
-    var cmo_units: std.ArrayList(Unit) = .empty;
-    var stem_set: std.StringHashMapUnmanaged(void) = .empty;
-
-    for (sources) |ml_rel| {
-        const key = ml_rel[0 .. ml_rel.len - 3]; // strip .ml
-        const stem = std.fs.path.basename(key);
-        const mli_src = (try resolveMliSource(io, arena, root_dir, &empty_arch, key)).?;
-        try intf_units.append(arena, .{ .key = key, .name = stem, .src = mli_src });
-        try cmo_units.append(arena, .{ .key = key, .name = stem, .src = try resolveMlSource(arena, &empty_arch, key) });
-        try stem_set.put(arena, stem, {});
-    }
-
-    for (intfs) |mli_rel| {
-        const key = mli_rel[0 .. mli_rel.len - 4]; // strip .mli
-        const stem = std.fs.path.basename(key);
-        const mli_src = (try resolveMliSource(io, arena, root_dir, &empty_arch, key)).?;
-        try intf_units.append(arena, .{ .key = key, .name = stem, .src = mli_src });
-        // interface-only modules are compiled with `-impl` on the .mli
-        try cmo_units.append(arena, .{ .key = key, .name = stem, .src = mli_src });
-        try stem_set.put(arena, stem, {});
-    }
-
-    const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
-    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    try parseDependUnionInto(arena, root_dep_src, "", &dep_map);
-
-    var bare_cmi_deps: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    var map_it = dep_map.iterator();
-    while (map_it.next()) |entry| {
-        if (std.mem.startsWith(u8, entry.key_ptr.*, "lex/")) continue;
-        if (!std.mem.endsWith(u8, entry.key_ptr.*, ".cmi")) continue;
-        const base = std.fs.path.basename(entry.key_ptr.*);
-        const stem = base[0 .. base.len - 4];
-        var dlist: std.ArrayList([]const u8) = .empty;
-        for (entry.value_ptr.*) |d| {
-            if (std.mem.endsWith(u8, d, ".cmi")) {
-                const dbase = std.fs.path.basename(d);
-                try dlist.append(arena, dbase[0 .. dbase.len - 4]);
-            }
-        }
-        try bare_cmi_deps.put(arena, stem, dlist.items);
-    }
-
-    const total = intf_units.items.len;
-    var done = try arena.alloc(bool, total);
-    @memset(done, false);
-    var built: std.StringHashMapUnmanaged(void) = .empty;
-    var waves: std.ArrayList([]const WaveUnit) = .empty;
-    var completed: usize = 0;
-
-    while (completed < total) {
-        var wave: std.ArrayList(WaveUnit) = .empty;
-        var wave_indices: std.ArrayList(usize) = .empty;
-
-        for (intf_units.items, 0..) |u, idx| {
-            if (done[idx]) continue;
-            var ready = true;
-            if (bare_cmi_deps.get(u.name)) |deps| {
-                for (deps) |dep_stem| {
-                    if (std.mem.eql(u8, dep_stem, u.name)) continue;
-                    if (stem_set.contains(dep_stem) and !built.contains(dep_stem)) {
-                        ready = false;
-                        break;
-                    }
-                }
-            }
-            if (ready) {
-                try wave.append(arena, .{ .kind = .intf, .unit = u });
-                try wave_indices.append(arena, idx);
-            }
-        }
-        if (wave.items.len == 0) @panic("Dynlink pack cycle");
-        for (wave_indices.items) |idx| {
-            done[idx] = true;
-            try built.put(arena, intf_units.items[idx].name, {});
-            completed += 1;
-        }
-        try waves.append(arena, wave.items);
-    }
-
-    return .{
-        .cmi_waves = waves.items,
-        .cmo_units = cmo_units.items,
-    };
-}
-
 fn parseDependUnionInto(
     arena: std.mem.Allocator,
     depend_src: []const u8,
@@ -1117,25 +810,27 @@ fn parseDependUnionInto(
         while (lhs_it.next()) |target_tok| {
             if (std.mem.endsWith(u8, target_tok, ".cmi") or std.mem.endsWith(u8, target_tok, ".cmo") or std.mem.endsWith(u8, target_tok, ".cmx")) {
                 const norm_t = try normalizeDepTok(arena, subdir_prefix, target_tok);
-                if (map.get(norm_t)) |existing| {
-                    var merged: std.ArrayList([]const u8) = .empty;
-                    try merged.appendSlice(arena, existing);
-                    for (deps.items) |d| {
-                        var found = false;
-                        for (existing) |e| {
-                            if (std.mem.eql(u8, e, d)) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) try merged.append(arena, d);
-                    }
-                    try map.put(arena, norm_t, merged.items);
-                } else {
-                    try map.put(arena, norm_t, deps.items);
-                }
+                try addDepsToMap(arena, map, norm_t, deps.items);
             }
         }
+    }
+}
+
+fn addDepsToMap(
+    arena: std.mem.Allocator,
+    map: *std.StringHashMapUnmanaged([]const []const u8),
+    target: []const u8,
+    new_deps: []const []const u8,
+) !void {
+    if (map.get(target)) |existing| {
+        var merged: std.ArrayList([]const u8) = .empty;
+        try merged.appendSlice(arena, existing);
+        for (new_deps) |d| {
+            if (!containsStr(existing, d)) try merged.append(arena, d);
+        }
+        try map.put(arena, target, merged.items);
+    } else {
+        try map.put(arena, target, new_deps);
     }
 }
 
@@ -1157,137 +852,8 @@ fn stdlibModuleName(arena: std.mem.Allocator, basename: []const u8) ![]const u8 
     return std.fmt.allocPrint(arena, "stdlib__{s}", .{cap});
 }
 
-fn evalCompflagsScript(arena: std.mem.Allocator, script: []const u8, target: []const u8) ![]const []const u8 {
-    var lines = std.mem.splitScalar(u8, script, '\n');
-    var in_case = false;
-    var joined_line: std.ArrayList(u8) = .empty;
-
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (!in_case) {
-            if (std.mem.startsWith(u8, line, "case ")) in_case = true;
-            continue;
-        }
-        if (std.mem.eql(u8, line, "esac")) break;
-
-        if (std.mem.endsWith(u8, line, "\\")) {
-            try joined_line.appendSlice(arena, line[0 .. line.len - 1]);
-            try joined_line.append(arena, ' ');
-            continue;
-        }
-        try joined_line.appendSlice(arena, line);
-        if (!std.mem.endsWith(u8, joined_line.items, ";;")) {
-            try joined_line.append(arena, ' ');
-            continue;
-        }
-
-        const arm = std.mem.trim(u8, joined_line.items, " \t");
-        joined_line = .empty;
-
-        const paren_idx = std.mem.indexOfScalar(u8, arm, ')') orelse continue;
-        const patterns_str = std.mem.trim(u8, arm[0..paren_idx], " \t");
-        const body_with_semi = std.mem.trim(u8, arm[paren_idx + 1 ..], " \t");
-        const body = std.mem.trim(u8, body_with_semi[0 .. body_with_semi.len - 2], " \t");
-        const echo_arg = if (std.mem.startsWith(u8, body, "echo ")) body["echo ".len..] else "";
-
-        var pat_it = std.mem.splitScalar(u8, patterns_str, '|');
-        while (pat_it.next()) |raw_pat| {
-            const pat = std.mem.trim(u8, raw_pat, " \t");
-            if (globMatch(pat, target)) {
-                var cleaned = echo_arg;
-                if (std.mem.indexOf(u8, cleaned, "-pp ")) |pp_idx| {
-                    cleaned = std.mem.trim(u8, cleaned[0..pp_idx], " \t\"'");
-                }
-                var flags: std.ArrayList([]const u8) = .empty;
-                var tok_it = std.mem.tokenizeAny(u8, cleaned, " \t\"'");
-                while (tok_it.next()) |tok| try flags.append(arena, tok);
-                return flags.items;
-            }
-        }
-    }
-    return &.{};
-}
-
-fn globMatch(pat: []const u8, text: []const u8) bool {
-    var pi: usize = 0;
-    var ti: usize = 0;
-    var star_pi: ?usize = null;
-    var star_ti: usize = 0;
-
-    while (ti < text.len) {
-        if (pi < pat.len and pat[pi] == '[') {
-            if (std.mem.indexOfScalarPos(u8, pat, pi + 1, ']')) |close_idx| {
-                if (std.mem.indexOfScalar(u8, pat[pi + 1 .. close_idx], text[ti]) != null) {
-                    pi = close_idx + 1;
-                    ti += 1;
-                    continue;
-                }
-            }
-        } else if (pi < pat.len and (pat[pi] == '?' or pat[pi] == text[ti])) {
-            pi += 1;
-            ti += 1;
-            continue;
-        } else if (pi < pat.len and pat[pi] == '*') {
-            star_pi = pi;
-            pi += 1;
-            star_ti = ti;
-            continue;
-        }
-        if (star_pi) |sp| {
-            pi = sp + 1;
-            star_ti += 1;
-            ti = star_ti;
-            continue;
-        }
-        return false;
-    }
-    while (pi < pat.len and pat[pi] == '*') : (pi += 1) {}
-    return pi == pat.len;
-}
-
-fn parseStdlibDependCmiMap(
-    arena: std.mem.Allocator,
-    depend_src: []const u8,
-) !std.StringHashMapUnmanaged([]const []const u8) {
-    var map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    var joined_line: std.ArrayList(u8) = .empty;
-    var lines = std.mem.splitScalar(u8, depend_src, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (std.mem.endsWith(u8, line, "\\")) {
-            try joined_line.appendSlice(arena, line[0 .. line.len - 1]);
-            try joined_line.append(arena, ' ');
-            continue;
-        }
-        try joined_line.appendSlice(arena, line);
-        const full = std.mem.trim(u8, joined_line.items, " \t");
-        joined_line = .empty;
-
-        const colon_idx = std.mem.indexOfScalar(u8, full, ':') orelse continue;
-        const lhs = std.mem.trim(u8, full[0..colon_idx], " \t");
-        const rhs = std.mem.trim(u8, full[colon_idx + 1 ..], " \t");
-
-        var deps: std.ArrayList([]const u8) = .empty;
-        var rhs_it = std.mem.tokenizeAny(u8, rhs, " \t");
-        while (rhs_it.next()) |dep_tok| {
-            if (std.mem.endsWith(u8, dep_tok, ".cmi")) {
-                try deps.append(arena, dep_tok[0 .. dep_tok.len - 4]);
-            }
-        }
-
-        var lhs_it = std.mem.tokenizeAny(u8, lhs, " \t");
-        while (lhs_it.next()) |target_tok| {
-            if (std.mem.endsWith(u8, target_tok, ".cmi")) {
-                try map.put(arena, target_tok[0 .. target_tok.len - 4], deps.items);
-            }
-        }
-    }
-    return map;
-}
-
 const StdlibPlan = struct {
+    compflags: []const []const u8,
     plan: Manifest.Plan,
     /// module names archived into stdlib.cma, in link order
     cma: []const []const u8,
@@ -1295,25 +861,53 @@ const StdlibPlan = struct {
 
 fn computeStdlibPlan(
     io: std.Io,
+    gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
+    src_root: []const u8,
     root_dir: std.Io.Dir,
     basenames: []const []const u8,
 ) !StdlibPlan {
-    const compflags_script = try root_dir.readFileAlloc(io, "stdlib/Compflags", arena, .unlimited);
+    // Query COMPFLAGS and ./Compflags for every stdlib unit in a single `make` invocation
+    var make_stdin: std.ArrayList(u8) = .empty;
+    try make_stdin.appendSlice(arena, "$(info ZCAML:COMPFLAGS=$(COMPFLAGS))\n");
+    for (basenames) |base| {
+        const mod_name = try stdlibModuleName(arena, base);
+        for ([_][]const u8{ "cmi", "cmo", "cmx" }) |ext| {
+            try make_stdin.appendSlice(arena, try std.fmt.allocPrint(
+                arena,
+                "$(info ZCAML:{s}.{s}=$(shell ./Compflags {s}.{s}))\n",
+                .{ mod_name, ext, mod_name, ext },
+            ));
+        }
+    }
+    for ([_][]const u8{ "cmo", "cmx" }) |ext| {
+        try make_stdin.appendSlice(arena, try std.fmt.allocPrint(
+            arena,
+            "$(info ZCAML:std_exit.{s}=$(shell ./Compflags std_exit.{s}))\n",
+            .{ ext, ext },
+        ));
+    }
+
+    const stdlib_vars = try queryMakeRaw(io, gpa, arena, src_root, "stdlib/Makefile", &.{
+        "O=o", "A=a", "S=s", "SO=so", "EXE=",
+    }, make_stdin.items);
+
     const stdlib_depend = try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited);
-    const cmi_dep_map = try parseStdlibDependCmiMap(arena, stdlib_depend);
+    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
+    try parseDependUnionInto(arena, stdlib_depend, "", &dep_map);
 
     var wave_units: std.ArrayList(WaveUnit) = .empty;
     var cmo_units: std.ArrayList(Unit) = .empty;
     var cma: std.ArrayList([]const u8) = .empty;
+    var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty;
 
     for (basenames) |base| {
         const mod_name = try stdlibModuleName(arena, base);
         const is_stdlib = std.mem.eql(u8, base, "stdlib");
         const is_labels = std.mem.endsWith(u8, base, "Labels");
-        const cmi_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}));
-        const cmo_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name}));
-        const cmx_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name}));
+        const cmi_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name})) orelse &.{};
+        const cmo_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name})) orelse &.{};
+        const cmx_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name})) orelse &.{};
 
         const ml_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.ml", .{base});
         const mli_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.mli", .{base});
@@ -1323,6 +917,13 @@ fn computeStdlibPlan(
             .{ .expanded = ml_rel }
         else
             .{ .upstream = ml_rel };
+
+        try cmi_by_basename.put(arena, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}), mod_name);
+        if (!is_stdlib and !std.mem.eql(u8, mod_name, "camlinternalFormatBasics")) {
+            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}), &.{"stdlib.cmi"});
+            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name}), &.{"stdlib.cmi"});
+            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name}), &.{"stdlib.cmx"});
+        }
 
         if (fileExists(io, root_dir, mli_rel)) {
             const mli_src: Src = if (is_stdlib or is_labels) .{ .expanded = mli_rel } else .{ .upstream = mli_rel };
@@ -1355,7 +956,10 @@ fn computeStdlibPlan(
     }
 
     // std_exit is not part of stdlib.cma; it is linked last into every executable.
-    const std_exit_flags = try evalCompflagsScript(arena, compflags_script, "std_exit.cmo");
+    const std_exit_flags = stdlib_vars.get("std_exit.cmo") orelse &.{};
+    try cmi_by_basename.put(arena, "std_exit.cmi", "std_exit");
+    try addDepsToMap(arena, &dep_map, "std_exit.cmi", &.{"stdlib.cmi"});
+    try addDepsToMap(arena, &dep_map, "std_exit.cmx", &.{"stdlib.cmx"});
     if (fileExists(io, root_dir, "stdlib/std_exit.mli")) {
         try wave_units.append(arena, .{ .kind = .intf, .unit = .{
             .key = "std_exit",
@@ -1370,106 +974,19 @@ fn computeStdlibPlan(
         .name = "std_exit",
         .src = .{ .upstream = "stdlib/std_exit.ml" },
         .flags = std_exit_flags,
-        .native_flags = try evalCompflagsScript(arena, compflags_script, "std_exit.cmx"),
+        .native_flags = stdlib_vars.get("std_exit.cmx") orelse &.{},
         .dest = .lib,
     });
 
     return .{
+        .compflags = stdlib_vars.get("COMPFLAGS").?,
         .plan = .{
-            .cmi_waves = try computeStdlibCmiWaves(arena, wave_units.items, &cmi_dep_map),
+            .cmi_waves = try sortCmiWaves(arena, wave_units.items, &dep_map, &cmi_by_basename),
             .cmo_units = cmo_units.items,
+            .cmx_waves = try nativeWaves(arena, wave_units.items, cmo_units.items, &dep_map, false),
         },
         .cma = cma.items,
     };
-}
-
-fn computeStdlibCmiWaves(
-    arena: std.mem.Allocator,
-    units: []const WaveUnit,
-    cmi_dep_map: *const std.StringHashMapUnmanaged([]const []const u8),
-) ![]const []const WaveUnit {
-    const total = units.len;
-    var done = try arena.alloc(bool, total);
-    @memset(done, false);
-    var built: std.StringHashMapUnmanaged(void) = .empty;
-    var waves: std.ArrayList([]const WaveUnit) = .empty;
-    var completed: usize = 0;
-
-    while (completed < total) {
-        var wave: std.ArrayList(WaveUnit) = .empty;
-        var wave_indices: std.ArrayList(usize) = .empty;
-
-        for (units, 0..) |wu, idx| {
-            if (done[idx]) continue;
-            const mod_name = wu.unit.name;
-            var ready = true;
-            // everything but these two is compiled with the `Stdlib` module opened
-            if (!std.mem.eql(u8, mod_name, "camlinternalFormatBasics") and !std.mem.eql(u8, mod_name, "stdlib")) {
-                if (!built.contains("stdlib")) ready = false;
-            }
-            if (ready) {
-                if (cmi_dep_map.get(mod_name)) |deps| {
-                    for (deps) |dep_mod| {
-                        if (!built.contains(dep_mod)) {
-                            ready = false;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (ready) {
-                try wave.append(arena, wu);
-                try wave_indices.append(arena, idx);
-            }
-        }
-        if (wave.items.len == 0) @panic("Stdlib .depend cycle");
-        for (wave_indices.items) |idx| {
-            done[idx] = true;
-            try built.put(arena, units[idx].unit.name, {});
-            completed += 1;
-        }
-        try waves.append(arena, wave.items);
-    }
-
-    return waves.items;
-}
-
-fn parseSimpleMakefileVar(arena: std.mem.Allocator, src: []const u8, var_name: []const u8) ![]const []const u8 {
-    var lines = std.mem.splitScalar(u8, src, '\n');
-    var found = false;
-    var body: std.ArrayList(u8) = .empty;
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trimEnd(u8, raw_line, "\r");
-        if (!found) {
-            if (std.mem.startsWith(u8, line, var_name)) {
-                const after = std.mem.trimStart(u8, line[var_name.len..], " \t");
-                if (std.mem.startsWith(u8, after, "=")) {
-                    found = true;
-                    const rhs = std.mem.trimStart(u8, after[1..], " \t");
-                    if (std.mem.endsWith(u8, rhs, "\\")) {
-                        try body.appendSlice(arena, rhs[0 .. rhs.len - 1]);
-                        try body.append(arena, ' ');
-                    } else {
-                        try body.appendSlice(arena, rhs);
-                        break;
-                    }
-                }
-            }
-        } else {
-            const trimmed = std.mem.trim(u8, line, " \t");
-            if (std.mem.endsWith(u8, trimmed, "\\")) {
-                try body.appendSlice(arena, trimmed[0 .. trimmed.len - 1]);
-                try body.append(arena, ' ');
-            } else {
-                try body.appendSlice(arena, trimmed);
-                break;
-            }
-        }
-    }
-    var out: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.tokenizeAny(u8, body.items, " \t");
-    while (it.next()) |tok| try out.append(arena, tok);
-    return out.items;
 }
 
 fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_file: []const u8) !Manifest.Version {
@@ -1477,10 +994,7 @@ fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_f
     const major = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MAJOR").?, 10);
     const minor = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MINOR").?, 10);
     const patchlevel = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_PATCHLEVEL").?, 10);
-    const release_number: ?u32 = if (extractM4Define(version_m4, "OCAML__RELEASE_NUMBER")) |rn|
-        try std.fmt.parseInt(u32, rn, 10)
-    else
-        null;
+    const release_number = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__RELEASE_NUMBER").?, 10);
     const extra = extractM4Define(version_m4, "OCAML__VERSION_EXTRA") orelse "";
     const extra_prefix = extractM4Define(version_m4, "OCAML__VERSION_EXTRA_PREFIX") orelse "+";
     const version_string = if (extra.len == 0)
@@ -1491,10 +1005,21 @@ fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_f
     const first_line = std.mem.trim(u8, std.mem.sliceTo(version_file, '\n'), " \t\r");
     if (!std.mem.eql(u8, first_line, version_string)) @panic("VERSION mismatch");
 
-    const magic: ?Manifest.Magic = if (extractM4Define(version_m4, "MAGIC_NUMBER__PREFIX")) |prefix| blk: {
-        const ver = extractM4Define(version_m4, "MAGIC_NUMBER__VERSION").?;
-        const exec_format = extractM4Define(version_m4, "EXEC__FORMAT").?;
-        break :blk .{
+    const prefix = extractM4Define(version_m4, "MAGIC_NUMBER__PREFIX").?;
+    const ver = extractM4Define(version_m4, "MAGIC_NUMBER__VERSION").?;
+    const exec_format = extractM4Define(version_m4, "EXEC__FORMAT").?;
+
+    return .{
+        .string = version_string,
+        .major = major,
+        .minor = minor,
+        .patchlevel = patchlevel,
+        .release_number = release_number,
+        .dev = std.mem.eql(u8, dev_str, "true"),
+        .extra = extra,
+        .extra_prefix = extra_prefix,
+        .number = major * 10000 + minor * 100 + patchlevel,
+        .magic = .{
             .prefix = prefix,
             .version = ver,
             .exec_format = exec_format,
@@ -1512,20 +1037,7 @@ fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_f
                 .cmt = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMT"),
                 .linear = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "LINEAR"),
             },
-        };
-    } else null;
-
-    return .{
-        .string = version_string,
-        .major = major,
-        .minor = minor,
-        .patchlevel = patchlevel,
-        .release_number = release_number,
-        .dev = std.mem.eql(u8, dev_str, "true"),
-        .extra = extra,
-        .extra_prefix = extra_prefix,
-        .number = major * 10000 + minor * 100 + patchlevel,
-        .magic = magic,
+        },
     };
 }
 

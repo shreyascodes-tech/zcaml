@@ -7,35 +7,6 @@
             .hash = "N-V-__8AAN6LfwEXSAd8pDJD2HFaj68plGGg7XaWz8xi4xBo",
             .lazy = true,
         },
-        // OCaml < 5.5 bakes absolute install paths into the runtime and compilers, so
-        // its toolchains can't be built as a relocatable layout. Re-enable once zcaml
-        // can relocate installs at install time. Their manifests are still in
-        // build/manifests/; run `zig build generate` after uncommenting.
-        // .ocaml_5_4_1 = .{
-        //     .url = "https://github.com/ocaml/ocaml/releases/download/5.4.1/ocaml-5.4.1.tar.gz",
-        //     .hash = "N-V-__8AAC9E3gHwk9BDqddGHPrLUAllUZOYmrlMfBfev2Qs",
-        //     .lazy = true,
-        // },
-        // .ocaml_5_3_0 = .{
-        //     .url = "https://github.com/ocaml/ocaml/releases/download/5.3.0/ocaml-5.3.0.tar.gz",
-        //     .hash = "N-V-__8AAPdRywEOKZQpFBENQJl6C2HK5QbvAFtYEIPQZDQo",
-        //     .lazy = true,
-        // },
-        // .ocaml_5_2_1 = .{
-        //     .url = "https://github.com/ocaml/ocaml/releases/download/5.2.1/ocaml-5.2.1.tar.gz",
-        //     .hash = "N-V-__8AAMBvvgE5MZYsQHdR4A28kiPtfTWwrL2Yb1YfXs_Q",
-        //     .lazy = true,
-        // },
-        // .ocaml_5_1_1 = .{
-        //     .url = "https://caml.inria.fr/pub/distrib/ocaml-5.1/ocaml-5.1.1.tar.gz",
-        //     .hash = "N-V-__8AAN4KpQGDo_xKOfdJgiYtrYXHePB_in56aiVmTgZV",
-        //     .lazy = true,
-        // },
-        // .ocaml_5_0_0 = .{
-        //     .url = "https://caml.inria.fr/pub/distrib/ocaml-5.0/ocaml-5.0.0.tar.gz",
-        //     .hash = "N-V-__8AAObvnAEXQ7x0HfV9XofzXQLUeQZVjtNR_2DYF4o4",
-        //     .lazy = true,
-        // },
         .flexdll = .{
             .url = "https://github.com/ocaml/flexdll/archive/refs/tags/0.44.tar.gz",
             .hash = "N-V-__8AAN_RAwAoZlxPjQUGiWRFb-Y88NwZiNL02OkCoW7L",
