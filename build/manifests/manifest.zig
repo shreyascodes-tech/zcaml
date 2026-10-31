@@ -159,6 +159,8 @@ pub const Unit = struct {
     src: Src,
     /// Extra compiler flags for this unit.
     flags: []const []const u8 = &.{},
+    /// Per-module native flags (stdlib/Compflags may differ for `.cmx`).
+    native_flags: []const []const u8 = &.{},
     /// Only build for these target architectures (empty = all).
     archs: []const Arch = &.{},
     dest: Dest = .none,

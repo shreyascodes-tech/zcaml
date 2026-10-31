@@ -219,3 +219,7 @@ pub fn compilePlan(self: Ocamlc, plan: Manifest.Plan, sources: Resolver, opts: O
 pub fn concat(b: *std.Build, a: []const []const u8, c: []const []const u8) []const []const u8 {
     return std.mem.concat(b.allocator, []const u8, &.{ a, c }) catch @panic("OOM");
 }
+
+pub fn concatPaths(b: *std.Build, a: []const LazyPath, c: []const LazyPath) []const LazyPath {
+    return std.mem.concat(b.allocator, LazyPath, &.{ a, c }) catch @panic("OOM");
+}

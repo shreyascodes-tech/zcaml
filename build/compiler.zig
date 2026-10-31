@@ -4,6 +4,7 @@ const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
 const Ocamlc = @import("ocamlc.zig");
+const Ocamlopt = @import("ocamlopt.zig");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
 const Tools = @import("tools/root.zig");
@@ -18,6 +19,7 @@ pub const Artifacts = struct {
     sources: Source.Resolver,
     /// The freshly built `ocamlc`, for compiling libraries against the new stdlib.
     ocamlc: Ocamlc,
+    ocamlopt: Ocamlopt,
 };
 
 pub const Programs = struct {
@@ -223,6 +225,12 @@ pub fn build(src: *const Source, options: Options) Artifacts {
         .compilerlibs_dir = compilerlibs.getDirectory(),
         .profiling_dir = profiling.getDirectory(),
         .sources = sources,
+        .ocamlopt = .{
+            .b = b,
+            .ocamlrun = options.build_ocamlrun,
+            .exe = programs.ocamlopt,
+            .stdlib_dir = options.stdlib.dir,
+        },
         .ocamlc = .{
             .b = b,
             .ocamlrun = options.build_ocamlrun,
@@ -330,8 +338,13 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
     const cclibs = c.libsString(b);
     const rpath = if (target.is_elf) "-Wl,-rpath," else "";
     const native_ldflags = if (target.is_macos and target.arch == .amd64) "-Wl,-no_compact_unwind" else "";
-    const mkdll = if (target.is_macos) "cc -shared -undefined dynamic_lookup -Wl,-w" else "cc -shared";
-    const mkexe = b.fmt("cc {s}{s}", .{ cflags, if (target.is_elf) " -Wl,-E" else "" });
+    // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
+    const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
+    const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined", .{triple});
+    const asm_cmd = b.fmt("{s} -c", .{cc});
+    const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
+    const mkdll = b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
+    const mkexe = b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else "" });
     const so_ext = target.dllExt();
     const bool_str = struct {
         fn f(v: bool) []const u8 {
@@ -344,7 +357,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
             .{ .name = "BINDIR", .value = bindir },
             .{ .name = "LIBDIR", .value = libdir },
             .{ .name = "CCOMPTYPE", .value = "cc" },
-            .{ .name = "CC", .value = "cc" },
+            .{ .name = "CC", .value = cc },
             .{ .name = "OUTPUTOBJ", .value = "-o " },
             .{ .name = "CC_HAS_DEBUG_PREFIX_MAP", .value = "true" },
             .{ .name = "AS_HAS_DEBUG_PREFIX_MAP", .value = "true" },
@@ -353,10 +366,10 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
             .{ .name = "OCAMLOPT_CPPFLAGS", .value = cppflags },
             .{ .name = "BYTECCLIBS", .value = cclibs },
             .{ .name = "NATIVECCLIBS", .value = cclibs },
-            .{ .name = "PACKLD", .value = "ld -r -o " },
+            .{ .name = "PACKLD", .value = packld },
             .{ .name = "RPATH", .value = rpath },
             .{ .name = "MKSHAREDLIBRPATH", .value = rpath },
-            .{ .name = "ARCMD", .value = "ar" },
+            .{ .name = "ARCMD", .value = "zig ar" },
             .{ .name = "SUPPORTS_SHARED_LIBRARIES", .value = "true" },
             .{ .name = "FLEXDLL_CHAIN", .value = if (target.is_windows) "mingw64" else "" },
             .{ .name = "FLEXLINK_FLAGS", .value = if (target.is_windows) "-stack 33554432" else "" },
@@ -375,7 +388,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
             .{ .name = "ARCH", .value = target.archName() },
             .{ .name = "MODEL", .value = target.model },
             .{ .name = "SYSTEM", .value = target.system },
-            .{ .name = "ASM", .value = "cc -c" },
+            .{ .name = "ASM", .value = asm_cmd },
             .{ .name = "ASM_CFI_SUPPORTED", .value = bool_str(!target.is_windows) },
             .{ .name = "WITH_FRAME_POINTERS", .value = "false" },
             .{ .name = "WITH_PROFINFO", .value = "false" },
@@ -401,7 +414,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "ocaml_libdir", .value = libdir, .version_specific = true },
         .{ .name = "ccomptype", .value = "cc", .version_specific = true },
         .{ .name = "ccomp_type", .value = "cc", .version_specific = true },
-        .{ .name = "CC", .value = "cc" },
+        .{ .name = "CC", .value = cc },
         .{ .name = "ocaml_cc_vendor", .value = "clang-19", .version_specific = true },
         .{ .name = "outputobj", .value = "-o " },
         .{ .name = "cc_has_debug_prefix_map", .value = "true" },
@@ -418,10 +431,10 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "cclibs", .value = cclibs },
         .{ .name = "native_ldflags", .value = native_ldflags, .version_specific = true },
         .{ .name = "with_nonexecstack_note", .value = bool_str(target.is_linux and target.is_elf), .version_specific = true },
-        .{ .name = "PACKLD", .value = "ld -r -o " },
+        .{ .name = "PACKLD", .value = packld },
         .{ .name = "rpath", .value = rpath },
         .{ .name = "mksharedlibrpath", .value = rpath },
-        .{ .name = "AR", .value = "ar" },
+        .{ .name = "AR", .value = "zig ar" },
         .{ .name = "supports_shared_libraries", .value = "true" },
         .{ .name = "natdynlink", .value = "true" },
         .{ .name = "mkdll_exp", .value = mkdll },
@@ -449,7 +462,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "model", .value = target.model },
         .{ .name = "system", .value = target.system },
         .{ .name = "target_os_type", .value = target.osType(), .version_specific = true },
-        .{ .name = "AS", .value = "cc -c" },
+        .{ .name = "AS", .value = asm_cmd },
         .{ .name = "asm_cfi_supported", .value = bool_str(!target.is_windows) },
         .{ .name = "asm_size_type_directives", .value = bool_str(target.is_elf), .version_specific = true },
         .{ .name = "asm_dwarf_version", .value = "None", .version_specific = true },

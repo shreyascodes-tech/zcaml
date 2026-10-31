@@ -1,8 +1,9 @@
-//! The standard library (`stdlib.cma` + interfaces), compiled with `boot/ocamlc`.
+//! The bytecode stdlib bootstrap, followed by target-native artifacts.
 const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
 const Ocamlc = @import("ocamlc.zig");
+const Ocamlopt = @import("ocamlopt.zig");
 const runtime = @import("runtime.zig");
 const Tools = @import("tools/root.zig");
 
@@ -12,6 +13,8 @@ pub const Artifacts = struct {
     meta: std.Build.LazyPath,
     /// Module-alias-expanded sources (`Manifest.Src.expanded`), also used by otherlibs.
     expanded_dir: std.Build.LazyPath,
+    /// Bootstrap interfaces and sources reused by the native compiler.
+    compiled: Ocamlc.Compiled,
 };
 
 pub const Options = struct {
@@ -106,7 +109,42 @@ pub fn build(src: *const Source, options: Options) Artifacts {
         .dir = out.getDirectory(),
         .meta = meta,
         .expanded_dir = expanded_dir,
+        .compiled = compiled,
     };
+}
+
+/// Bootstrap native artifacts only after the bytecode compiler has been linked.
+pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) Artifacts {
+    if (!p.hasNativeCompiler()) return byte;
+    const b = src.b;
+    var opt = compiler;
+    opt.stdlib_dir = null;
+    const out = b.addWriteFiles();
+    _ = out.addCopyDirectory(byte.dir, "", .{});
+    var includes: std.ArrayList(std.Build.LazyPath) = .empty;
+    includes.append(b.allocator, byte.compiled.cmis_dir) catch @panic("OOM");
+    var cmxs: std.ArrayList(std.Build.LazyPath) = .empty;
+    // STDLIB_MODULE_BASENAMES is in implementation dependency order, with
+    // camlinternalFormatBasics and stdlib first (the implicit -open Stdlib edge).
+    const keys = Ocamlc.concat(b, src.manifest.stdlib.cma, &.{"std_exit"});
+    for (keys) |key| {
+        const u = byte.compiled.impls.get(key).?;
+        const flags = Ocamlc.concat(b, src.manifest.stdlib.compflags, u.unit.native_flags);
+        const compiled = opt.impl(u.src, u.unit.name, byte.compiled.intfs.get(key).?.cmi, .{
+            .includes = includes.items,
+            .flags = Ocamlc.concat(b, flags, if (p.is_elf) &.{"-function-sections"} else &.{}),
+        });
+        _ = out.addCopyFile(compiled.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
+        _ = out.addCopyFile(compiled.obj, b.fmt("{s}.o", .{u.unit.name}));
+        includes.append(b.allocator, compiled.cmx.dirname()) catch @panic("OOM");
+        if (!std.mem.eql(u8, key, "std_exit")) cmxs.append(b.allocator, compiled.cmx) catch @panic("OOM");
+    }
+    const archive = opt.archive("stdlib", cmxs.items, .{});
+    _ = out.addCopyFile(archive.cmxa, "stdlib.cmxa");
+    _ = out.addCopyFile(archive.lib, "stdlib.a");
+    var result = byte;
+    result.dir = out.getDirectory();
+    return result;
 }
 
 /// Install the pristine source of a unit next to its artifacts (`stdlib/foo.ml` -> `foo.ml`).

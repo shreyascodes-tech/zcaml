@@ -1248,6 +1248,7 @@ fn computeStdlibPlan(
         const is_labels = std.mem.endsWith(u8, base, "Labels");
         const cmi_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}));
         const cmo_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name}));
+        const cmx_flags = try evalCompflagsScript(arena, compflags_script, try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name}));
 
         const ml_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.ml", .{base});
         const mli_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.mli", .{base});
@@ -1272,6 +1273,7 @@ fn computeStdlibPlan(
                 .name = mod_name,
                 .src = ml_src,
                 .flags = cmo_flags,
+                .native_flags = cmx_flags,
                 .dest = .lib,
             });
         } else {
@@ -1280,6 +1282,7 @@ fn computeStdlibPlan(
                 .name = mod_name,
                 .src = ml_src,
                 .flags = cmi_flags,
+                .native_flags = cmx_flags,
                 .dest = .lib,
             } });
         }
@@ -1302,6 +1305,7 @@ fn computeStdlibPlan(
         .name = "std_exit",
         .src = .{ .upstream = "stdlib/std_exit.ml" },
         .flags = std_exit_flags,
+        .native_flags = try evalCompflagsScript(arena, compflags_script, "std_exit.cmx"),
         .dest = .lib,
     });
 

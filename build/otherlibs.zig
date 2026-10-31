@@ -1,9 +1,10 @@
 //! `otherlibs/`: unix, str, threads, runtime_events, dynlink, compiled with the
-//! freshly built `ocamlc`, plus their C stub libraries.
+//! freshly built compilers, plus their C stub libraries.
 const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
 const Ocamlc = @import("ocamlc.zig");
+const Ocamlopt = @import("ocamlopt.zig");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
 const compiler = @import("compiler.zig");
@@ -77,9 +78,9 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     const unix = ctx.unixLib(unix_stubs);
     const libs = b.allocator.dupe(Lib, &.{
         .{ .name = "dynlink", .dir = ctx.dynlinkLib() },
-        .{ .name = "unix", .dir = unix.dir, .stubs = unix_stubs },
+        .{ .name = "unix", .dir = unix, .stubs = unix_stubs },
         .{ .name = "str", .dir = ctx.singleModuleLib("str", "otherlibs/str", "str", str_stubs), .stubs = str_stubs },
-        .{ .name = "threads", .dir = ctx.threadsLib(unix.cmi_dir, threads_stubs), .stubs = threads_stubs },
+        .{ .name = "threads", .dir = ctx.threadsLib(unix, threads_stubs), .stubs = threads_stubs },
         .{ .name = "runtime_events", .dir = ctx.singleModuleLib("runtime_events", "otherlibs/runtime_events", "runtime_events", re_stubs), .stubs = re_stubs },
     }) catch @panic("OOM");
 
@@ -116,6 +117,37 @@ const Ctx = struct {
         });
     }
 
+    fn nativeImpl(self: Ctx, wf: *std.Build.Step.WriteFile, ml: LazyPath, name: []const u8, cmi: LazyPath, includes: []const LazyPath, compflags: []const []const u8) Ocamlopt.Impl {
+        const b = self.src.b;
+        const impl = self.options.compiler.ocamlopt.impl(ml, name, cmi, .{ .includes = includes, .flags = compflags });
+        _ = wf.addCopyFile(impl.cmx, b.fmt("{s}.cmx", .{name}));
+        _ = wf.addCopyFile(impl.obj, b.fmt("{s}.o", .{name}));
+        return impl;
+    }
+
+    /// Record relocatable stub names in the archive; locate their build outputs
+    /// explicitly while linking plugins (the install tree does not exist yet).
+    fn nativeArchive(self: Ctx, wf: *std.Build.Step.WriteFile, name: []const u8, cmxs: []const LazyPath, stubs: ?Stubs, shared: bool) void {
+        const b = self.src.b;
+        const opt = self.options.compiler.ocamlopt;
+        var link_flags: std.ArrayList([]const u8) = .empty;
+        link_flags.appendSlice(b.allocator, &.{ "-g", "-linkall" }) catch @panic("OOM");
+        var includes: std.ArrayList(LazyPath) = .empty;
+        if (stubs) |s| {
+            link_flags.appendSlice(b.allocator, &.{ "-cclib", b.fmt("-l{s}", .{s.static_nat.name}) }) catch @panic("OOM");
+            includes.append(b.allocator, s.static_nat.getEmittedBin().dirname()) catch @panic("OOM");
+            for (self.platform().c.libs) |lib| {
+                link_flags.appendSlice(b.allocator, &.{ "-cclib", b.fmt("-l{s}", .{lib}) }) catch @panic("OOM");
+            }
+        }
+        const archive = opt.archive(name, cmxs, .{ .flags = link_flags.items });
+        _ = wf.addCopyFile(archive.cmxa, b.fmt("{s}.cmxa", .{name}));
+        _ = wf.addCopyFile(archive.lib, b.fmt("{s}.a", .{name}));
+        if (shared) {
+            _ = wf.addCopyFile(opt.shared(name, archive.cmxa, .{ .includes = includes.items }), b.fmt("{s}.cmxs", .{name}));
+        }
+    }
+
     /// A library made of one module (`str`, `runtime_events`).
     fn singleModuleLib(self: Ctx, name: []const u8, dir: []const u8, module: []const u8, stubs: Stubs) LazyPath {
         const b = self.src.b;
@@ -131,12 +163,14 @@ const Ctx = struct {
 
         _ = wf.addCopyFile(lib, b.fmt("{s}.cma", .{name}));
         installModule(b, wf, module, i, o, mli);
+        if (self.platform().hasNativeCompiler()) {
+            const native = self.nativeImpl(wf, ml, module, i.cmi, &.{i.cmi.dirname()}, compflags);
+            self.nativeArchive(wf, name, &.{native.cmx}, stubs, true);
+        }
         return wf.getDirectory();
     }
 
-    const UnixLib = struct { dir: LazyPath, cmi_dir: LazyPath };
-
-    fn unixLib(self: Ctx, stubs: Stubs) UnixLib {
+    fn unixLib(self: Ctx, stubs: Stubs) LazyPath {
         const b = self.src.b;
         const p = self.platform();
         const compflags = self.flags(self.src.manifest.otherlibs.compflags, &.{"-nolabels"});
@@ -170,7 +204,12 @@ const Ctx = struct {
         _ = wf.addCopyFile(lib, "unix.cma");
         installModule(b, wf, "unix", unix_i, unix_o, unix_mli);
         installModule(b, wf, "unixLabels", labels_i, labels_o, labels_mli);
-        return .{ .dir = wf.getDirectory(), .cmi_dir = unix_i.cmi.dirname() };
+        if (p.hasNativeCompiler()) {
+            const unix_n = self.nativeImpl(wf, self.src.path(b.fmt("otherlibs/unix/unix_{s}.ml", .{p.unixOrWin32()})), "unix", unix_i.cmi, &.{unix_i.cmi.dirname()}, compflags);
+            const labels_n = self.nativeImpl(wf, self.src.path("otherlibs/unix/unixLabels.ml"), "unixLabels", labels_i.cmi, &.{ unix_i.cmi.dirname(), labels_i.cmi.dirname(), unix_n.cmx.dirname() }, compflags);
+            self.nativeArchive(wf, "unix", &.{ unix_n.cmx, labels_n.cmx }, stubs, true);
+        }
+        return wf.getDirectory();
     }
 
     fn threadsLib(self: Ctx, unix_cmi_dir: LazyPath, stubs: Stubs) LazyPath {
@@ -193,6 +232,11 @@ const Ctx = struct {
         _ = wf.addCopyFile(lib, "threads.cma");
         installModule(b, wf, "thread", thread_i, thread_o, thread_mli);
         installModule(b, wf, "event", event_i, event_o, event_mli);
+        if (self.platform().hasNativeCompiler()) {
+            const thread_n = self.nativeImpl(wf, self.src.path("otherlibs/systhreads/thread.ml"), "thread", thread_i.cmi, all_dirs, compflags);
+            const event_n = self.nativeImpl(wf, self.src.path("otherlibs/systhreads/event.ml"), "event", event_i.cmi, Ocamlc.concatPaths(b, all_dirs, &.{thread_n.cmx.dirname()}), compflags);
+            self.nativeArchive(wf, "threads", &.{ thread_n.cmx, event_n.cmx }, stubs, false);
+        }
         return wf.getDirectory();
     }
 
@@ -243,6 +287,13 @@ const Ctx = struct {
         const lib = o.archive("dynlink.cma", dl.cmos.items, .{ .includes = dl.includes.items, .flags = &.{ "-g", "-linkall" } });
         _ = wf.addCopyFile(lib, "dynlink.cma");
         installModule(b, wf, "dynlink", dl.last_intf, dl.last_impl, dynlink_mli);
+        if (p.hasNativeCompiler()) {
+            for (dl.native_impls.items) |n| {
+                _ = wf.addCopyFile(n.impl.cmx, b.fmt("{s}.cmx", .{n.name}));
+                _ = wf.addCopyFile(n.impl.obj, b.fmt("{s}.o", .{n.name}));
+            }
+            self.nativeArchive(wf, "dynlink", dl.cmxs.items, null, true);
+        }
         return wf.getDirectory();
     }
 
@@ -339,6 +390,8 @@ const DynlinkChain = struct {
     flags: []const []const u8,
     includes: std.ArrayList(LazyPath) = .empty,
     cmos: std.ArrayList(LazyPath) = .empty,
+    cmxs: std.ArrayList(LazyPath) = .empty,
+    native_impls: std.ArrayList(struct { name: []const u8, impl: Ocamlopt.Impl }) = .empty,
     last_intf: Ocamlc.Intf = undefined,
     last_impl: Ocamlc.Impl = undefined,
 
@@ -358,6 +411,13 @@ const DynlinkChain = struct {
         self.addInclude(i.cmi.dirname());
         const impl = o.impl(ml, name, i.cmi, .{ .includes = self.includes.items, .flags = self.flags });
         self.cmos.append(self.ctx.src.b.allocator, impl.cmo) catch @panic("OOM");
+        if (self.ctx.platform().hasNativeCompiler() and !std.mem.eql(u8, name, "dynlink_symtable")) {
+            const native_ml = if (std.mem.eql(u8, name, "dynlink")) self.ctx.src.path("otherlibs/dynlink/native/dynlink.ml") else ml;
+            const native = self.ctx.options.compiler.ocamlopt.impl(native_ml, name, i.cmi, .{ .includes = self.includes.items, .flags = self.flags });
+            self.cmxs.append(self.ctx.src.b.allocator, native.cmx) catch @panic("OOM");
+            self.native_impls.append(self.ctx.src.b.allocator, .{ .name = name, .impl = native }) catch @panic("OOM");
+            self.addInclude(native.cmx.dirname());
+        }
         self.last_intf = i;
         self.last_impl = impl;
     }

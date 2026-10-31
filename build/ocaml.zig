@@ -85,17 +85,19 @@ pub fn build(src: *const Source, options: Options) Error!Toolchain {
     else
         runtime.build(src.*, .{ .platform = host, .optimize = options.optimize });
 
-    const std_lib = stdlib.build(src, .{
+    const byte_stdlib = stdlib.build(src, .{
         .target_rt = target_rt,
         .build_ocamlrun = build_rt.ocamlrun,
     });
-    const comp = compiler.build(src, .{
+    var comp = compiler.build(src, .{
         .host = host,
         .target_rt = target_rt,
-        .stdlib = std_lib,
+        .stdlib = byte_stdlib,
         .build_ocamlrun = build_rt.ocamlrun,
         .build_ocamlyacc = build_rt.ocamlyacc,
     });
+    const std_lib = stdlib.buildNative(src, byte_stdlib, comp.ocamlopt, target);
+    comp.ocamlopt.stdlib_dir = std_lib.dir;
     const libs = otherlibs.build(src, .{
         .target_rt = target_rt,
         .stdlib = std_lib,
