@@ -180,6 +180,8 @@ pub const Plan = struct {
     cmi_waves: []const []const WaveUnit,
     /// Implementations whose interface was compiled in `cmi_waves`.
     cmo_units: []const Unit,
+    /// Native implementations, layered by `.cmx` dependencies.
+    cmx_waves: []const []const Unit = &.{},
 };
 
 pub const WaveUnit = struct {
@@ -215,6 +217,7 @@ pub const Compiler = struct {
     ocamlmiddleend: []const []const u8,
     ocamloptcomp: []const []const u8,
     ocamltoplevel: []const []const u8,
+    ocamltoplevel_native: []const []const u8 = &.{},
     /// Keys of the units linked into each standalone tool, in link order.
     ocamlprof: []const []const u8,
     ocamlcp: []const []const u8,

@@ -104,6 +104,32 @@ pub fn build(src: *const Source, options: Options) Error!Toolchain {
         .compiler = comp,
         .optimize = options.optimize,
     });
+    if (target.hasNativeCompiler()) {
+        // Installed compiler-libs contain target code, not compiler-host code.
+        comp = compiler.buildNative(src, comp, comp.ocamlopt, target_rt, libs.dynlink_dir, host.eql(target));
+    }
+    if (host.hasNativeCompiler() and !host.eql(target)) {
+        // Bootstrap a host-targeting emitter, then use it on the original
+        // host->target compiler sources to produce runnable host executables.
+        const host_byte_stdlib = stdlib.build(src, .{ .target_rt = host_rt, .build_ocamlrun = build_rt.ocamlrun });
+        var host_comp = compiler.build(src, .{
+            .host = host,
+            .target_rt = host_rt,
+            .stdlib = host_byte_stdlib,
+            .build_ocamlrun = build_rt.ocamlrun,
+            .build_ocamlyacc = build_rt.ocamlyacc,
+        });
+        const host_stdlib = stdlib.buildNative(src, host_byte_stdlib, host_comp.ocamlopt, host);
+        host_comp.ocamlopt.stdlib_dir = host_stdlib.dir;
+        const host_libs = otherlibs.build(src, .{
+            .target_rt = host_rt,
+            .stdlib = host_stdlib,
+            .compiler = host_comp,
+            .optimize = options.optimize,
+        });
+        const host_native = compiler.buildNative(src, comp, host_comp.ocamlopt, host_rt, host_libs.dynlink_dir, true);
+        comp.native_programs = host_native.native_programs;
+    }
 
     var tc: Toolchain = .{
         .b = b,
@@ -143,7 +169,7 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
     const bin = "bin";
     const lib = "lib/ocaml";
 
-    // bin/: host runtime, bytecode compilers & tools
+    // bin/: host runtime and tools (.opt defaults, with .byte always retained)
     layout.artifact(tc.host_rt.ocamlrun, bin);
     layout.artifact(tc.host_rt.ocamlyacc, bin);
     if (!tc.host_rt.platform.eql(target)) {
@@ -159,7 +185,14 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
         .{ "ocamldep", progs.ocamldep },
         .{ "ocamlobjinfo", progs.ocamlobjinfo },
     }) |entry| {
-        layout.file(entry[1], b.fmt("{s}/{s}", .{ bin, entry[0] }));
+        const native = if (tc.compiler.native_programs) |p| blk: {
+            inline for (comptime std.meta.fieldNames(compiler.NativePrograms)) |name| {
+                if (std.mem.eql(u8, name, entry[0])) break :blk @field(p, name);
+            }
+            unreachable;
+        } else null;
+        layout.file(native orelse entry[1], b.fmt("{s}/{s}", .{ bin, entry[0] }));
+        if (native) |exe| layout.file(exe, b.fmt("{s}/{s}.opt", .{ bin, entry[0] }));
         layout.file(entry[1], b.fmt("{s}/{s}.byte", .{ bin, entry[0] }));
     }
     for ([_]struct { []const u8, std.Build.LazyPath }{
@@ -179,6 +212,7 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
     layout.artifact(tc.target_rt.libcamlrun, lib);
     if (tc.target_rt.libasmrun) |a| layout.artifact(a, lib);
     if (tc.target_rt.libcomprmarsh) |a| layout.artifact(a, lib);
+    if (tc.target_rt.zstd_lib) |a| layout.artifact(a, lib);
     layout.file(tc.target_rt.primitives, lib ++ "/primitives");
     layout.file(b.addWriteFiles().add("ld.conf", "./stublibs\n.\n"), lib ++ "/ld.conf");
     layout.dir(src.path("runtime/caml"), lib ++ "/caml", &.{ ".in", "dune" });

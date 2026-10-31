@@ -1,5 +1,5 @@
-//! The bytecode compilers and tools (`ocamlc`, `ocamlopt`, `ocamllex`, ...) and
-//! `compiler-libs`, compiled with `boot/ocamlc`.
+//! Bootstrap bytecode compilers and tools, followed by native `compiler-libs`
+//! and host-native `.opt` executables.
 const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
@@ -20,6 +20,9 @@ pub const Artifacts = struct {
     /// The freshly built `ocamlc`, for compiling libraries against the new stdlib.
     ocamlc: Ocamlc,
     ocamlopt: Ocamlopt,
+    compiled: Ocamlc.Compiled,
+    lex: Ocamlc.Compiled,
+    native_programs: ?NativePrograms = null,
 };
 
 pub const Programs = struct {
@@ -37,6 +40,14 @@ pub const Programs = struct {
     expunge: LazyPath,
     /// The toplevel (`ocaml`).
     ocaml: LazyPath,
+};
+
+pub const NativePrograms = struct {
+    ocamlc: LazyPath,
+    ocamlopt: LazyPath,
+    ocamllex: LazyPath,
+    ocamldep: LazyPath,
+    ocamlobjinfo: LazyPath,
 };
 
 pub const Options = struct {
@@ -225,6 +236,8 @@ pub fn build(src: *const Source, options: Options) Artifacts {
         .compilerlibs_dir = compilerlibs.getDirectory(),
         .profiling_dir = profiling.getDirectory(),
         .sources = sources,
+        .compiled = compiled,
+        .lex = lex,
         .ocamlopt = .{
             .b = b,
             .ocamlrun = options.build_ocamlrun,
@@ -239,6 +252,65 @@ pub fn build(src: *const Source, options: Options) Artifacts {
             .primitives = null,
         },
     };
+}
+
+/// `opt` determines the machine code, while `byte.sources` determines the
+/// compiler's code generator. They differ when building host-native cross tools.
+pub fn buildNative(src: *const Source, byte: Artifacts, opt: Ocamlopt, rt: runtime.Artifacts, dynlink_dir: LazyPath, programs: bool) Artifacts {
+    const b = src.b;
+    const cc = src.manifest.compiler;
+    const compiled = opt.compilePlan(cc.plan, byte.sources, byte.compiled, .{
+        .includes = &.{dynlink_dir},
+        .flags = cc.compflags,
+    });
+    const libs = b.addWriteFiles();
+    const profiling = b.addWriteFiles();
+    _ = libs.addCopyDirectory(byte.compilerlibs_dir, "", .{});
+    _ = profiling.addCopyDirectory(byte.profiling_dir, "", .{});
+    for (compiled.impls.values()) |u| {
+        const dest = switch (u.unit.dest) {
+            .none => continue,
+            .lib => libs,
+            .profiling => profiling,
+        };
+        _ = dest.addCopyFile(u.impl.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
+        _ = dest.addCopyFile(u.impl.obj, b.fmt("{s}.o", .{u.unit.name}));
+    }
+    const archive = struct {
+        fn f(o: Ocamlopt, c: Ocamlopt.Compiled, wf: *std.Build.Step.WriteFile, name: []const u8, keys: []const []const u8, flags: []const []const u8) LazyPath {
+            const a = o.archive(name, c.cmxs(o.b, keys), .{ .flags = flags });
+            _ = wf.addCopyFile(a.cmxa, o.b.fmt("{s}.cmxa", .{name}));
+            _ = wf.addCopyFile(a.lib, o.b.fmt("{s}.a", .{name}));
+            return a.cmxa;
+        }
+    }.f;
+    const common = archive(opt, compiled, libs, "ocamlcommon", cc.ocamlcommon, if (src.manifest.features.zstd) &.{ "-linkall", "-cclib", "-lcomprmarsh", "-cclib", "-lzstd" } else &.{"-linkall"});
+    const bytecomp = archive(opt, compiled, libs, "ocamlbytecomp", cc.ocamlbytecomp, &.{});
+    const middleend = archive(opt, compiled, libs, "ocamlmiddleend", cc.ocamlmiddleend, &.{});
+    const optcomp = archive(opt, compiled, libs, "ocamloptcomp", cc.ocamloptcomp, &.{});
+    _ = archive(opt, compiled, libs, "ocamltoplevel", cc.ocamltoplevel_native, &.{});
+    var result = byte;
+    result.compilerlibs_dir = libs.getDirectory();
+    result.profiling_dir = profiling.getDirectory();
+    if (programs) {
+        const lex = opt.compilePlan(src.manifest.lex.plan, byte.sources, byte.lex, .{ .flags = cc.compflags });
+        const runtime_dir = b.addWriteFiles();
+        _ = runtime_dir.addCopyFile(rt.libasmrun.?.getEmittedBin(), "libasmrun.a");
+        if (rt.libcomprmarsh) |a| _ = runtime_dir.addCopyFile(a.getEmittedBin(), "libcomprmarsh.a");
+        if (rt.zstd_lib) |a| _ = runtime_dir.addCopyFile(a.getEmittedBin(), "libzstd.a");
+        const opts: Ocamlopt.Options = .{
+            .includes = &.{ byte.compiled.cmis_dir, compiled.dir, runtime_dir.getDirectory(), lex.dir },
+            .flags = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ stdlib_dir_from_bin },
+        };
+        result.native_programs = .{
+            .ocamlc = opt.link("ocamlc.opt", &.{ common, bytecomp, compiled.impls.get("driver/main").?.impl.cmx }, opts),
+            .ocamlopt = opt.link("ocamlopt.opt", &.{ common, optcomp, compiled.impls.get("driver/optmain").?.impl.cmx }, opts),
+            .ocamllex = opt.link("ocamllex.opt", lex.cmxs(b, src.manifest.lex.ocamllex), opts),
+            .ocamldep = opt.link("ocamldep.opt", &.{ common, bytecomp, compiled.impls.get("tools/ocamldep").?.impl.cmx }, opts),
+            .ocamlobjinfo = opt.link("ocamlobjinfo.opt", &.{ common, bytecomp, middleend, compiled.impls.get("tools/objinfo").?.impl.cmx }, opts),
+        };
+    }
+    return result;
 }
 
 const Lexer = struct {
@@ -427,7 +499,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "bytecode_cppflags", .value = cppflags, .version_specific = true },
         .{ .name = "native_cflags", .value = cflags, .version_specific = true },
         .{ .name = "native_cppflags", .value = cppflags, .version_specific = true },
-        .{ .name = "zstd_libs", .value = "" },
+        .{ .name = "zstd_libs", .value = if (src.manifest.features.zstd) "-lzstd" else "" },
         .{ .name = "cclibs", .value = cclibs },
         .{ .name = "native_ldflags", .value = native_ldflags, .version_specific = true },
         .{ .name = "with_nonexecstack_note", .value = bool_str(target.is_linux and target.is_elf), .version_specific = true },

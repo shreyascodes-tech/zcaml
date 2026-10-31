@@ -259,6 +259,7 @@ pub fn run(self: *Self, init: std.process.Init) !void {
             .ocamlmiddleend = comp_lists.ocamlmiddleend_cmos,
             .ocamloptcomp = comp_lists.ocamloptcomp_cmos,
             .ocamltoplevel = comp_lists.ocamltoplevel_cmos,
+            .ocamltoplevel_native = try nativeToplevelKeys(arena, comp_lists.ocamltoplevel_cmos),
             .ocamlprof = comp_lists.ocamlprof_cmos,
             .ocamlcp = comp_lists.ocamlcp_cmos,
             .ocamloptp = comp_lists.ocamloptp_cmos,
@@ -650,6 +651,10 @@ fn computeCompilerPlan(
             }
         }
     }
+    if (fileExists(io, root_dir, "toplevel/native/tophooks.mli")) {
+        try cmi_only_keys.append(arena, "toplevel/native/tophooks");
+        try cmi_only_set.put(arena, "toplevel/native/tophooks", {});
+    }
 
     // Transitively walk dep_map from all cmo_keys and cmi_only_keys to pull in any .mli-only or .ml dependencies
     var worklist: std.ArrayList([]const u8) = .empty;
@@ -722,7 +727,66 @@ fn computeCompilerPlan(
     return .{
         .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
+        .cmx_waves = try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, true),
     };
+}
+
+fn nativeToplevelKeys(arena: std.mem.Allocator, keys: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (keys) |key| {
+        if (std.mem.startsWith(u8, key, "toplevel/byte/")) {
+            if (std.mem.endsWith(u8, key, "/topeval")) try out.append(arena, "toplevel/native/tophooks");
+            try out.append(arena, try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{std.fs.path.basename(key)}));
+        } else try out.append(arena, key);
+    }
+    return out.items;
+}
+
+fn nativeWaves(arena: std.mem.Allocator, cmis: []const WaveUnit, cmos: []const Unit, deps: *const std.StringHashMapUnmanaged([]const []const u8), compiler_plan: bool) ![]const []const Unit {
+    var units: std.ArrayList(Unit) = .empty;
+    for (cmis) |wu| if (wu.kind == .impl) {
+        try units.append(arena, wu.unit);
+    };
+    for (cmos) |original| {
+        var u = original;
+        if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/byte/")) {
+            u.key = try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{u.name});
+            u.src = .{ .upstream = try std.fmt.allocPrint(arena, "{s}.ml", .{u.key}) };
+        }
+        try units.append(arena, u);
+    }
+    if (compiler_plan) try units.append(arena, compilerUnit("toplevel/native/tophooks", .{ .upstream = "toplevel/native/tophooks.ml" }));
+    var pending: std.StringHashMapUnmanaged(void) = .empty;
+    for (units.items) |u| try pending.put(arena, try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key}), {});
+    var waves: std.ArrayList([]const Unit) = .empty;
+    while (pending.count() != 0) {
+        var wave: std.ArrayList(Unit) = .empty;
+        for (units.items) |u| {
+            const key = try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key});
+            if (!pending.contains(key)) continue;
+            var ready = true;
+            if (deps.get(key)) |imports| for (imports) |dep| {
+                // Shared toplevel modules refer to the byte variant in .depend.
+                // .depend has only the shared .cmi for VPATH toplevel
+                // imports; Makefile adds the native implementation edges.
+                const actual = if (compiler_plan and (std.mem.eql(u8, dep, "toplevel/topmain.cmi") or std.mem.eql(u8, dep, "toplevel/topeval.cmi") or std.mem.eql(u8, dep, "toplevel/trace.cmi")))
+                    try std.fmt.allocPrint(arena, "toplevel/native/{s}.cmx", .{std.fs.path.stem(dep)})
+                else if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/") and !std.mem.startsWith(u8, u.key, "toplevel/byte/") and std.mem.startsWith(u8, dep, "toplevel/byte/"))
+                    try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{std.fs.path.basename(dep)})
+                else
+                    dep;
+                if (!std.mem.eql(u8, key, actual) and pending.contains(actual)) {
+                    ready = false;
+                    break;
+                }
+            };
+            if (ready) try wave.append(arena, u);
+        }
+        if (wave.items.len == 0) @panic("native implementation dependency cycle");
+        for (wave.items) |u| _ = pending.remove(try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key}));
+        try waves.append(arena, wave.items);
+    }
+    return waves.items;
 }
 
 fn compilerUnit(key: []const u8, src: Src) Unit {
@@ -778,6 +842,7 @@ fn computeLexPlan(
     return .{
         .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
+        .cmx_waves = try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, false),
     };
 }
 
@@ -1043,14 +1108,14 @@ fn parseDependUnionInto(
         var deps: std.ArrayList([]const u8) = .empty;
         var rhs_it = std.mem.tokenizeAny(u8, rhs, " \t");
         while (rhs_it.next()) |dep_tok| {
-            if (std.mem.endsWith(u8, dep_tok, ".cmi") or std.mem.endsWith(u8, dep_tok, ".cmo")) {
+            if (std.mem.endsWith(u8, dep_tok, ".cmi") or std.mem.endsWith(u8, dep_tok, ".cmo") or std.mem.endsWith(u8, dep_tok, ".cmx")) {
                 try deps.append(arena, try normalizeDepTok(arena, subdir_prefix, dep_tok));
             }
         }
 
         var lhs_it = std.mem.tokenizeAny(u8, lhs, " \t");
         while (lhs_it.next()) |target_tok| {
-            if (std.mem.endsWith(u8, target_tok, ".cmi") or std.mem.endsWith(u8, target_tok, ".cmo")) {
+            if (std.mem.endsWith(u8, target_tok, ".cmi") or std.mem.endsWith(u8, target_tok, ".cmo") or std.mem.endsWith(u8, target_tok, ".cmx")) {
                 const norm_t = try normalizeDepTok(arena, subdir_prefix, target_tok);
                 if (map.get(norm_t)) |existing| {
                     var merged: std.ArrayList([]const u8) = .empty;

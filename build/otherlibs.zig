@@ -12,6 +12,8 @@ const LazyPath = std.Build.LazyPath;
 
 pub const Artifacts = struct {
     libs: []const Lib,
+    /// Also needed when compiling the native toplevel in compiler-libs.
+    dynlink_dir: LazyPath,
     /// Public C headers, installed into `lib/ocaml/caml/`.
     headers: []const Header,
 };
@@ -76,15 +78,16 @@ pub fn build(src: *const Source, options: Options) Artifacts {
 
     // OCaml libraries
     const unix = ctx.unixLib(unix_stubs);
+    const dynlink = ctx.dynlinkLib();
     const libs = b.allocator.dupe(Lib, &.{
-        .{ .name = "dynlink", .dir = ctx.dynlinkLib() },
+        .{ .name = "dynlink", .dir = dynlink },
         .{ .name = "unix", .dir = unix, .stubs = unix_stubs },
         .{ .name = "str", .dir = ctx.singleModuleLib("str", "otherlibs/str", "str", str_stubs), .stubs = str_stubs },
         .{ .name = "threads", .dir = ctx.threadsLib(unix, threads_stubs), .stubs = threads_stubs },
         .{ .name = "runtime_events", .dir = ctx.singleModuleLib("runtime_events", "otherlibs/runtime_events", "runtime_events", re_stubs), .stubs = re_stubs },
     }) catch @panic("OOM");
 
-    return .{ .libs = libs, .headers = headers.items };
+    return .{ .libs = libs, .dynlink_dir = dynlink, .headers = headers.items };
 }
 
 const Ctx = struct {

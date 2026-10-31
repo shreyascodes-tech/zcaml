@@ -16,6 +16,7 @@ pub const Artifacts = struct {
     ocamlrun: *std.Build.Step.Compile,
     libasmrun: ?*std.Build.Step.Compile,
     libcomprmarsh: ?*std.Build.Step.Compile,
+    zstd_lib: ?*std.Build.Step.Compile,
 
     /// Include paths for C code built against the runtime (runtime, stubs, ...).
     pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
@@ -47,6 +48,9 @@ pub fn build(src: Source, options: Options) Artifacts {
         }).artifact("zstd")
     else
         null;
+    // OCaml links this archive through `zig cc`, not Zig's build linker.
+    // Match the runtime's C flags and avoid a dependency on Zig's UBSan runtime.
+    if (zstd_lib) |z| z.root_module.sanitize_c = .off;
 
     // 1. Bytecode runtime sources (also scanned for primitives)
     const bytecode_c = runtimeSources(b, &.{ rt.common_c_sources, os_c_sources, rt.bytecode_only_c_sources }, null);
@@ -84,6 +88,7 @@ pub fn build(src: Source, options: Options) Artifacts {
         .ocamlrun = undefined,
         .libasmrun = null,
         .libcomprmarsh = null,
+        .zstd_lib = zstd_lib,
     };
 
     const runtime_cflags = p.c.flags(b, &.{
