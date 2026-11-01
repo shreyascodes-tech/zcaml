@@ -30,6 +30,11 @@ pub const Options = struct {
     /// Where the programs they produce run.
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    ocamldoc: bool = false,
+    ocamldebug: bool = false,
+    ocamlnat: bool = false,
+    bytecode_tools: bool = false,
+    runtime_variants: bool = false,
 };
 
 pub const Toolchain = struct {
@@ -41,6 +46,9 @@ pub const Toolchain = struct {
     stdlib: stdlib.Artifacts,
     compiler: compiler.Artifacts,
     otherlibs: otherlibs.Artifacts,
+    ocamldebug: ?compiler.DebuggerArtifacts = null,
+    ocamldoc: ?compiler.OcamldocArtifacts = null,
+    options: Options,
 
     /// Install the layout to `<install prefix>/<sub_path>`.
     pub fn addInstall(self: Toolchain, step: *std.Build.Step, sub_path: []const u8) void {
@@ -61,7 +69,7 @@ pub fn build(src: *const Source, options: Options) Toolchain {
 
     // Runtimes for the target (installed), the build machine (runs boot/ocamlc etc.),
     // and the compiler host (runs the installed compilers), deduplicated.
-    const target_rt = runtime.build(src.*, .{ .platform = target, .optimize = options.optimize });
+    const target_rt = runtime.build(src.*, .{ .platform = target, .optimize = options.optimize, .variants = options.runtime_variants });
     const build_rt = if (target.eql(build_platform))
         target_rt
     else
@@ -71,7 +79,7 @@ pub fn build(src: *const Source, options: Options) Toolchain {
     else if (host.eql(build_platform))
         build_rt
     else
-        runtime.build(src.*, .{ .platform = host, .optimize = options.optimize });
+        runtime.build(src.*, .{ .platform = host, .optimize = options.optimize, .variants = options.runtime_variants });
 
     const byte_stdlib = stdlib.build(src, .{
         .target_rt = target_rt,
@@ -113,6 +121,15 @@ pub fn build(src: *const Source, options: Options) Toolchain {
         comp.native_programs = host_native.native_programs;
     }
 
+    const ocamldebug = if (options.ocamldebug)
+        compiler.buildDebugger(src, comp, libs, host, build_rt.ocamlrun, build_rt.ocamlyacc)
+    else
+        null;
+    const ocamldoc = if (options.ocamldoc)
+        compiler.buildOcamldoc(src, comp, libs, target_rt, host, build_rt.ocamlrun, build_rt.ocamlyacc)
+    else
+        null;
+
     var tc: Toolchain = .{
         .b = b,
         .layout = undefined,
@@ -121,6 +138,9 @@ pub fn build(src: *const Source, options: Options) Toolchain {
         .stdlib = std_lib,
         .compiler = comp,
         .otherlibs = libs,
+        .ocamldebug = ocamldebug,
+        .ocamldoc = ocamldoc,
+        .options = options,
     };
     tc.layout = assembleLayout(src.*, tc);
     return tc;
@@ -153,16 +173,21 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
 
     // bin/: host runtime and tools (.opt defaults, with .byte always retained)
     layout.artifact(tc.host_rt.ocamlrun, bin);
+    if (tc.host_rt.ocamlrund) |a| layout.artifact(a, bin);
+    if (tc.host_rt.ocamlruni) |a| layout.artifact(a, bin);
     layout.artifact(tc.host_rt.ocamlyacc, bin);
     if (!tc.host_rt.platform.eql(target)) {
         layout.file(tc.target_rt.ocamlrun.getEmittedBin(), b.fmt("{s}/ocamlrun-target{s}", .{ bin, target.exeExt() }));
+        if (tc.target_rt.ocamlrund) |a| layout.file(a.getEmittedBin(), b.fmt("{s}/ocamlrund-target{s}", .{ bin, target.exeExt() }));
+        if (tc.target_rt.ocamlruni) |a| layout.file(a.getEmittedBin(), b.fmt("{s}/ocamlruni-target{s}", .{ bin, target.exeExt() }));
     }
 
     const progs = tc.compiler.programs;
     // also installed as `<name>.byte`, upstream's name for the bytecode build
+    // (ocamlc.byte and ocamlopt.byte are debug-stripped, matching upstream install)
     for ([_]struct { []const u8, std.Build.LazyPath }{
-        .{ "ocamlc", progs.ocamlc },
-        .{ "ocamlopt", progs.ocamlopt },
+        .{ "ocamlc", progs.ocamlc_stripped },
+        .{ "ocamlopt", progs.ocamlopt_stripped },
         .{ "ocamllex", progs.ocamllex },
         .{ "ocamldep", progs.ocamldep },
         .{ "ocamlobjinfo", progs.ocamlobjinfo },
@@ -176,6 +201,31 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
         layout.file(native orelse entry[1], b.fmt("{s}/{s}", .{ bin, entry[0] }));
         if (native) |exe| layout.file(exe, b.fmt("{s}/{s}.opt", .{ bin, entry[0] }));
         layout.file(entry[1], b.fmt("{s}/{s}.byte", .{ bin, entry[0] }));
+    }
+    if (tc.options.ocamlnat) {
+        if (tc.compiler.ocamlnat) |exe| layout.file(exe, b.fmt("{s}/ocamlnat", .{bin}));
+    }
+    if (tc.ocamldebug) |dbg| {
+        layout.file(dbg.exe, b.fmt("{s}/ocamldebug", .{bin}));
+        layout.file(dbg.cmi, lib ++ "/compiler-libs/ocamldebug.cmi");
+        layout.file(dbg.parser_aux_cmi, lib ++ "/compiler-libs/parser_aux.cmi");
+    }
+    if (tc.ocamldoc) |odoc| {
+        const default_odoc = if (tc.host_rt.platform.eql(target)) odoc.opt orelse odoc.byte else odoc.byte;
+        layout.file(default_odoc, b.fmt("{s}/ocamldoc", .{bin}));
+        if (odoc.opt) |exe| layout.file(exe, b.fmt("{s}/ocamldoc.opt", .{bin}));
+        layout.file(odoc.byte, b.fmt("{s}/ocamldoc.byte", .{bin}));
+        layout.dir(odoc.lib_dir, lib ++ "/ocamldoc", &.{});
+    }
+    if (tc.options.bytecode_tools) {
+        for ([_]struct { []const u8, std.Build.LazyPath }{
+            .{ "cmpbyt", progs.cmpbyt },
+            .{ "dumpobj", progs.dumpobj },
+            .{ "primreq", progs.primreq },
+            .{ "stripdebug", progs.stripdebug },
+        }) |entry| {
+            layout.file(entry[1], b.fmt("{s}/{s}", .{ bin, entry[0] }));
+        }
     }
     for ([_]struct { []const u8, std.Build.LazyPath }{
         .{ "ocamlcmt", progs.ocamlcmt },
@@ -192,7 +242,15 @@ fn assembleLayout(src: Source, tc: Toolchain) std.Build.LazyPath {
 
     // lib/ocaml/: target runtime libraries, primitives, ld.conf, C headers
     layout.artifact(tc.target_rt.libcamlrun, lib);
+    if (tc.target_rt.libcamlrun_pic) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libcamlrun_shared) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libcamlrund) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libcamlruni) |a| layout.artifact(a, lib);
     if (tc.target_rt.libasmrun) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libasmrun_pic) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libasmrun_shared) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libasmrund) |a| layout.artifact(a, lib);
+    if (tc.target_rt.libasmruni) |a| layout.artifact(a, lib);
     layout.artifact(tc.target_rt.libcomprmarsh, lib);
     layout.artifact(tc.target_rt.zstd_lib, lib);
     layout.file(tc.target_rt.primitives, lib ++ "/primitives");

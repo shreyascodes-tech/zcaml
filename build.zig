@@ -42,6 +42,11 @@ pub fn build(b: *std.Build) !void {
             .host = host,
             .target = target,
             .optimize = optimize,
+            .ocamldoc = b.option(bool, "ocamldoc", "build and install ocamldoc") orelse false,
+            .ocamldebug = b.option(bool, "ocamldebug", "build and install ocamldebug") orelse false,
+            .ocamlnat = b.option(bool, "ocamlnat", "build and install ocamlnat (native toplevel)") orelse false,
+            .bytecode_tools = b.option(bool, "bytecode-tools", "install internal bytecode tools (cmpbyt, dumpobj, primreq, stripdebug)") orelse false,
+            .runtime_variants = b.option(bool, "runtime-variants", "build and install debug (d) and instrumented (i) runtimes") orelse false,
         });
         toolchain.addInstall(b.getInstallStep(), sub_path);
     }
