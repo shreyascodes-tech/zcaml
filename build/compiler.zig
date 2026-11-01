@@ -668,7 +668,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
     const native_ldflags = if (target.is_macos and target.arch == .amd64) "-Wl,-no_compact_unwind" else "";
     // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
     const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
-    const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined", .{triple});
+    const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined{s}", .{ triple, if (target.resolved.result.abi.isMusl()) " -dynamic" else "" });
     const asm_cmd = b.fmt("{s}{s} -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
     const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
     const mkdll = b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });

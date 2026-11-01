@@ -142,6 +142,8 @@ pub fn build(src: Source, options: Options) Artifacts {
         fn f(rt_self: Artifacts, s: Source, name: []const u8, prims_c: std.Build.LazyPath, lib: *std.Build.Step.Compile, flags: []const []const u8, opt: std.builtin.OptimizeMode) *std.Build.Step.Compile {
             const exe = s.b.addExecutable(.{
                 .name = name,
+                // Static musl cannot dlopen bytecode stub libraries.
+                .linkage = if (rt_self.platform.resolved.result.abi.isMusl()) .dynamic else null,
                 .root_module = cModule(s.b, rt_self.platform, opt, .{}),
             });
             rt_self.addIncludes(s, exe.root_module);

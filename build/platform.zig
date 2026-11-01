@@ -170,6 +170,9 @@ pub const CConfig = struct {
         return .{
             .cflags = if (is_windows)
                 &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-mms-bitfields" }
+            else if (t.abi.isMusl())
+                // Avoid copy relocations against Zig's link-time musl stubs.
+                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread", "-fPIC" }
             else if (t.cpu.arch == .powerpc64 or t.cpu.arch == .powerpc64le)
                 &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread", "-mabi=ibmlongdouble" }
             else

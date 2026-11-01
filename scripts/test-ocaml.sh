@@ -44,7 +44,7 @@ usage() {
 Usage: $(basename "$0") [--target <triple>] [--host <triple>] <command> [args...]
 
 Options:
-  --target <triple>     Target triple (default: x86_64-linux-gnu; e.g. aarch64-linux-gnu, riscv64-linux-gnu, s390x-linux-gnu, powerpc64le-linux-gnu)
+  --target <triple>     Linux gnu or musl target (default: x86_64-linux-gnu)
   --host <triple>       Compiler host triple for in-prefix (default: same as --target)
 
 Commands:
@@ -83,10 +83,10 @@ target_deb_arch() {
 
 target_qemu_bin() {
   case "$TARGET" in
-    aarch64-linux-gnu)     echo "/usr/bin/qemu-aarch64" ;;
-    riscv64-linux-gnu)     echo "/usr/bin/qemu-riscv64" ;;
-    s390x-linux-gnu)       echo "/usr/bin/qemu-s390x" ;;
-    powerpc64le-linux-gnu) echo "/usr/bin/qemu-ppc64le" ;;
+    aarch64-linux-gnu|aarch64-linux-musl)     echo "/usr/bin/qemu-aarch64" ;;
+    riscv64-linux-gnu|riscv64-linux-musl)     echo "/usr/bin/qemu-riscv64" ;;
+    s390x-linux-gnu|s390x-linux-musl)       echo "/usr/bin/qemu-s390x" ;;
+    powerpc64le-linux-gnu|powerpc64le-linux-musl) echo "/usr/bin/qemu-ppc64le" ;;
     *)
       echo "error: no qemu binary configured for '$TARGET'" >&2
       exit 1
@@ -98,16 +98,16 @@ target_binfmt_spec() {
   local qemu
   qemu="$(target_qemu_bin)"
   case "$TARGET" in
-    aarch64-linux-gnu)
+    aarch64-linux-gnu|aarch64-linux-musl)
       echo ":qemu-aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:$qemu:PCF"
       ;;
-    riscv64-linux-gnu)
+    riscv64-linux-gnu|riscv64-linux-musl)
       echo ":qemu-riscv64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xf3\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:$qemu:PCF"
       ;;
-    s390x-linux-gnu)
+    s390x-linux-gnu|s390x-linux-musl)
       echo ":qemu-s390x:M::\x7fELF\x02\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x16:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff:$qemu:PCF"
       ;;
-    powerpc64le-linux-gnu)
+    powerpc64le-linux-gnu|powerpc64le-linux-musl)
       echo ":qemu-ppc64le:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x15\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:$qemu:PCF"
       ;;
   esac
@@ -115,7 +115,35 @@ target_binfmt_spec() {
 
 ensure_sysroot() {
   [[ "$TARGET" == "$HOST_ARCH" ]] && return 0
-  if [[ -f "$SYSROOT_DIR/.ready" ]]; then
+  if [[ "$TARGET" != *-linux-musl && -f "$SYSROOT_DIR/.ready" ]]; then
+    return 0
+  fi
+
+  if [[ "$TARGET" == *-linux-musl ]]; then
+    [[ -f "$SYSROOT_DIR/.musl-1.2.5-r13-ready" ]] && return 0
+    local musl_arch="${TARGET%%-linux-*}" apk_arch checksum
+    apk_arch="$musl_arch"
+    case "$musl_arch" in
+      x86_64) checksum=359890bc7c4dc5fee7a85192de60a471c987e4664767288578beca60a44db2c8 ;;
+      aarch64) checksum=d616c430bcbe0bf452b7f6ea2669f2cad14e85644a7599f4f495115d021742ef ;;
+      riscv64) checksum=27760752b676b78f1edca22b7d933515ea9ed3596bb7378da8d2bb81c873a3e6 ;;
+      powerpc64le) apk_arch=ppc64le; checksum=cbc140f849bee3036efc89735c4d312ae0f23f1abe6c42d7f23d557c85ed3e01 ;;
+      s390x) checksum=a7bd3c2aacd4e75d642eb5e40f65ca7925efaac98134fa52f4c9b070cdf6c366 ;;
+      *) echo "error: unsupported musl target '$TARGET'" >&2; exit 1 ;;
+    esac
+    echo "==> Downloading Alpine musl 1.2.5-r13 loader for $TARGET into $SYSROOT_DIR..."
+    mkdir -p "$SYSROOT_DIR/usr/lib"
+    local archive="$SYSROOT_DIR/musl-1.2.5-r13.apk"
+    curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/$apk_arch/musl-1.2.5-r13.apk" -o "$archive"
+    printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+    # APK v2 consists of concatenated gzip/tar streams. Extract just the
+    # loader, not package metadata or libc symlinks that shadow host files.
+    tar --ignore-zeros --warning=no-unknown-keyword -xOzf "$archive" "lib/ld-musl-$musl_arch.so.1" \
+      > "$SYSROOT_DIR/usr/lib/ld-musl-$musl_arch.so.1"
+    chmod +x "$SYSROOT_DIR/usr/lib/ld-musl-$musl_arch.so.1"
+    # musl resolves libc.so to the loader itself; avoid shadowing glibc's
+    # libc.so linker script in the host /usr/lib overlay.
+    touch "$SYSROOT_DIR/.musl-1.2.5-r13-ready"
     return 0
   fi
 
@@ -172,7 +200,7 @@ enter_sandbox() {
   orig_gid="$(id -g)"
 
   local binfmt_spec=""
-  if [[ "$TARGET" != "$HOST_ARCH" ]]; then
+  if [[ "${TARGET%%-linux-*}" != "${HOST_ARCH%%-linux-*}" ]]; then
     binfmt_spec="$(target_binfmt_spec)"
   fi
 
@@ -201,8 +229,10 @@ enter_sandbox() {
 
     mount_overlay "lowerdir=$ocaml_src,upperdir=$state_dir/upper,workdir=$state_dir/work" "$state_dir/merged"
 
-    if [[ -n "$binfmt_spec" ]]; then
+    if [[ -d "$sysroot_dir/usr/lib" ]]; then
       mount_overlay "lowerdir=$sysroot_dir/usr/lib:/usr/lib,upperdir=$state_dir/lib_upper,workdir=$state_dir/lib_work" /usr/lib
+    fi
+    if [[ -n "$binfmt_spec" ]]; then
       mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
       echo "$binfmt_spec" > /proc/sys/fs/binfmt_misc/register
     fi
@@ -267,13 +297,18 @@ cmd_setup() {
   # -custom C-stub bytecode and all native (.opt/.cmxs) programs run on the target via QEMU.
   local byt_rt_bin="$hbin"
   local byt_stub_lib="$hlib"
+  if [[ "${TARGET%%-linux-*}" == "${HOST_ARCH%%-linux-*}" ]]; then
+    # Exercise the target libc directly when no CPU emulation is needed.
+    byt_rt_bin="$tbin"
+    byt_stub_lib="$lib"
+  fi
 
   # 1. Symlink compilers and tools into the source tree layout expected by ocamltest
   local hcc
   hcc="$("$hbin/ocamlc" -config-var c_compiler)"
   ln -sf "$hbin/ocamlrun" "$WORK_DIR/runtime/ocamlrun-host"
   ln -sf "$tbin/ocamlrun" "$WORK_DIR/runtime/ocamlrun-target"
-  if [[ "$TARGET" == "$HOST_ARCH" ]]; then
+  if [[ "${TARGET%%-linux-*}" == "${HOST_ARCH%%-linux-*}" ]]; then
     ln -sf "$byt_rt_bin/ocamlrun" "$WORK_DIR/runtime/ocamlrun"
   else
     cat > "$WORK_DIR/runtime/ocamlrun_wrap.c" <<EOF
@@ -475,7 +510,7 @@ EOF
     local c_target_flag
     c_target_flag="$(echo "$cc" | grep -o -- '-target [^ ]*' || true)"
     sed -i "s/\${cc} -xc++/zig c++ $c_target_flag -fno-sanitize=undefined -xc++/g" "$WORK_DIR/testsuite/tests/lib-unix/unix-sockaddr/sockaddr_cxx.ml"
-    if [[ "$TARGET" != "$HOST_ARCH" ]]; then
+    if [[ "${TARGET%%-linux-*}" != "${HOST_ARCH%%-linux-*}" ]]; then
       # Scale down 10^9 spin loops in lazy{3,5,7}.ml and fib(42) in fib_threads.ml under qemu-user TCG
       sed -i 's/to count do/to count \/ 100 do/; s/!r$/count/' \
         "$WORK_DIR/testsuite/tests/lazy/lazy3.ml" \
