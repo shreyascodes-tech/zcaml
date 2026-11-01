@@ -3,7 +3,6 @@ const Ocaml = @import("build/ocaml.zig");
 const Tools = @import("build/tools/root.zig");
 
 pub fn build(b: *std.Build) !void {
-    const optimize = b.standardOptimizeOption(.{});
     const ocaml_versions: Ocaml.Versions = .init(b);
 
     // zig build generate: (re)generate build/manifests/*.zon from the upstream sources
@@ -45,7 +44,6 @@ pub fn build(b: *std.Build) !void {
             const toolchain = Ocaml.build(src, .{
                 .host = host,
                 .target = target,
-                .optimize = optimize,
                 .ocamldoc = ocamldoc_opt orelse false,
                 .ocamldebug = ocamldebug_opt orelse false,
                 .ocamlnat = ocamlnat_opt orelse false,
@@ -56,7 +54,6 @@ pub fn build(b: *std.Build) !void {
         } else {
             b.getInstallStep().dependOn(&b.addFail("missing -Docaml-host (or run `zig build -Docaml matrix`)").step);
             Ocaml.buildMatrix(src, matrix_step, version, .{
-                .optimize = optimize,
                 .ocamldoc = ocamldoc_opt orelse true,
                 .ocamldebug = ocamldebug_opt orelse true,
                 .ocamlnat = ocamlnat_opt orelse true,

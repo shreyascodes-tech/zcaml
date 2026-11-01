@@ -3,7 +3,7 @@
 //! ```zig
 //! const ocaml_versions: Ocaml.Versions = .init(b);
 //! const src = ocaml_versions.source(.@"5.5.1") orelse return;
-//! const toolchain = Ocaml.build(src, .{ .host = host, .target = target, .optimize = optimize });
+//! const toolchain = Ocaml.build(src, .{ .host = host, .target = target });
 //! toolchain.addInstall(b.getInstallStep(), "5.5.1/host-x86_64-linux-gnu/target-x86_64-linux-gnu");
 //! ```
 //!
@@ -30,7 +30,6 @@ pub const Options = struct {
     host: std.Build.ResolvedTarget,
     /// Where the programs they produce run.
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
     ocamldoc: bool = false,
     ocamldebug: bool = false,
     ocamlnat: bool = false,
@@ -39,7 +38,6 @@ pub const Options = struct {
 };
 
 pub const MatrixOptions = struct {
-    optimize: std.builtin.OptimizeMode,
     ocamldoc: bool = true,
     ocamldebug: bool = true,
     ocamlnat: bool = true,
@@ -181,7 +179,6 @@ pub const Context = struct {
         const build_platform: Platform = .init(b, resolveTarget(b, "native"));
         const build_rt = runtime.build(src.*, .{
             .platform = build_platform,
-            .optimize = opts.optimize,
             .variants = opts.runtime_variants,
         });
         const stdlib_common = stdlib.buildCommon(src, build_rt.primitives, build_rt.ocamlrun);
@@ -202,7 +199,6 @@ pub const Context = struct {
         if (self.runtimes.get(p.triplet)) |rt| return rt;
         const rt = runtime.build(self.src.*, .{
             .platform = p,
-            .optimize = self.opts.optimize,
             .variants = self.opts.runtime_variants,
         });
         self.runtimes.put(self.src.b.allocator, p.triplet, rt) catch @panic("OOM");
@@ -367,7 +363,6 @@ pub const Context = struct {
             .target_rt = rt,
             .stdlib = std_lib,
             .compiler = comp,
-            .optimize = self.opts.optimize,
         });
 
         var arch_nat: ?compiler.ArchNative = null;
@@ -398,7 +393,6 @@ pub const Context = struct {
         const tc_opts: Options = .{
             .host = target.resolved,
             .target = target.resolved,
-            .optimize = self.opts.optimize,
             .ocamldoc = self.opts.ocamldoc,
             .ocamldebug = self.opts.ocamldebug,
             .ocamlnat = self.opts.ocamlnat,
@@ -482,7 +476,6 @@ pub const Context = struct {
         const tc_opts: Options = .{
             .host = host_resolved,
             .target = target_resolved,
-            .optimize = self.opts.optimize,
             .ocamldoc = self.opts.ocamldoc,
             .ocamldebug = self.opts.ocamldebug,
             .ocamlnat = self.opts.ocamlnat,
@@ -510,7 +503,6 @@ pub const Context = struct {
 /// Get `src` from `Versions.source`.
 pub fn build(src: *const Source, options: Options) Toolchain {
     var ctx = Context.init(src, .{
-        .optimize = options.optimize,
         .ocamldoc = options.ocamldoc,
         .ocamldebug = options.ocamldebug,
         .ocamlnat = options.ocamlnat,

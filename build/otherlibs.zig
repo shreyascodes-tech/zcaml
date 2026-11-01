@@ -51,7 +51,6 @@ pub const Options = struct {
     target_rt: runtime.Artifacts,
     stdlib: stdlib.Artifacts,
     compiler: compiler.Artifacts,
-    optimize: std.builtin.OptimizeMode,
 };
 
 pub fn build(src: *const Source, options: Options) Artifacts {
@@ -189,7 +188,6 @@ const Ctx = struct {
     ) Stubs {
         const b = self.src.b;
         const p = self.platform();
-        const optimize = self.options.optimize;
 
         const byt_name = if (!std.mem.eql(u8, base_name, "threads")) b.fmt("{s}byt", .{base_name}) else base_name;
         const nat_name = b.fmt("{s}nat", .{base_name});
@@ -210,13 +208,12 @@ const Ctx = struct {
                 sub: []const u8,
                 files: []const []const u8,
                 cflags: []const []const u8,
-                opt: std.builtin.OptimizeMode,
             ) *std.Build.Step.Compile {
                 const bb = ctx.src.b;
                 const l = bb.addLibrary(.{
                     .linkage = linkage,
                     .name = name,
-                    .root_module = runtime.cModule(bb, ctx.platform(), opt, .{ .pic = true }),
+                    .root_module = runtime.cModule(bb, ctx.platform(), .{ .pic = true }),
                 });
                 const mod = l.root_module;
                 ctx.options.target_rt.addIncludes(ctx.src.*, mod);
@@ -230,7 +227,7 @@ const Ctx = struct {
         }.make;
 
         const shared: ?*std.Build.Step.Compile = if (!p.is_windows) blk: {
-            const dll = lib(self, byt_name, .dynamic, dir, c_files, byt_cflags, optimize);
+            const dll = lib(self, byt_name, .dynamic, dir, c_files, byt_cflags);
             dll.linker_allow_shlib_undefined = true;
             for (shared_libs) |l| dll.root_module.linkSystemLibrary(l, .{});
             break :blk dll;
@@ -238,8 +235,8 @@ const Ctx = struct {
 
         return .{
             .byt_name = byt_name,
-            .static_byt = lib(self, byt_name, .static, dir, c_files, byt_cflags, optimize),
-            .static_nat = lib(self, nat_name, .static, dir, c_files, nat_cflags, optimize),
+            .static_byt = lib(self, byt_name, .static, dir, c_files, byt_cflags),
+            .static_nat = lib(self, nat_name, .static, dir, c_files, nat_cflags),
             .shared_byt = shared,
         };
     }

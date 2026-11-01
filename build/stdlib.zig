@@ -203,7 +203,7 @@ fn buildHeaderExe(src: Source, target_rt: runtime.Artifacts) *std.Build.Step.Com
 
     const exe = b.addExecutable(.{
         .name = "tmpheader",
-        .root_module = runtime.cModule(b, p, .ReleaseSmall, .{ .strip = true }),
+        .root_module = runtime.cModule(b, p, .{ .optimize = .ReleaseSmall, .strip = true }),
     });
     target_rt.addIncludes(src, exe.root_module);
 
