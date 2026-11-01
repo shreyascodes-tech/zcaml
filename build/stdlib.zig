@@ -68,6 +68,9 @@ pub fn build(src: *const Source, options: Options) Artifacts {
         .exe = src.path("boot/ocamlc"),
         .stdlib_dir = null,
         .primitives = options.target_rt.primitives,
+        .prefix_map = src.prefixMap(),
+        .cwd = src.path("stdlib"),
+        .strip_dir = "stdlib",
     };
     const compiled = boot.compilePlan(m.stdlib.plan, sources, .{ .flags = m.stdlib.compflags });
 
@@ -102,6 +105,8 @@ pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: P
     const b = src.b;
     var opt = compiler;
     opt.stdlib_dir = null;
+    opt.cwd = src.path("stdlib");
+    opt.strip_dir = "stdlib";
     const compiled = opt.compilePlan(src.manifest.stdlib.plan, byte.sources, byte.compiled, .{
         .flags = Ocamlc.concat(b, src.manifest.stdlib.compflags, if (p.is_elf) &.{"-function-sections"} else &.{}),
     });

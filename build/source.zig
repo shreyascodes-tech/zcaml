@@ -66,6 +66,16 @@ pub fn read(self: Source, sub_path: []const u8) []const u8 {
     );
 }
 
+/// `BUILD_PATH_PREFIX_MAP` value that strips the Zig package cache path from
+/// compiler and stdlib source locations recorded in `.cmi`/`.cmo`/`.cmx`/`.cmt`.
+pub fn prefixMap(self: Source) []const u8 {
+    const b = self.b;
+    const rel = self.dep.builder.root.joinString(b.allocator, "") catch @panic("OOM");
+    const pwd = b.graph.environ_map.get("PWD") orelse ".";
+    const abs = b.fmt("{s}/{s}", .{ pwd, rel });
+    return b.fmt("={s}/:={s}/:=./{s}/:={s}/stdlib/:={s}/stdlib/:=./{s}/stdlib/", .{ abs, rel, rel, abs, rel, rel });
+}
+
 /// Render a `@var@` template from the source tree.
 pub fn renderAt(self: Source, template: []const u8, vars: []const Var) []const u8 {
     return templates.renderText(self.b.allocator, template, self.read(template), vars);
@@ -112,6 +122,22 @@ pub const Resolver = struct {
             .expanded => |p| (self.expanded_dir orelse std.debug.panic("expanded source '{s}' not available here", .{p})).path(b, p),
             .gen => |g| self.gen.get(g) orelse std.debug.panic("generated source '{t}' not available here", .{g}),
         };
+    }
+
+    /// Relative path within `source` when `src` is an in-tree file (`.upstream` or `.arch`).
+    pub fn relPath(self: Resolver, src: Manifest.Src, strip_dir: ?[]const u8) ?[]const u8 {
+        const b = self.source.b;
+        const rel = switch (src) {
+            .upstream => |p| p,
+            .arch => |name| b.fmt("asmcomp/{s}/{s}", .{ @tagName(self.arch.?), name }),
+            .expanded, .gen => return null,
+        };
+        if (strip_dir) |d| {
+            if (std.mem.startsWith(u8, rel, d) and rel.len > d.len and rel[d.len] == '/') {
+                return rel[d.len + 1 ..];
+            }
+        }
+        return rel;
     }
 
     /// The pristine upstream file behind `src`, for installing sources next to

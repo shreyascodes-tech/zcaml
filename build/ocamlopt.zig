@@ -9,16 +9,22 @@ b: *std.Build,
 ocamlrun: *std.Build.Step.Compile,
 exe: LazyPath,
 stdlib_dir: ?LazyPath,
+prefix_map: ?[]const u8 = null,
+cwd: ?LazyPath = null,
+strip_dir: ?[]const u8 = null,
 
 pub const Options = struct {
     includes: []const LazyPath = &.{},
     flags: []const []const u8 = &.{},
     /// Skip `toplevel/` units when only building the compiler executables.
     skip_toplevel: bool = false,
+    rel_src: ?[]const u8 = null,
 };
 
 pub fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
     const run = self.b.addRunArtifact(self.ocamlrun);
+    if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
+    if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
     // Build steps must find the Zig used by this build, even when it was invoked
     // by absolute path and is not otherwise on PATH.
     run.setEnvironmentVariable("PATH", self.b.fmt("{s}{s}{s}", .{
@@ -53,7 +59,12 @@ pub fn impl(self: Ocamlopt, src: LazyPath, name: []const u8, cmi: LazyPath, opts
     run.addArg("-o");
     const cmx = run.addOutputFileArg(self.b.fmt("{s}.cmx", .{name}));
     run.addArgs(&.{ "-c", "-impl" });
-    run.addFileArg(src);
+    if (opts.rel_src) |rel| {
+        run.addFileInput(src);
+        run.addArg(rel);
+    } else {
+        run.addFileArg(src);
+    }
     return .{ .cmx = cmx, .obj = cmx.dirname().path(self.b, self.b.fmt("{s}.o", .{name})) };
 }
 
@@ -127,6 +138,7 @@ pub fn compilePlan(self: Ocamlopt, plan: Manifest.Plan, sources: @import("source
             const native = self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
                 .includes = includes.items,
                 .flags = Ocamlc.concat(b, Ocamlc.concat(b, opts.flags, u.flags), u.native_flags),
+                .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
             });
             out.impls.put(b.allocator, u.key, .{ .unit = u, .impl = native }) catch @panic("OOM");
             _ = stage.addCopyFile(native.cmx, b.fmt("{s}.cmx", .{u.name}));

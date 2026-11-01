@@ -100,7 +100,7 @@ const Ctx = struct {
 
     fn singleModuleLib(self: Ctx, name: []const u8, dir: []const u8, module: []const u8, stubs: Stubs) LazyPath {
         const b = self.src.b;
-        var lib = LibBuilder.init(self, b.fmt("{s}/META.in", .{dir}), &.{}, self.src.manifest.otherlibs.compflags);
+        var lib = LibBuilder.init(self, dir, b.fmt("{s}/META.in", .{dir}), &.{}, self.src.manifest.otherlibs.compflags);
         lib.pubModule(module, self.src.path(b.fmt("{s}/{s}.mli", .{ dir, module })), self.src.path(b.fmt("{s}/{s}.ml", .{ dir, module })));
         return lib.finish(name, stubs, &.{}, true);
     }
@@ -109,7 +109,7 @@ const Ctx = struct {
         const b = self.src.b;
         const p = self.platform();
         const compflags = Ocamlc.concat(b, self.src.manifest.otherlibs.compflags, &.{"-nolabels"});
-        var lib = LibBuilder.init(self, "otherlibs/unix/META.in", &.{}, compflags);
+        var lib = LibBuilder.init(self, "otherlibs/unix", "otherlibs/unix/META.in", &.{}, compflags);
         lib.pubModule("unix", self.src.path("otherlibs/unix/unix.mli"), self.src.path(b.fmt("otherlibs/unix/unix_{s}.ml", .{p.unixOrWin32()})));
         const labels_ml = self.src.path("otherlibs/unix/unixLabels.ml");
         lib.add(
@@ -124,7 +124,7 @@ const Ctx = struct {
     }
 
     fn threadsLib(self: Ctx, unix_cmi_dir: LazyPath, stubs: Stubs) LazyPath {
-        var lib = LibBuilder.init(self, "otherlibs/systhreads/META.in", &.{}, self.src.manifest.otherlibs.systhreads_compflags);
+        var lib = LibBuilder.init(self, "otherlibs/systhreads", "otherlibs/systhreads/META.in", &.{}, self.src.manifest.otherlibs.systhreads_compflags);
         lib.addInclude(unix_cmi_dir);
         lib.pubModule("thread", self.src.path("otherlibs/systhreads/thread.mli"), self.src.path("otherlibs/systhreads/thread.ml"));
         lib.pubModule("event", self.src.path("otherlibs/systhreads/event.mli"), self.src.path("otherlibs/systhreads/event.ml"));
@@ -148,7 +148,7 @@ const Ctx = struct {
             .{ .name = "target", .value = p.triplet },
         }));
 
-        var lib = LibBuilder.init(self, "otherlibs/dynlink/META.in", &.{
+        var lib = LibBuilder.init(self, "", "otherlibs/dynlink/META.in", &.{
             .{ .name = "natdynlink_archive", .value = if (p.hasNativeCompiler()) "dynlink.cmxa" else "" },
         }, Ocamlc.concat(b, m.otherlibs.compflags, &.{ "-w", "-40" }));
 
@@ -162,7 +162,7 @@ const Ctx = struct {
         lib.add("dynlink_symtable", self.src.path(dir ++ "byte/dynlink_symtable.mli"), null, self.src.path(dir ++ "byte/dynlink_symtable.ml"), null);
         const dynlink_mli = self.src.path(dir ++ "dynlink.mli");
         lib.add("dynlink", dynlink_mli, dynlink_mli, self.src.path(dir ++ "byte/dynlink.ml"), self.src.path(dir ++ "native/dynlink.ml"));
-        return lib.finish("dynlink", null, &.{}, true);
+        return lib.finish("dynlink", null, &.{}, false);
     }
 
     /// Build a static + shared stub library pair from C sources under `dir`.
@@ -236,6 +236,7 @@ const Ctx = struct {
 /// and assembles its install directory (`META`, `.cma`, `.cmxa`, `.a`, `.cmxs`, `.cmi`, ...).
 const LibBuilder = struct {
     ctx: Ctx,
+    cwd_sub: []const u8,
     wf: *std.Build.Step.WriteFile,
     flags: []const []const u8,
     byte_includes: std.ArrayList(LazyPath) = .empty,
@@ -243,10 +244,29 @@ const LibBuilder = struct {
     cmos: std.ArrayList(LazyPath) = .empty,
     cmxs: std.ArrayList(LazyPath) = .empty,
 
-    fn init(ctx: Ctx, meta_in: []const u8, meta_vars: []const Source.Var, flags: []const []const u8) LibBuilder {
+    fn init(ctx: Ctx, cwd_sub: []const u8, meta_in: []const u8, meta_vars: []const Source.Var, flags: []const []const u8) LibBuilder {
         const wf = ctx.src.b.addWriteFiles();
         _ = wf.add("META", ctx.src.renderMeta(meta_in, meta_vars));
-        return .{ .ctx = ctx, .wf = wf, .flags = flags };
+        return .{ .ctx = ctx, .cwd_sub = cwd_sub, .wf = wf, .flags = flags };
+    }
+
+    fn relSrc(self: LibBuilder, lp: LazyPath) ?[]const u8 {
+        return switch (lp) {
+            .dependency => |d| if (self.cwd_sub.len == 0) d.sub_path else std.fs.path.basename(d.sub_path),
+            else => null,
+        };
+    }
+
+    fn ocamlc(self: LibBuilder) Ocamlc {
+        var c = self.ctx.options.compiler.ocamlc;
+        c.cwd = self.ctx.src.path(self.cwd_sub);
+        return c;
+    }
+
+    fn ocamlopt(self: LibBuilder) Ocamlopt {
+        var o = self.ctx.options.compiler.ocamlopt;
+        o.cwd = self.ctx.src.path(self.cwd_sub);
+        return o;
     }
 
     fn addInclude(self: *LibBuilder, dir: LazyPath) void {
@@ -256,9 +276,11 @@ const LibBuilder = struct {
     }
 
     fn intfOnly(self: *LibBuilder, name: []const u8, mli_rel: []const u8) Ocamlc.Intf {
-        const i = self.ctx.options.compiler.ocamlc.intf(self.ctx.src.path(mli_rel), name, .{
+        const lp = self.ctx.src.path(mli_rel);
+        const i = self.ocamlc().intf(lp, name, .{
             .includes = self.byte_includes.items,
             .flags = self.flags,
+            .rel_src = self.relSrc(lp),
         });
         self.addInclude(i.cmi.dirname());
         return i;
@@ -281,10 +303,10 @@ const LibBuilder = struct {
         native_ml: ?LazyPath,
     ) void {
         const b = self.ctx.src.b;
-        const ocamlc = self.ctx.options.compiler.ocamlc;
-        const i = ocamlc.intf(mli, name, .{ .includes = self.byte_includes.items, .flags = self.flags });
+        const c = self.ocamlc();
+        const i = c.intf(mli, name, .{ .includes = self.byte_includes.items, .flags = self.flags, .rel_src = self.relSrc(mli) });
         self.addInclude(i.cmi.dirname());
-        const o = ocamlc.impl(byte_ml, name, i.cmi, .{ .includes = self.byte_includes.items, .flags = self.flags });
+        const o = c.impl(byte_ml, name, i.cmi, .{ .includes = self.byte_includes.items, .flags = self.flags, .rel_src = self.relSrc(byte_ml) });
         self.cmos.append(b.allocator, o.cmo) catch @panic("OOM");
 
         if (installed_mli) |pub_mli| {
@@ -296,9 +318,10 @@ const LibBuilder = struct {
 
         if (self.ctx.platform().hasNativeCompiler()) {
             if (native_ml) |n_ml| {
-                const n = self.ctx.options.compiler.ocamlopt.impl(n_ml, name, i.cmi, .{
+                const n = self.ocamlopt().impl(n_ml, name, i.cmi, .{
                     .includes = self.nat_includes.items,
                     .flags = self.flags,
+                    .rel_src = self.relSrc(n_ml),
                 });
                 _ = self.wf.addCopyFile(n.cmx, b.fmt("{s}.cmx", .{name}));
                 _ = self.wf.addCopyFile(n.obj, b.fmt("{s}.o", .{name}));
@@ -311,7 +334,8 @@ const LibBuilder = struct {
     fn finish(self: *LibBuilder, name: []const u8, stubs: ?Stubs, extra_byte_flags: []const []const u8, shared: bool) LazyPath {
         const b = self.ctx.src.b;
         var byte_flags: std.ArrayList([]const u8) = .empty;
-        byte_flags.appendSlice(b.allocator, &.{ "-g", "-linkall" }) catch @panic("OOM");
+        byte_flags.append(b.allocator, "-g") catch @panic("OOM");
+        if (stubs != null) byte_flags.append(b.allocator, "-linkall") catch @panic("OOM");
         if (stubs) |s| {
             const clib = b.fmt("-l{s}", .{s.byt_name});
             byte_flags.appendSlice(b.allocator, &.{ "-dllib", clib, "-cclib", clib }) catch @panic("OOM");
@@ -328,7 +352,8 @@ const LibBuilder = struct {
         if (self.ctx.platform().hasNativeCompiler()) {
             const opt = self.ctx.options.compiler.ocamlopt;
             var nat_flags: std.ArrayList([]const u8) = .empty;
-            nat_flags.appendSlice(b.allocator, &.{ "-g", "-linkall" }) catch @panic("OOM");
+            nat_flags.append(b.allocator, "-g") catch @panic("OOM");
+            if (stubs != null) nat_flags.append(b.allocator, "-linkall") catch @panic("OOM");
             var plugin_includes: std.ArrayList(LazyPath) = .empty;
             if (stubs) |s| {
                 nat_flags.appendSlice(b.allocator, &.{ "-cclib", b.fmt("-l{s}", .{s.static_nat.name}) }) catch @panic("OOM");

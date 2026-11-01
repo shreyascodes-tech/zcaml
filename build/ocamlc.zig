@@ -16,15 +16,22 @@ stdlib_dir: ?LazyPath,
 /// `-use-prims <file>`, needed for `boot/ocamlc`, which doesn't know the primitives
 /// of the runtime it is targeting.
 primitives: ?LazyPath,
+prefix_map: ?[]const u8 = null,
+/// Working directory for compiling in-tree sources by relative path.
+cwd: ?LazyPath = null,
+strip_dir: ?[]const u8 = null,
 
 pub const Options = struct {
     includes: []const LazyPath = &.{},
     flags: []const []const u8 = &.{},
+    rel_src: ?[]const u8 = null,
 };
 
 /// `ocamlrun ocamlc -nostdlib [-I stdlib] [-use-prims p] -I includes... flags...`
 pub fn cmd(self: Ocamlc, opts: Options) *std.Build.Step.Run {
     const run = self.b.addRunArtifact(self.ocamlrun);
+    if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
+    if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
     run.addFileArg(self.exe);
     run.addArg("-nostdlib");
     if (self.stdlib_dir) |d| {
@@ -54,7 +61,12 @@ pub fn intf(self: Ocamlc, src: LazyPath, name: []const u8, opts: Options) Intf {
     run.addArg("-o");
     const cmi = run.addOutputFileArg(self.b.fmt("{s}.cmi", .{name}));
     run.addArgs(&.{ "-c", "-intf" });
-    run.addFileArg(src);
+    if (opts.rel_src) |rel| {
+        run.addFileInput(src);
+        run.addArg(rel);
+    } else {
+        run.addFileArg(src);
+    }
     return .{ .cmi = cmi, .cmti = cmi.dirname().path(self.b, self.b.fmt("{s}.cmti", .{name})) };
 }
 
@@ -78,7 +90,12 @@ pub fn impl(self: Ocamlc, src: LazyPath, name: []const u8, cmi_file: ?LazyPath, 
     run.addArg("-o");
     const cmo = run.addOutputFileArg(self.b.fmt("{s}.cmo", .{name}));
     run.addArgs(&.{ "-c", "-impl" });
-    run.addFileArg(src);
+    if (opts.rel_src) |rel| {
+        run.addFileInput(src);
+        run.addArg(rel);
+    } else {
+        run.addFileArg(src);
+    }
     const dir = cmo.dirname();
     return .{
         .cmo = cmo,
@@ -168,7 +185,11 @@ pub fn compilePlan(self: Ocamlc, plan: Manifest.Plan, sources: Resolver, opts: O
                 continue;
             }
             const src = sources.resolve(u.src);
-            const unit_opts: Options = .{ .includes = includes.items, .flags = concat(b, opts.flags, u.flags) };
+            const unit_opts: Options = .{
+                .includes = includes.items,
+                .flags = concat(b, opts.flags, u.flags),
+                .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
+            };
             const cmi_name = b.fmt("{s}.cmi", .{u.name});
 
             const cmi = switch (wu.kind) {
@@ -207,6 +228,7 @@ pub fn compilePlan(self: Ocamlc, plan: Manifest.Plan, sources: Resolver, opts: O
         const r = self.impl(src, u.name, cmi, .{
             .includes = impl_includes.items,
             .flags = concat(b, opts.flags, u.flags),
+            .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
         });
         out.impls.put(gpa, u.key, .{ .unit = u, .src = src, .impl = r }) catch @panic("OOM");
         // no interface anywhere: this compilation produced the .cmi

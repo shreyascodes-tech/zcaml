@@ -96,12 +96,15 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     const lexer: Lexer = .{ .b = b, .ocamlrun = options.build_ocamlrun, .exe = src.path("boot/ocamllex") };
 
     // 4. tools/make_opcodes and tools/cvt_emit -> opcodes.ml{,i}, opnames.ml, emit.ml
+    const prefix_map = src.prefixMap();
     const boot: Ocamlc = .{
         .b = b,
         .ocamlrun = options.build_ocamlrun,
         .exe = src.path("boot/ocamlc"),
         .stdlib_dir = options.stdlib.dir,
         .primitives = options.target_rt.primitives,
+        .prefix_map = prefix_map,
+        .cwd = src.path(""),
     };
     const launch_flags = launchFlags(b, host);
     const make_opcodes = buildTool(boot, lexer.run(src.path("tools/make_opcodes.mll"), "make_opcodes.ml"), "make_opcodes", launch_flags);
@@ -241,6 +244,8 @@ pub fn build(src: *const Source, options: Options) Artifacts {
             .ocamlrun = options.build_ocamlrun,
             .exe = programs.ocamlopt,
             .stdlib_dir = options.stdlib.dir,
+            .prefix_map = prefix_map,
+            .cwd = src.path(""),
         },
         .ocamlc = .{
             .b = b,
@@ -248,6 +253,8 @@ pub fn build(src: *const Source, options: Options) Artifacts {
             .exe = programs.ocamlc,
             .stdlib_dir = options.stdlib.dir,
             .primitives = null,
+            .prefix_map = prefix_map,
+            .cwd = src.path(""),
         },
     };
 }
