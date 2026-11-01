@@ -420,7 +420,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
     // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
     const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
     const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined", .{triple});
-    const asm_cmd = b.fmt("{s} -c", .{cc});
+    const asm_cmd = b.fmt("{s}{s} -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
     const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
     const mkdll = b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
     const mkexe = b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else "" });
@@ -442,7 +442,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "ocaml_cc_vendor", .value = "clang-19" },
         .{ .name = "outputobj", .value = "-o " },
         .{ .name = "cc_has_debug_prefix_map", .value = "true" },
-        .{ .name = "ocaml_cv_prog_as_debug_prefix_map", .value = "true" },
+        .{ .name = "ocaml_cv_prog_as_debug_prefix_map", .value = "false" },
         .{ .name = "as_is_cc", .value = "true" },
         .{ .name = "bytecode_cflags", .value = cflags },
         .{ .name = "bytecode_cppflags", .value = cppflags },

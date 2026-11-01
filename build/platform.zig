@@ -169,9 +169,11 @@ pub const CConfig = struct {
         const is_windows = t.os.tag == .windows;
         return .{
             .cflags = if (is_windows)
-                &.{ "-O2", "-fno-strict-aliasing", "-fwrapv", "-mms-bitfields" }
+                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-mms-bitfields" }
+            else if (t.cpu.arch == .powerpc64 or t.cpu.arch == .powerpc64le)
+                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread", "-mabi=ibmlongdouble" }
             else
-                &.{ "-O2", "-fno-strict-aliasing", "-fwrapv", "-pthread" },
+                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread" },
             .cppflags = if (is_windows)
                 &.{ "-D__USE_MINGW_ANSI_STDIO=0", "-DUNICODE", "-D_UNICODE", "-DWINDOWS_UNICODE=1" }
             else
