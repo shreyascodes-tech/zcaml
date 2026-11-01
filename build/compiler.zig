@@ -360,6 +360,7 @@ pub fn buildNative(src: *const Source, byte: Artifacts, opt: Ocamlopt, rt: runti
                 .{
                     .includes = &.{ byte.compiled.cmis_dir, compiled.dir, runtime_dir.getDirectory(), dynlink_dir.? },
                     .flags = Ocamlc.concat(b, std_flags, &.{"-linkall"}),
+                    .strip_debug = true,
                 },
             );
         }
@@ -368,6 +369,7 @@ pub fn buildNative(src: *const Source, byte: Artifacts, opt: Ocamlopt, rt: runti
             const opts: Ocamlopt.Options = .{
                 .includes = &.{ byte.compiled.cmis_dir, compiled.dir, runtime_dir.getDirectory(), lex.dir },
                 .flags = std_flags,
+                .strip_debug = true,
             };
             result.native_programs = .{
                 .ocamlc = opt.link("ocamlc.opt", &.{ common, bytecomp, compiled.impls.get("driver/main").?.impl.cmx }, opts),
@@ -565,6 +567,7 @@ pub fn buildOcamldoc(
         opt_exe = comp.ocamlopt.link("ocamldoc.opt", nat_objs.items, .{
             .includes = &.{ comp.compiled.cmis_dir, comp.compilerlibs_dir, runtime_dir.getDirectory(), libs.unix_dir, libs.str_dir, libs.dynlink_dir, odoc_nat.dir },
             .flags = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ stdlib_dir_from_bin },
+            .strip_debug = true,
         });
     }
 
@@ -669,7 +672,7 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
     // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
     const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
     const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined{s}", .{ triple, if (target.resolved.result.abi.isMusl()) " -dynamic" else "" });
-    const asm_cmd = b.fmt("{s}{s} -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
+    const asm_cmd = b.fmt("{s}{s} -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
     const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
     const mkdll = b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
     const mkexe = b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else "" });

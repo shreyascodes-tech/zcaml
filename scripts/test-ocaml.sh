@@ -31,9 +31,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-STATE_DIR="${STATE_DIR:-/tmp/opencode/ocaml-testsuite-$TARGET}"
+CACHE_DIR="${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/zcaml}"
+STATE_DIR="${STATE_DIR:-$CACHE_DIR/testsuite/$TARGET}"
 WORK_DIR="$STATE_DIR/merged"
-SYSROOT_DIR="${SYSROOT_DIR:-/tmp/opencode/sysroots/$TARGET}"
+SYSROOT_DIR="${SYSROOT_DIR:-$CACHE_DIR/sysroots/$TARGET}"
 HOST_PREFIX="$ROOT_DIR/zig-out/5.5.1/host-$HOST_ARCH/target-$HOST_ARCH"
 CROSS_PREFIX="$ROOT_DIR/zig-out/5.5.1/host-$HOST_ARCH/target-$TARGET"
 TARGET_PREFIX="$ROOT_DIR/zig-out/5.5.1/host-${HOST:-$TARGET}/target-$TARGET"

@@ -60,6 +60,7 @@ pub fn build(src: Source, options: Options) Artifacts {
     // OCaml links this archive through `zig cc`, not Zig's build linker.
     // Match the runtime's C flags and avoid a dependency on Zig's UBSan runtime.
     zstd_lib.root_module.sanitize_c = .off;
+    zstd_lib.root_module.strip = true;
 
     // 1. Bytecode runtime sources (also scanned for primitives)
     const bytecode_c = runtimeSources(b, &.{ rt.common_c_sources, os_c_sources, rt.bytecode_only_c_sources }, null);
@@ -234,7 +235,9 @@ pub fn cModule(b: *std.Build, p: Platform, optimize: std.builtin.OptimizeMode, o
         .optimize = optimize,
         .link_libc = true,
         .pic = opts.pic,
-        .strip = opts.strip,
+        // Cached CRT/compiler-rt objects can contain absolute Zig-install paths.
+        // Keep runtime assertions/variants, but omit C DWARF from shipped files.
+        .strip = opts.strip orelse true,
     });
 }
 

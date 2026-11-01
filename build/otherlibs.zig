@@ -379,7 +379,7 @@ const LibBuilder = struct {
             _ = self.wf.addCopyFile(archive.cmxa, b.fmt("{s}.cmxa", .{name}));
             _ = self.wf.addCopyFile(archive.lib, b.fmt("{s}.a", .{name}));
             if (shared) {
-                _ = self.wf.addCopyFile(opt.shared(name, archive.cmxa, .{ .includes = plugin_includes.items }), b.fmt("{s}.cmxs", .{name}));
+                _ = self.wf.addCopyFile(opt.shared(name, archive.cmxa, .{ .includes = plugin_includes.items, .strip_debug = true }), b.fmt("{s}.cmxs", .{name}));
             }
         }
 

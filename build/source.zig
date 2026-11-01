@@ -71,9 +71,33 @@ pub fn read(self: Source, sub_path: []const u8) []const u8 {
 pub fn prefixMap(self: Source) []const u8 {
     const b = self.b;
     const rel = self.dep.builder.root.joinString(b.allocator, "") catch @panic("OOM");
-    const pwd = b.graph.environ_map.get("PWD") orelse ".";
-    const abs = b.fmt("{s}/{s}", .{ pwd, rel });
-    return b.fmt("={s}/:={s}/:=./{s}/:={s}/stdlib/:={s}/stdlib/:=./{s}/stdlib/", .{ abs, rel, rel, abs, rel, rel });
+    const root = encodePrefix(b, absolutePath(b, b.root));
+    const abs = encodePrefix(b, absolutePath(b, self.dep.builder.root));
+    const relative = encodePrefix(b, rel);
+    // Also rewrite exact directory names (cmt_builddir and bytecode debug
+    // directories), not just source filenames with a trailing slash.
+    return b.fmt(".={s}:={s}/:.={s}:={s}/:={s}/:=./{s}/:.={s}/stdlib:={s}/stdlib/:={s}/stdlib/:=./{s}/stdlib/", .{
+        root, root, abs, abs, relative, relative, abs, abs, relative, relative,
+    });
+}
+
+fn absolutePath(b: *std.Build, cache_path: std.Build.Cache.Path) []const u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = cache_path.root_dir.handle.realPath(b.graph.io, &buf) catch @panic("cannot resolve build directory");
+    return std.fs.path.resolve(b.allocator, &.{ buf[0..len], cache_path.sub_path }) catch @panic("OOM");
+}
+
+fn encodePrefix(b: *std.Build, prefix: []const u8) []const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    for (prefix) |c| {
+        result.appendSlice(b.allocator, switch (c) {
+            '%' => "%#",
+            '=' => "%+",
+            ':' => "%.",
+            else => &.{c},
+        }) catch @panic("OOM");
+    }
+    return result.toOwnedSlice(b.allocator) catch @panic("OOM");
 }
 
 /// Render a `@var@` template from the source tree.

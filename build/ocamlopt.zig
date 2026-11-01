@@ -19,6 +19,8 @@ pub const Options = struct {
     /// Skip `toplevel/` units when only building the compiler executables.
     skip_toplevel: bool = false,
     rel_src: ?[]const u8 = null,
+    /// Remove linker-supplied CRT/compiler-rt DWARF from installed executables.
+    strip_debug: bool = false,
 };
 
 pub fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
@@ -84,6 +86,7 @@ pub fn archive(self: Ocamlopt, name: []const u8, objs: []const LazyPath, opts: O
 
 pub fn shared(self: Ocamlopt, name: []const u8, archive_file: LazyPath, opts: Options) LazyPath {
     const run = self.cmd(opts);
+    if (opts.strip_debug) run.addArgs(&.{ "-ccopt", "-Wl,-S" });
     run.addArgs(&.{ "-shared", "-linkall", "-o" });
     const out = run.addOutputFileArg(self.b.fmt("{s}.cmxs", .{name}));
     run.addFileArg(archive_file);
@@ -92,6 +95,7 @@ pub fn shared(self: Ocamlopt, name: []const u8, archive_file: LazyPath, opts: Op
 
 pub fn link(self: Ocamlopt, name: []const u8, objs: []const LazyPath, opts: Options) LazyPath {
     const run = self.cmd(opts);
+    if (opts.strip_debug) run.addArgs(&.{ "-ccopt", "-Wl,-S" });
     run.addArg("-o");
     const out = run.addOutputFileArg(name);
     for (objs) |obj| run.addFileArg(obj);
