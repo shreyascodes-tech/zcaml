@@ -226,11 +226,12 @@ pub const CConfig = struct {
 
 /// Parse `native`/`host` or a Zig / autoconf target triple.
 pub fn resolveTarget(b: *std.Build, target_str: []const u8) std.Build.ResolvedTarget {
-    if (std.mem.eql(u8, target_str, "native") or std.mem.eql(u8, target_str, "host")) {
-        return b.graph.host;
-    }
+    const raw = if (std.mem.eql(u8, target_str, "native") or std.mem.eql(u8, target_str, "host")) blk: {
+        const h = b.graph.host.result;
+        break :blk b.fmt("{s}-{s}-{s}", .{ @tagName(h.cpu.arch), @tagName(h.os.tag), @tagName(h.abi) });
+    } else target_str;
 
-    const normalized = normalizeTriplet(target_str);
+    const normalized = normalizeTriplet(raw);
     const query = std.Target.Query.parse(.{ .arch_os_abi = normalized }) catch |err| {
         std.debug.panic("Invalid target '{s}' (normalized: '{s}'): {t}", .{ target_str, normalized, err });
     };

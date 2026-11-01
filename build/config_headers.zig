@@ -123,7 +123,7 @@ pub fn systemH(src: Source, p: Platform) []const u8 {
         .{ .name = "HAS_GETAUXVAL", .value = if (p.is_linux) "1" else null },
         .{ .name = "HAS_SYS_SHM_H", .value = if (p.is_linux or p.is_macos) "1" else null },
         .{ .name = "HAS_SHMAT", .value = if (p.is_linux or p.is_macos) "1" else null },
-        .{ .name = "HAS_EXECVPE", .value = if (p.is_linux) "1" else null },
+        .{ .name = "HAS_EXECVPE", .value = if (p.is_linux or p.is_windows) "1" else null },
         .{ .name = "HAS_POSIX_SPAWN", .value = if (is_unix) "1" else null },
         .{ .name = "HAS_HUGE_PAGES", .value = null },
         .{ .name = "HUGE_PAGE_SIZE", .value = null },

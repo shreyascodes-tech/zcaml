@@ -317,7 +317,9 @@ const LibBuilder = struct {
     ) void {
         const b = self.ctx.src.b;
         const c = self.ocamlc();
-        const i = c.intf(mli, name, .{ .includes = self.byte_includes.items, .flags = self.flags, .rel_src = self.relSrc(mli) });
+        const is_cfg = std.mem.eql(u8, name, "dynlink_config");
+        const intf_flags = if (is_cfg) Ocamlc.concat(b, self.flags, &.{"-opaque"}) else self.flags;
+        const i = c.intf(mli, name, .{ .includes = self.byte_includes.items, .flags = intf_flags, .rel_src = self.relSrc(mli) });
         self.addInclude(i.cmi.dirname());
         const o = c.impl(byte_ml, name, i.cmi, .{ .includes = self.byte_includes.items, .flags = self.flags, .rel_src = self.relSrc(byte_ml) });
         self.cmos.append(b.allocator, o.cmo) catch @panic("OOM");
@@ -339,7 +341,7 @@ const LibBuilder = struct {
                 _ = self.wf.addCopyFile(n.cmx, b.fmt("{s}.cmx", .{name}));
                 _ = self.wf.addCopyFile(n.obj, b.fmt("{s}.o", .{name}));
                 self.cmxs.append(b.allocator, n.cmx) catch @panic("OOM");
-                self.nat_includes.append(b.allocator, n.cmx.dirname()) catch @panic("OOM");
+                if (!is_cfg) self.nat_includes.append(b.allocator, n.cmx.dirname()) catch @panic("OOM");
             }
         }
     }
@@ -351,7 +353,8 @@ const LibBuilder = struct {
         if (stubs != null) byte_flags.append(b.allocator, "-linkall") catch @panic("OOM");
         if (stubs) |s| {
             const clib = b.fmt("-l{s}", .{s.byt_name});
-            byte_flags.appendSlice(b.allocator, &.{ "-dllib", clib, "-cclib", clib }) catch @panic("OOM");
+            if (s.shared_byt != null) byte_flags.appendSlice(b.allocator, &.{ "-dllib", clib }) catch @panic("OOM");
+            byte_flags.appendSlice(b.allocator, &.{ "-cclib", clib }) catch @panic("OOM");
         }
         byte_flags.appendSlice(b.allocator, extra_byte_flags) catch @panic("OOM");
 
@@ -378,7 +381,7 @@ const LibBuilder = struct {
             const archive = opt.archive(name, self.cmxs.items, .{ .flags = nat_flags.items });
             _ = self.wf.addCopyFile(archive.cmxa, b.fmt("{s}.cmxa", .{name}));
             _ = self.wf.addCopyFile(archive.lib, b.fmt("{s}.a", .{name}));
-            if (shared) {
+            if (shared and !self.ctx.platform().is_windows) {
                 _ = self.wf.addCopyFile(opt.shared(name, archive.cmxa, .{ .includes = plugin_includes.items, .strip_debug = true }), b.fmt("{s}.cmxs", .{name}));
             }
         }

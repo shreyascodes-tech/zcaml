@@ -668,14 +668,14 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
     const cppflags = c.cppflagsString(b);
     const cclibs = c.libsString(b);
     const rpath = if (target.is_elf) "-Wl,-rpath," else "";
-    const native_ldflags = if (target.is_macos and target.arch == .amd64) "-Wl,-no_compact_unwind" else "";
+    const native_ldflags = "";
     // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
     const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
     const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined{s}", .{ triple, if (target.resolved.result.abi.isMusl()) " -dynamic" else "" });
-    const asm_cmd = b.fmt("{s}{s} -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
+    const asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
     const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
     const mkdll = b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
-    const mkexe = b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else "" });
+    const mkexe = b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else if (target.is_windows) " -municode" else "" });
     const so_ext = target.dllExt();
     const bool_str = struct {
         fn f(v: bool) []const u8 {
@@ -708,8 +708,8 @@ fn renderConfigGenerated(src: Source, host: Platform, target: Platform) []const 
         .{ .name = "rpath", .value = rpath },
         .{ .name = "mksharedlibrpath", .value = rpath },
         .{ .name = "AR", .value = "zig ar" },
-        .{ .name = "supports_shared_libraries", .value = "true" },
-        .{ .name = "natdynlink", .value = "true" },
+        .{ .name = "supports_shared_libraries", .value = bool_str(!target.is_windows) },
+        .{ .name = "natdynlink", .value = bool_str(!target.is_windows and target.hasNativeCompiler()) },
         .{ .name = "mkdll_exp", .value = mkdll },
         .{ .name = "mkexe_exp", .value = mkexe },
         .{ .name = "mkmaindll_exp", .value = mkdll },
