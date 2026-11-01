@@ -135,6 +135,14 @@ pub const Resolver = struct {
     expanded_dir: ?std.Build.LazyPath = null,
     gen: std.EnumMap(Manifest.Gen, std.Build.LazyPath) = .{},
 
+    pub fn has(self: Resolver, src: Manifest.Src) bool {
+        return switch (src) {
+            .upstream, .expanded => true,
+            .arch => self.arch != null,
+            .gen => |g| self.gen.get(g) != null,
+        };
+    }
+
     pub fn resolve(self: Resolver, src: Manifest.Src) std.Build.LazyPath {
         const b = self.source.b;
         return switch (src) {

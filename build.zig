@@ -21,33 +21,48 @@ pub fn build(b: *std.Build) !void {
 
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const version = b.option(Ocaml.Version, "ocaml-version", "ocaml version to build") orelse Ocaml.Versions.latest;
+        const ocamldoc_opt = b.option(bool, "ocamldoc", "build and install ocamldoc");
+        const ocamldebug_opt = b.option(bool, "ocamldebug", "build and install ocamldebug");
+        const ocamlnat_opt = b.option(bool, "ocamlnat", "build and install ocamlnat (native toplevel)");
+        const bytecode_tools_opt = b.option(bool, "bytecode-tools", "install internal bytecode tools (cmpbyt, dumpobj, primreq, stripdebug)");
+        const runtime_variants_opt = b.option(bool, "runtime-variants", "build and install debug (d) and instrumented (i) runtimes");
 
-        const host_str = b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)") orelse {
-            std.log.err("missing -Docaml-host", .{});
-            return error.MissingCompilerHost;
-        };
-        const host = Ocaml.resolveTarget(b, host_str);
-        const target = if (b.option([]const u8, "ocaml-target", "where compiled programs run (default: host)")) |s|
-            Ocaml.resolveTarget(b, s)
-        else
-            host;
-
-        const sub_path = b.option([]const u8, "ocaml-prefix", "install sub-path under the install prefix") orelse b.fmt(
-            "{t}/host-{s}/target-{s}",
-            .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
-        );
-
+        const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
         const src = ocaml_versions.source(version) orelse return;
-        const toolchain = Ocaml.build(src, .{
-            .host = host,
-            .target = target,
-            .optimize = optimize,
-            .ocamldoc = b.option(bool, "ocamldoc", "build and install ocamldoc") orelse false,
-            .ocamldebug = b.option(bool, "ocamldebug", "build and install ocamldebug") orelse false,
-            .ocamlnat = b.option(bool, "ocamlnat", "build and install ocamlnat (native toplevel)") orelse false,
-            .bytecode_tools = b.option(bool, "bytecode-tools", "install internal bytecode tools (cmpbyt, dumpobj, primreq, stripdebug)") orelse false,
-            .runtime_variants = b.option(bool, "runtime-variants", "build and install debug (d) and instrumented (i) runtimes") orelse false,
-        });
-        toolchain.addInstall(b.getInstallStep(), sub_path);
+
+        if (b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)")) |host_str| {
+            const host = Ocaml.resolveTarget(b, host_str);
+            const target = if (b.option([]const u8, "ocaml-target", "where compiled programs run (default: host)")) |s|
+                Ocaml.resolveTarget(b, s)
+            else
+                host;
+
+            const sub_path = b.option([]const u8, "ocaml-prefix", "install sub-path under the install prefix") orelse b.fmt(
+                "{t}/host-{s}/target-{s}",
+                .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
+            );
+
+            const toolchain = Ocaml.build(src, .{
+                .host = host,
+                .target = target,
+                .optimize = optimize,
+                .ocamldoc = ocamldoc_opt orelse false,
+                .ocamldebug = ocamldebug_opt orelse false,
+                .ocamlnat = ocamlnat_opt orelse false,
+                .bytecode_tools = bytecode_tools_opt orelse false,
+                .runtime_variants = runtime_variants_opt orelse false,
+            });
+            toolchain.addInstall(b.getInstallStep(), sub_path);
+        } else {
+            b.getInstallStep().dependOn(&b.addFail("missing -Docaml-host (or run `zig build -Docaml matrix`)").step);
+            Ocaml.buildMatrix(src, matrix_step, version, .{
+                .optimize = optimize,
+                .ocamldoc = ocamldoc_opt orelse true,
+                .ocamldebug = ocamldebug_opt orelse true,
+                .ocamlnat = ocamlnat_opt orelse true,
+                .bytecode_tools = bytecode_tools_opt orelse true,
+                .runtime_variants = runtime_variants_opt orelse true,
+            });
+        }
     }
 }

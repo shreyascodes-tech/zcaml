@@ -6,7 +6,7 @@ const LazyPath = std.Build.LazyPath;
 const Ocamlopt = @This();
 
 b: *std.Build,
-ocamlrun: *std.Build.Step.Compile,
+ocamlrun: ?*std.Build.Step.Compile = null,
 exe: LazyPath,
 stdlib_dir: ?LazyPath,
 prefix_map: ?[]const u8 = null,
@@ -21,10 +21,20 @@ pub const Options = struct {
     rel_src: ?[]const u8 = null,
     /// Remove linker-supplied CRT/compiler-rt DWARF from installed executables.
     strip_debug: bool = false,
+    /// Reuse already-compiled arch-independent units from an earlier `compilePlan`.
+    reuse_frontend: ?Compiled = null,
 };
 
 pub fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
-    const run = self.b.addRunArtifact(self.ocamlrun);
+    const run = if (self.ocamlrun) |orun| blk: {
+        const r = self.b.addRunArtifact(orun);
+        r.addFileArg(self.exe);
+        break :blk r;
+    } else blk: {
+        const r = std.Build.Step.Run.create(self.b, "run ocamlopt");
+        r.addFileArg(self.exe);
+        break :blk r;
+    };
     if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
     if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
     // Build steps must find the Zig used by this build, even when it was invoked
@@ -34,7 +44,6 @@ pub fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
         if (self.b.graph.host.result.os.tag == .windows) ";" else ":",
         run.getEnvMap().get("PATH") orelse "",
     }));
-    run.addFileArg(self.exe);
     run.addArg("-nostdlib");
     if (self.stdlib_dir) |dir| {
         run.addArg("-I");
@@ -135,17 +144,28 @@ pub fn compilePlan(self: Ocamlopt, plan: Manifest.Plan, sources: @import("source
     for (plan.cmx_waves) |wave| {
         const stage = b.addWriteFiles();
         for (wave) |u| {
-            if (!u.enabledFor(sources.arch) or (opts.skip_toplevel and std.mem.startsWith(u8, u.key, "toplevel/"))) {
+            if (!u.enabledFor(sources.arch) or !sources.has(u.src) or (opts.skip_toplevel and std.mem.startsWith(u8, u.key, "toplevel/"))) {
                 out.skipped.put(b.allocator, u.key, {}) catch @panic("OOM");
                 continue;
             }
-            const native = self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
+            const native = if (opts.reuse_frontend) |fe| blk: {
+                if (!Ocamlc.isArchDependent(u.key)) {
+                    if (fe.impls.get(u.key)) |prev| break :blk prev.impl;
+                }
+                break :blk self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
+                    .includes = includes.items,
+                    .flags = Ocamlc.concat(b, Ocamlc.concat(b, opts.flags, u.flags), u.native_flags),
+                    .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
+                });
+            } else self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
                 .includes = includes.items,
                 .flags = Ocamlc.concat(b, Ocamlc.concat(b, opts.flags, u.flags), u.native_flags),
                 .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
             });
             out.impls.put(b.allocator, u.key, .{ .unit = u, .impl = native }) catch @panic("OOM");
-            _ = stage.addCopyFile(native.cmx, b.fmt("{s}.cmx", .{u.name}));
+            if (!std.mem.eql(u8, u.key, "utils/config")) {
+                _ = stage.addCopyFile(native.cmx, b.fmt("{s}.cmx", .{u.name}));
+            }
             _ = all.addCopyFile(native.cmx, b.fmt("{s}.cmx", .{u.name}));
         }
         includes.append(b.allocator, stage.getDirectory()) catch @panic("OOM");

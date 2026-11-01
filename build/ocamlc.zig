@@ -25,7 +25,16 @@ pub const Options = struct {
     includes: []const LazyPath = &.{},
     flags: []const []const u8 = &.{},
     rel_src: ?[]const u8 = null,
+    /// Reuse already-compiled arch-independent units from an earlier `compilePlan`.
+    reuse_frontend: ?Compiled = null,
 };
+
+pub fn isArchDependent(key: []const u8) bool {
+    return std.mem.startsWith(u8, key, "asmcomp/") or
+        std.mem.startsWith(u8, key, "driver/opt") or
+        std.mem.eql(u8, key, "file_formats/linear_format") or
+        std.mem.startsWith(u8, key, "toplevel/native/");
+}
 
 /// `ocamlrun ocamlc -nostdlib [-I stdlib] [-use-prims p] -I includes... flags...`
 pub fn cmd(self: Ocamlc, opts: Options) *std.Build.Step.Run {
@@ -180,17 +189,29 @@ pub fn compilePlan(self: Ocamlc, plan: Manifest.Plan, sources: Resolver, opts: O
         const wave_dir = b.addWriteFiles();
         for (wave) |wu| {
             const u = wu.unit;
-            if (!u.enabledFor(sources.arch)) {
+            if (!u.enabledFor(sources.arch) or !sources.has(u.src)) {
                 out.skipped.put(gpa, u.key, {}) catch @panic("OOM");
                 continue;
             }
+            const cmi_name = b.fmt("{s}.cmi", .{u.name});
+            if (opts.reuse_frontend) |fe| {
+                if (!isArchDependent(u.key)) {
+                    const prev = fe.intfs.get(u.key).?;
+                    out.intfs.put(gpa, u.key, prev) catch @panic("OOM");
+                    if (wu.kind == .impl) out.impls.put(gpa, u.key, fe.impls.get(u.key).?) catch @panic("OOM");
+                    _ = wave_dir.addCopyFile(prev.cmi, cmi_name);
+                    _ = all_cmis.addCopyFile(prev.cmi, cmi_name);
+                    cmi_by_name.put(gpa, u.name, prev.cmi) catch @panic("OOM");
+                    continue;
+                }
+            }
             const src = sources.resolve(u.src);
+            const base_flags = concat(b, opts.flags, u.flags);
             const unit_opts: Options = .{
                 .includes = includes.items,
-                .flags = concat(b, opts.flags, u.flags),
+                .flags = if (std.mem.eql(u8, u.key, "utils/config")) concat(b, base_flags, &.{"-opaque"}) else base_flags,
                 .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
             };
-            const cmi_name = b.fmt("{s}.cmi", .{u.name});
 
             const cmi = switch (wu.kind) {
                 .intf => blk: {
@@ -218,11 +239,19 @@ pub fn compilePlan(self: Ocamlc, plan: Manifest.Plan, sources: Resolver, opts: O
     impl_includes.append(gpa, out.cmis_dir) catch @panic("OOM");
 
     for (plan.cmo_units) |u| {
-        if (!u.enabledFor(sources.arch)) {
+        if (!u.enabledFor(sources.arch) or !sources.has(u.src)) {
             out.skipped.put(gpa, u.key, {}) catch @panic("OOM");
             continue;
         }
         if (out.impls.contains(u.key)) continue;
+        if (opts.reuse_frontend) |fe| {
+            if (!isArchDependent(u.key)) {
+                const prev = fe.impls.get(u.key).?;
+                out.impls.put(gpa, u.key, prev) catch @panic("OOM");
+                if (cmi_by_name.get(u.name) == null) out.intfs.put(gpa, u.key, fe.intfs.get(u.key).?) catch @panic("OOM");
+                continue;
+            }
+        }
         const src = sources.resolve(u.src);
         const cmi = cmi_by_name.get(u.name);
         const r = self.impl(src, u.name, cmi, .{

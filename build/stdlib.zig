@@ -7,9 +7,22 @@ const Ocamlopt = @import("ocamlopt.zig");
 const runtime = @import("runtime.zig");
 const Tools = @import("tools/root.zig");
 
+pub const Common = struct {
+    /// Bytecode stdlib files without `runtime-launch-info` (target-independent).
+    base_dir: std.Build.LazyPath,
+    /// `runtime-launch-info` directory for the build host, used by build-time tools.
+    build_launch_info_dir: std.Build.LazyPath,
+    meta: std.Build.LazyPath,
+    expanded_dir: std.Build.LazyPath,
+    sources: Source.Resolver,
+    compiled: Ocamlc.Compiled,
+};
+
 pub const Artifacts = struct {
     /// Contents of `lib/ocaml/` contributed by the stdlib (flat, as upstream installs it).
     dir: std.Build.LazyPath,
+    /// Directory containing only `runtime-launch-info` for this platform.
+    launch_info_dir: std.Build.LazyPath,
     meta: std.Build.LazyPath,
     /// Module-alias-expanded sources (`Manifest.Src.expanded`), also used by otherlibs.
     expanded_dir: std.Build.LazyPath,
@@ -24,11 +37,10 @@ pub const Options = struct {
     build_ocamlrun: *std.Build.Step.Compile,
 };
 
-pub fn build(src: *const Source, options: Options) Artifacts {
+pub fn buildCommon(src: *const Source, primitives: std.Build.LazyPath, build_ocamlrun: *std.Build.Step.Compile) Common {
     const b = src.b;
     const m = src.manifest;
     const v = m.version;
-    const p = options.target_rt.platform;
 
     // 1. stdlib/sys.ml and stdlib/META
     const release_extra = if (v.extra.len == 0)
@@ -48,26 +60,25 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     }));
     const meta = config.add("META", src.renderMeta("stdlib/META.in", &.{}));
 
-    // 2. Alias-expanded sources and bytecode launcher header
-    const header_exe = buildHeaderExe(src.*, options.target_rt);
+    // 2. Alias-expanded sources
     const gen, _ = Tools.run(b, .gen_stdlib_sources, .{
         .ocaml_src_dir = .of(src.path("")),
-        .header_exe = .of(header_exe.getEmittedBin()),
+        .header_exe = .of(build_ocamlrun.getEmittedBin()),
         .expanded_dir = .of("stdlib_expanded"),
-        .runtime_launch_info = .of("runtime-launch-info"),
+        .runtime_launch_info = .of("runtime-launch-info.unused"),
     });
     const expanded_dir = gen.expanded_dir.lazyPath();
 
-    var sources: Source.Resolver = .{ .source = src, .arch = p.arch, .expanded_dir = expanded_dir };
+    var sources: Source.Resolver = .{ .source = src, .arch = null, .expanded_dir = expanded_dir };
     sources.gen.put(.stdlib_sys_ml, sys_ml);
 
-    // 3. Compile
+    // 3. Compile target-independent bytecode stdlib
     const boot: Ocamlc = .{
         .b = b,
-        .ocamlrun = options.build_ocamlrun,
+        .ocamlrun = build_ocamlrun,
         .exe = src.path("boot/ocamlc"),
         .stdlib_dir = null,
-        .primitives = options.target_rt.primitives,
+        .primitives = primitives,
         .prefix_map = src.prefixMap(),
         .cwd = src.path("stdlib"),
         .strip_dir = "stdlib",
@@ -88,10 +99,13 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     }
     _ = out.addCopyFile(compiled.cmo("std_exit").?, "std_exit.cmo");
     _ = out.addCopyFile(boot.archive("stdlib.cma", compiled.cmos(b, m.stdlib.cma), .{}), "stdlib.cma");
-    _ = out.addCopyFile(gen.runtime_launch_info.lazyPath(), "runtime-launch-info");
+
+    const launch_wf = b.addWriteFiles();
+    _ = launch_wf.addCopyFile(gen.runtime_launch_info.lazyPath(), "runtime-launch-info");
 
     return .{
-        .dir = out.getDirectory(),
+        .base_dir = out.getDirectory(),
+        .build_launch_info_dir = launch_wf.getDirectory(),
         .meta = meta,
         .expanded_dir = expanded_dir,
         .sources = sources,
@@ -99,9 +113,42 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     };
 }
 
-/// Bootstrap native artifacts only after the bytecode compiler has been linked.
-pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) Artifacts {
-    if (!p.hasNativeCompiler()) return byte;
+pub fn buildForTarget(src: *const Source, common: Common, target_rt: runtime.Artifacts) Artifacts {
+    const b = src.b;
+    const header_exe = buildHeaderExe(src.*, target_rt);
+    const gen, _ = Tools.run(b, .gen_stdlib_sources, .{
+        .ocaml_src_dir = .of(src.path("")),
+        .header_exe = .of(header_exe.getEmittedBin()),
+        .expanded_dir = .of("stdlib_expanded"),
+        .runtime_launch_info = .of("runtime-launch-info"),
+    });
+    const launch_wf = b.addWriteFiles();
+    _ = launch_wf.addCopyFile(gen.runtime_launch_info.lazyPath(), "runtime-launch-info");
+    const launch_info_dir = launch_wf.getDirectory();
+
+    const out = b.addWriteFiles();
+    _ = out.addCopyDirectory(common.base_dir, "", .{});
+    _ = out.addCopyFile(gen.runtime_launch_info.lazyPath(), "runtime-launch-info");
+
+    var sources = common.sources;
+    sources.arch = target_rt.platform.arch;
+    return .{
+        .dir = out.getDirectory(),
+        .launch_info_dir = launch_info_dir,
+        .meta = common.meta,
+        .expanded_dir = common.expanded_dir,
+        .sources = sources,
+        .compiled = common.compiled,
+    };
+}
+
+pub fn build(src: *const Source, options: Options) Artifacts {
+    const common = buildCommon(src, options.target_rt.primitives, options.build_ocamlrun);
+    return buildForTarget(src, common, options.target_rt);
+}
+
+/// Compile target-native `.cmx`, `.o`, `stdlib.cmxa`, and `stdlib.a` (depends only on `(arch, system)`).
+pub fn buildNativeDir(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) std.Build.LazyPath {
     const b = src.b;
     var opt = compiler;
     opt.stdlib_dir = null;
@@ -111,7 +158,6 @@ pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: P
         .flags = Ocamlc.concat(b, src.manifest.stdlib.compflags, if (p.is_elf) &.{"-function-sections"} else &.{}),
     });
     const out = b.addWriteFiles();
-    _ = out.addCopyDirectory(byte.dir, "", .{});
     for (compiled.impls.values()) |u| {
         _ = out.addCopyFile(u.impl.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
         _ = out.addCopyFile(u.impl.obj, b.fmt("{s}.o", .{u.unit.name}));
@@ -119,9 +165,22 @@ pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: P
     const archive = opt.archive("stdlib", compiled.cmxs(b, src.manifest.stdlib.cma), .{});
     _ = out.addCopyFile(archive.cmxa, "stdlib.cmxa");
     _ = out.addCopyFile(archive.lib, "stdlib.a");
+    return out.getDirectory();
+}
+
+pub fn attachNativeDir(b: *std.Build, byte: Artifacts, nat_dir: std.Build.LazyPath) Artifacts {
+    const out = b.addWriteFiles();
+    _ = out.addCopyDirectory(byte.dir, "", .{});
+    _ = out.addCopyDirectory(nat_dir, "", .{});
     var result = byte;
     result.dir = out.getDirectory();
     return result;
+}
+
+/// Bootstrap native artifacts only after the bytecode compiler has been linked.
+pub fn buildNative(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) Artifacts {
+    if (!p.hasNativeCompiler()) return byte;
+    return attachNativeDir(src.b, byte, buildNativeDir(src, byte, compiler, p));
 }
 
 /// Install the pristine source of a unit next to its artifacts (`stdlib/foo.ml` -> `foo.ml`).
