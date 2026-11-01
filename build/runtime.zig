@@ -13,8 +13,18 @@ pub const Artifacts = struct {
     primitives: std.Build.LazyPath,
     ocamlyacc: *std.Build.Step.Compile,
     libcamlrun: *std.Build.Step.Compile,
+    libcamlrun_pic: ?*std.Build.Step.Compile = null,
+    libcamlrun_shared: ?*std.Build.Step.Compile = null,
+    libcamlrund: ?*std.Build.Step.Compile = null,
+    libcamlruni: ?*std.Build.Step.Compile = null,
     ocamlrun: *std.Build.Step.Compile,
-    libasmrun: ?*std.Build.Step.Compile,
+    ocamlrund: ?*std.Build.Step.Compile = null,
+    ocamlruni: ?*std.Build.Step.Compile = null,
+    libasmrun: ?*std.Build.Step.Compile = null,
+    libasmrun_pic: ?*std.Build.Step.Compile = null,
+    libasmrun_shared: ?*std.Build.Step.Compile = null,
+    libasmrund: ?*std.Build.Step.Compile = null,
+    libasmruni: ?*std.Build.Step.Compile = null,
     libcomprmarsh: *std.Build.Step.Compile,
     zstd_lib: *std.Build.Step.Compile,
 
@@ -31,6 +41,8 @@ pub const Options = struct {
     optimize: std.builtin.OptimizeMode,
     /// Default stdlib location baked into `ocamlrun` (relative to its directory).
     stdlib_dir: []const u8 = "../lib/ocaml",
+    /// Also build debug (`d`) and instrumented (`i`) runtime variants.
+    variants: bool = false,
 };
 
 pub fn build(src: Source, options: Options) Artifacts {
@@ -108,51 +120,91 @@ pub fn build(src: Source, options: Options) Artifacts {
     });
     if (p.is_windows) self.ocamlyacc.mingw_unicode_entry_point = true;
 
-    // 5. libcamlrun.a
-    self.libcamlrun = b.addLibrary(.{
-        .linkage = .static,
-        .name = "camlrun",
-        .root_module = cModule(b, p, options.optimize, .{}),
-    });
-    self.addIncludes(src, self.libcamlrun.root_module);
-    self.libcamlrun.root_module.linkLibrary(zstd_lib);
-    self.libcamlrun.root_module.addCSourceFiles(.{
-        .root = src.path(""),
-        .files = bytecode_c,
-        .flags = cflags,
-    });
+    // 5. Bytecode runtime libraries and executables
+    const buildCamlrunLib = struct {
+        fn f(rt_self: Artifacts, s: Source, name: []const u8, linkage: std.builtin.LinkMode, pic: ?bool, files: []const []const u8, flags: []const []const u8, opt: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+            const lib = s.b.addLibrary(.{
+                .linkage = linkage,
+                .name = name,
+                .root_module = cModule(s.b, rt_self.platform, opt, .{ .pic = pic }),
+            });
+            rt_self.addIncludes(s, lib.root_module);
+            lib.root_module.linkLibrary(rt_self.zstd_lib);
+            lib.root_module.addCSourceFiles(.{ .root = s.path(""), .files = files, .flags = flags });
+            if (linkage == .dynamic) {
+                lib.linker_allow_shlib_undefined = true;
+                rt_self.platform.c.linkLibs(lib.root_module);
+            }
+            return lib;
+        }
+    }.f;
+    const buildOcamlrunExe = struct {
+        fn f(rt_self: Artifacts, s: Source, name: []const u8, prims_c: std.Build.LazyPath, lib: *std.Build.Step.Compile, flags: []const []const u8, opt: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+            const exe = s.b.addExecutable(.{
+                .name = name,
+                .root_module = cModule(s.b, rt_self.platform, opt, .{}),
+            });
+            rt_self.addIncludes(s, exe.root_module);
+            exe.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
+            exe.root_module.linkLibrary(lib);
+            exe.root_module.linkLibrary(rt_self.zstd_lib);
+            rt_self.platform.c.linkLibs(exe.root_module);
+            if (rt_self.platform.is_elf) exe.rdynamic = true;
+            if (rt_self.platform.is_windows) exe.mingw_unicode_entry_point = true;
+            return exe;
+        }
+    }.f;
 
-    // 6. ocamlrun
-    self.ocamlrun = b.addExecutable(.{
-        .name = "ocamlrun",
-        .root_module = cModule(b, p, options.optimize, .{}),
-    });
-    self.addIncludes(src, self.ocamlrun.root_module);
-    self.ocamlrun.root_module.addCSourceFile(.{ .file = gen.prims_c.lazyPath(), .flags = cflags });
-    self.ocamlrun.root_module.linkLibrary(self.libcamlrun);
-    self.ocamlrun.root_module.linkLibrary(zstd_lib);
-    p.c.linkLibs(self.ocamlrun.root_module);
-    if (p.is_elf) self.ocamlrun.rdynamic = true;
-    if (p.is_windows) self.ocamlrun.mingw_unicode_entry_point = true;
+    const prims_c = gen.prims_c.lazyPath();
+    self.libcamlrun = buildCamlrunLib(self, src, "camlrun", .static, null, bytecode_c, cflags, options.optimize);
+    self.ocamlrun = buildOcamlrunExe(self, src, "ocamlrun", prims_c, self.libcamlrun, cflags, options.optimize);
+    if (!p.is_windows) {
+        self.libcamlrun_pic = buildCamlrunLib(self, src, "camlrun_pic", .static, true, bytecode_c, cflags, options.optimize);
+        self.libcamlrun_shared = buildCamlrunLib(self, src, "camlrun_shared", .dynamic, true, bytecode_c, cflags, options.optimize);
+    }
+    if (options.variants) {
+        const d_flags = ocamlcConcat(b, cflags, &.{"-DDEBUG"});
+        const i_flags = ocamlcConcat(b, cflags, &.{"-DCAML_INSTR"});
+        const d_files = ocamlcConcat(b, bytecode_c, &.{"runtime/instrtrace.c"});
+        self.libcamlrund = buildCamlrunLib(self, src, "camlrund", .static, null, d_files, d_flags, options.optimize);
+        self.ocamlrund = buildOcamlrunExe(self, src, "ocamlrund", prims_c, self.libcamlrund.?, d_flags, options.optimize);
+        self.libcamlruni = buildCamlrunLib(self, src, "camlruni", .static, null, bytecode_c, i_flags, options.optimize);
+        self.ocamlruni = buildOcamlrunExe(self, src, "ocamlruni", prims_c, self.libcamlruni.?, i_flags, options.optimize);
+    }
 
-    // 7. libasmrun.a (targets with a native-code backend)
+    // 6. Native runtime libraries (targets with a native-code backend)
     if (p.runtimeAsmFile()) |asm_file| {
-        const asmrun = b.addLibrary(.{
-            .linkage = .static,
-            .name = "asmrun",
-            .root_module = cModule(b, p, options.optimize, .{}),
-        });
-        self.addIncludes(src, asmrun.root_module);
-        asmrun.root_module.addCSourceFiles(.{
-            .root = src.path(""),
-            .files = runtimeSources(
-                b,
-                &.{ rt.common_c_sources, os_c_sources, rt.native_only_c_sources },
-                if (std.mem.endsWith(u8, asm_file, ".S")) b.fmt("runtime/{s}", .{asm_file}) else null,
-            ),
-            .flags = ocamlcConcat(b, cflags, p.nativeDefines(b)),
-        });
-        self.libasmrun = asmrun;
+        const native_files = runtimeSources(
+            b,
+            &.{ rt.common_c_sources, os_c_sources, rt.native_only_c_sources },
+            if (std.mem.endsWith(u8, asm_file, ".S")) b.fmt("runtime/{s}", .{asm_file}) else null,
+        );
+        const nat_flags = ocamlcConcat(b, cflags, p.nativeDefines(b));
+        const buildAsmrunLib = struct {
+            fn f(rt_self: Artifacts, s: Source, name: []const u8, linkage: std.builtin.LinkMode, pic: ?bool, files: []const []const u8, flags: []const []const u8, opt: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+                const lib = s.b.addLibrary(.{
+                    .linkage = linkage,
+                    .name = name,
+                    .root_module = cModule(s.b, rt_self.platform, opt, .{ .pic = pic }),
+                });
+                rt_self.addIncludes(s, lib.root_module);
+                lib.root_module.addCSourceFiles(.{ .root = s.path(""), .files = files, .flags = flags });
+                if (linkage == .dynamic) {
+                    lib.linker_allow_shlib_undefined = true;
+                    rt_self.platform.c.linkLibs(lib.root_module);
+                }
+                return lib;
+            }
+        }.f;
+        self.libasmrun = buildAsmrunLib(self, src, "asmrun", .static, null, native_files, nat_flags, options.optimize);
+        if (!p.is_windows) {
+            self.libasmrun_pic = buildAsmrunLib(self, src, "asmrun_pic", .static, true, native_files, nat_flags, options.optimize);
+            self.libasmrun_shared = buildAsmrunLib(self, src, "asmrun_shared", .dynamic, true, native_files, nat_flags, options.optimize);
+        }
+        if (options.variants) {
+            self.libasmrund = buildAsmrunLib(self, src, "asmrund", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DDEBUG"}), options.optimize);
+            self.libasmruni = buildAsmrunLib(self, src, "asmruni", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DCAML_INSTR"}), options.optimize);
+        }
     }
 
     // 8. libcomprmarsh.a
