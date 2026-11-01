@@ -78,6 +78,10 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "ocamloptp_CMO_FILES",
         "ocamlmklib_CMO_FILES",
         "ocamlmktop_CMO_FILES",
+        "ocamldebug_DEBUGGER_OBJECTS",
+        "odoc_info_CMO_FILES",
+        "ocamldoc_CMO_FILES",
+        "OCAMLDOC_LIBMLIS",
     });
 
     const bc_vars = try queryMakeVars(io, gpa, arena, src_root, "Makefile.build_config.in", &.{
@@ -151,7 +155,19 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     };
 
     const compiler_plan = try computeCompilerPlan(io, arena, root_dir, arch_specific, &comp_lists);
-    const lex_plan = try computeLexPlan(io, arena, root_dir, comp_lists.ocamllex_cmos);
+    const lex_plan = try computeSubdirPlan(io, arena, root_dir, comp_lists.ocamllex_cmos, &.{}, &.{}, &.{}, true);
+
+    const debugger_packed = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamldebug_DEBUGGER_OBJECTS").?, ".cmo");
+    const debugger_plan = try computeSubdirPlan(io, arena, root_dir, debugger_packed, &.{"debugger/parser_aux"}, &.{ "-for-pack", "ocamldebug" }, &.{}, false);
+
+    const odoc_info_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("odoc_info_CMO_FILES").?, ".cmo");
+    const ocamldoc_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamldoc_CMO_FILES").?, ".cmo");
+    const ocamldoc_lib_keys = try normalizeKeys(io, arena, root_dir, root_vars.get("OCAMLDOC_LIBMLIS").?, ".mli");
+    var all_odoc_cmos: std.ArrayList([]const u8) = .empty;
+    try all_odoc_cmos.appendSlice(arena, odoc_info_cmos);
+    try all_odoc_cmos.appendSlice(arena, ocamldoc_cmos);
+    try all_odoc_cmos.append(arena, "ocamldoc/odoc_test");
+    const ocamldoc_plan = try computeSubdirPlan(io, arena, root_dir, all_odoc_cmos.items, &.{}, &.{}, ocamldoc_lib_keys, true);
 
     // 6. Serialize Manifest as ZON
     const manifest: Manifest = .{
@@ -188,6 +204,15 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         .lex = .{
             .plan = lex_plan,
             .ocamllex = comp_lists.ocamllex_cmos,
+        },
+        .debugger = .{
+            .plan = debugger_plan,
+            .packed_units = debugger_packed,
+        },
+        .ocamldoc = .{
+            .plan = ocamldoc_plan,
+            .odoc_info = odoc_info_cmos,
+            .ocamldoc = ocamldoc_cmos,
         },
         .otherlibs = .{
             .compflags = str_vars.get("COMPFLAGS").?,
@@ -606,11 +631,15 @@ fn cmiName(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}.cmi", .{std.fs.path.basename(key)});
 }
 
-fn computeLexPlan(
+fn computeSubdirPlan(
     io: std.Io,
     arena: std.mem.Allocator,
     root_dir: std.Io.Dir,
-    lex_cmo_keys: []const []const u8,
+    cmo_keys: []const []const u8,
+    extra_cmi_keys: []const []const u8,
+    cmo_flags: []const []const u8,
+    lib_keys: []const []const u8,
+    with_native: bool,
 ) !Manifest.Plan {
     var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
     const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
@@ -621,23 +650,31 @@ fn computeLexPlan(
     var cmo_units: std.ArrayList(Unit) = .empty;
     var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty;
 
-    for (lex_cmo_keys) |k| {
+    for (extra_cmi_keys) |k| {
+        const name = std.fs.path.basename(k);
+        const mli_src = (try resolveMliSource(io, arena, root_dir, &empty_arch, k)).?;
+        try cmi_by_basename.put(arena, try cmiName(arena, k), k);
+        try cmi_units.append(arena, .{ .kind = .intf, .unit = .{ .key = k, .name = name, .src = mli_src, .flags = cmo_flags } });
+    }
+
+    for (cmo_keys) |k| {
         const name = std.fs.path.basename(k);
         const ml_src = try resolveMlSource(arena, &empty_arch, k);
+        const dest: Manifest.Dest = if (containsStr(lib_keys, k)) .lib else .none;
         try cmi_by_basename.put(arena, try cmiName(arena, k), k);
 
         if (try resolveMliSource(io, arena, root_dir, &empty_arch, k)) |mli_src| {
-            try cmi_units.append(arena, .{ .kind = .intf, .unit = .{ .key = k, .name = name, .src = mli_src } });
-            try cmo_units.append(arena, .{ .key = k, .name = name, .src = ml_src });
+            try cmi_units.append(arena, .{ .kind = .intf, .unit = .{ .key = k, .name = name, .src = mli_src, .flags = cmo_flags, .dest = dest } });
+            try cmo_units.append(arena, .{ .key = k, .name = name, .src = ml_src, .flags = cmo_flags, .dest = dest });
         } else {
-            try cmi_units.append(arena, .{ .kind = .impl, .unit = .{ .key = k, .name = name, .src = ml_src } });
+            try cmi_units.append(arena, .{ .kind = .impl, .unit = .{ .key = k, .name = name, .src = ml_src, .flags = cmo_flags, .dest = dest } });
         }
     }
 
     return .{
         .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
-        .cmx_waves = try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, false),
+        .cmx_waves = if (with_native) try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, false) else &.{},
     };
 }
 
@@ -722,6 +759,9 @@ fn resolveMliSource(
         .{ "parsing/parser", Src{ .gen = .parser_mli } },
         .{ "bytecomp/opcodes", Src{ .gen = .opcodes_mli } },
         .{ "lex/parser", Src{ .gen = .lex_parser_mli } },
+        .{ "debugger/debugger_parser", Src{ .gen = .debugger_parser_mli } },
+        .{ "ocamldoc/odoc_text_parser", Src{ .gen = .odoc_text_parser_mli } },
+        .{ "ocamldoc/odoc_parser", Src{ .gen = .odoc_parser_mli } },
     }) |entry| {
         if (std.mem.eql(u8, key, entry[0])) return entry[1];
     }
@@ -756,6 +796,14 @@ fn resolveMlSource(
         .{ "asmcomp/emit", Src{ .gen = .emit_ml } },
         .{ "lex/parser", Src{ .gen = .lex_parser_ml } },
         .{ "lex/lexer", Src{ .gen = .lex_lexer_ml } },
+        .{ "debugger/debugger_parser", Src{ .gen = .debugger_parser_ml } },
+        .{ "debugger/debugger_lexer", Src{ .gen = .debugger_lexer_ml } },
+        .{ "ocamldoc/odoc_text_parser", Src{ .gen = .odoc_text_parser_ml } },
+        .{ "ocamldoc/odoc_parser", Src{ .gen = .odoc_parser_ml } },
+        .{ "ocamldoc/odoc_text_lexer", Src{ .gen = .odoc_text_lexer_ml } },
+        .{ "ocamldoc/odoc_lexer", Src{ .gen = .odoc_lexer_ml } },
+        .{ "ocamldoc/odoc_see_lexer", Src{ .gen = .odoc_see_lexer_ml } },
+        .{ "ocamldoc/odoc_ocamlhtml", Src{ .gen = .odoc_ocamlhtml_ml } },
     }) |entry| {
         if (std.mem.eql(u8, key, entry[0])) return entry[1];
     }

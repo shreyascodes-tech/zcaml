@@ -10,6 +10,8 @@ runtime: Runtime,
 stdlib: Stdlib,
 compiler: Compiler,
 lex: Lex,
+debugger: Debugger,
+ocamldoc: Ocamldoc,
 otherlibs: Otherlibs,
 
 pub const Version = struct {
@@ -100,6 +102,17 @@ pub const Gen = enum {
     lex_parser_mli,
     lex_lexer_ml,
     stdlib_sys_ml,
+    debugger_parser_ml,
+    debugger_parser_mli,
+    debugger_lexer_ml,
+    odoc_text_parser_ml,
+    odoc_text_parser_mli,
+    odoc_parser_ml,
+    odoc_parser_mli,
+    odoc_text_lexer_ml,
+    odoc_lexer_ml,
+    odoc_see_lexer_ml,
+    odoc_ocamlhtml_ml,
 };
 
 /// Where a unit's artifacts go in the install layout.
@@ -190,6 +203,20 @@ pub const Lex = struct {
     plan: Plan,
     /// Keys of the units linked into `ocamllex`, in link order.
     ocamllex: []const []const u8,
+};
+
+pub const Debugger = struct {
+    plan: Plan,
+    /// Keys of the units packed into `ocamldebug.cmo`, in link order.
+    packed_units: []const []const u8,
+};
+
+pub const Ocamldoc = struct {
+    plan: Plan,
+    /// Keys of the units archived into `odoc_info.{cma,cmxa}`, in link order.
+    odoc_info: []const []const u8,
+    /// Keys of the units linked into `ocamldoc`, in link order.
+    ocamldoc: []const []const u8,
 };
 
 pub const Otherlibs = struct {
