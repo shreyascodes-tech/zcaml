@@ -138,7 +138,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-          use-cache: true
+          use-cache: false
 
       - name: Ensure Rosetta 2 is available for x86_64-macos testing
         run: |
@@ -198,7 +198,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-          use-cache: true
+          use-cache: false
 
       - name: Download Windows test handoff
         uses: actions/download-artifact@v4
@@ -209,6 +209,7 @@ jobs:
       - name: Verify all Windows-hosted toolchains
         shell: bash
         run: |
+          rm -rf zig-pkg .zig-cache
           zig build -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Dverify-root="${RUNNER_TEMP}/windows-handoff/zig-out/${{ inputs.ocaml_version }}" \
@@ -243,7 +244,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-          use-cache: true
+          use-cache: false
 
       - name: Install QEMU & Wine for deferred cross-target execution
         run: |
