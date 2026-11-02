@@ -101,11 +101,11 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     const rt = m.runtime;
     const os_c_sources = if (p.is_windows) rt.win32_c_sources else rt.unix_c_sources;
 
-    const zstd_lib = b.dependency("zstd", .{
+    const zstd_lib = b.lazyDependency("zstd", .{
         .target = p.resolved,
         .optimize = .ReleaseFast,
         .pie = true,
-    }).artifact("zstd");
+    }).?.artifact("zstd");
     // OCaml links this archive through `zig cc`, not Zig's build linker.
     // Match the runtime's C flags and avoid a dependency on Zig's UBSan runtime.
     zstd_lib.root_module.sanitize_c = .off;
@@ -257,14 +257,19 @@ fn buildOcamlrunExe(
         .name = name,
         // Static musl cannot dlopen bytecode stub libraries.
         .linkage = if (rt_self.platform.resolved.result.abi.isMusl()) .dynamic else null,
-        .root_module = cModule(s.b, rt_self.platform, .{}),
+        .root_module = cModule(s.b, rt_self.platform, .{ .strip = !rt_self.platform.is_macos }),
     });
     rt_self.addIncludes(s, exe.root_module);
     exe.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
     exe.root_module.linkLibrary(lib);
     exe.root_module.linkLibrary(rt_self.zstd_lib);
     rt_self.platform.c.linkLibs(exe.root_module);
-    if (rt_self.platform.is_elf) exe.rdynamic = true;
+    if (!rt_self.platform.is_windows) {
+        exe.rdynamic = true;
+        // Disable dead-stripping on `ocamlrun` so symbols referenced only by
+        // dlopen'd stublibs (`dllunixbyt.so`, `dllthreads.so`, etc.) remain exported.
+        exe.link_gc_sections = false;
+    }
     if (rt_self.platform.is_windows) exe.mingw_unicode_entry_point = true;
     return exe;
 }

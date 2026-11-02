@@ -33,8 +33,8 @@ pub fn build(b: *std.Build) !void {
         const run_deferred_opt = b.option([]const u8, "run-deferred", "directory of deferred bundles to execute on this OS");
 
         const verify_step = b.step("verify", "verify built OCaml toolchains in zig-out/");
-        const root_dir_str = b.option([]const u8, "verify-root", "path to zig-out/<version> directory") orelse
-            b.fmt("zig-out/{t}", .{version});
+        const root_dir_opt = b.option([]const u8, "verify-root", "path to zig-out/<version> directory");
+        const root_dir_str = root_dir_opt orelse b.fmt("zig-out/{t}", .{version});
         _, const run_verify = Tools.run(b, .verify_toolchains, .{
             .root_dir = root_dir_str,
             .fixtures_dir = .of(b.path("test/fixtures")),
@@ -47,8 +47,16 @@ pub fn build(b: *std.Build) !void {
         run_verify.stdio = .inherit;
         verify_step.dependOn(&run_verify.step);
 
+        // Skip instantiating the OCaml build graph when running `verify` against prebuilt toolchains.
+        if (root_dir_opt != null or run_deferred_opt != null or save_deferred_opt != null or
+            b.user_input_options.contains("verify-jobs"))
+        {
+            return;
+        }
+
         const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
         const src = ocaml_versions.source(version) orelse return;
+        if (b.lazyDependency("zstd", .{}) == null) return;
 
         const default_extra = host_opt == null;
         var ocaml: Ocaml = .init(src, .{
