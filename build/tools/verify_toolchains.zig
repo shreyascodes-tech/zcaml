@@ -687,6 +687,15 @@ fn verifySinglePair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
         &host_wrap.env,
         "ocamlc link custom bytecode",
     );
+    if (job.host.isWindows() and !job.target.isWindows()) {
+        // Upstream OCaml's `Bytelink.fix_exec_name` checks `Sys.os_type` (host OS)
+        // and appends `.exe` when `-custom` is used and the output name has no `.`.
+        const win_custom = try std.fs.path.join(arena, &.{ work_dir_path, "test_custom_byte.exe" });
+        const dst_custom = try std.fs.path.join(arena, &.{ work_dir_path, custom_byte_name });
+        if (!pathExists(io, dst_custom) and pathExists(io, win_custom)) {
+            try Dir.cwd().rename(win_custom, Dir.cwd(), dst_custom, io);
+        }
+    }
 
     const pure_byte_name = try std.fmt.allocPrint(arena, "test_pure_byte{s}", .{t_ext});
     if (has_shared_libs) {

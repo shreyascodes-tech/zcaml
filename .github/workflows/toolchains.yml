@@ -22,8 +22,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # 1. Build the entire 39-pair matrix on a 32-core Depot Ubuntu runner,
   #    verify all 27 Linux-hosted pairs (including Linux -> Windows under Wine
-  #    and foreign Linux arches under QEMU), and stage artifacts for macOS,
-  #    Windows, and final per-pair publishing.
+  #    and foreign Linux arches under QEMU), and upload each (host, target)
+  #    .tar.zst archive directly in parallel with compressionLevel: 0.
   # ---------------------------------------------------------------------------
   build-and-test-linux:
     name: Build Matrix & Verify Linux + Wine
@@ -66,60 +66,71 @@ jobs:
             -Dverify-jobs=16 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-linux
 
-      - name: Package each (host, target) toolchain archive
+      - name: Package all 39 (host, target) toolchain archives in parallel
         run: |
           set -euo pipefail
           VER="${{ inputs.ocaml_version }}"
           OUT_DIR="${{ runner.temp }}/archives"
-          MACOS_DIR="${{ runner.temp }}/macos-handoff/zig-out/${VER}"
-          WIN_DIR="${{ runner.temp }}/windows-handoff/zig-out/${VER}"
-          mkdir -p "$OUT_DIR" "$MACOS_DIR" "$WIN_DIR"
+          mkdir -p "$OUT_DIR"
 
-          for host_dir in "zig-out/${VER}"/host-*; do
-            [[ -d "$host_dir" ]] || continue
+          pack_one() {
+            local target_dir="$1"
+            local out_dir="$2"
+            local ver="$3"
+            local host_dir
+            host_dir="$(dirname "$target_dir")"
+            local host_name
             host_name="$(basename "$host_dir")"
-            host_triple="${host_name#host-}"
+            local target_name
+            target_name="$(basename "$target_dir")"
+            local host_triple="${host_name#host-}"
+            local target_triple="${target_name#target-}"
+            local pair_id="ocaml-${ver}-host-${host_triple}-target-${target_triple}"
+            tar --sort=name -I 'zstd -3 --long=27' -cf "${out_dir}/${pair_id}.tar.zst" -C "$target_dir" .
+          }
+          export -f pack_one
 
-            if [[ "$host_triple" == *-macos* ]]; then
-              cp -a "$host_dir" "$MACOS_DIR/"
-            elif [[ "$host_triple" == *-windows* ]]; then
-              cp -a "$host_dir" "$WIN_DIR/"
-            fi
+          find "zig-out/${VER}" -mindepth 2 -maxdepth 2 -type d -name 'target-*' -print0 \
+            | xargs -0 -P 32 -I {} bash -c 'pack_one "$1" "$2" "$3"' _ {} "$OUT_DIR" "$VER"
 
-            for target_dir in "$host_dir"/target-*; do
-              [[ -d "$target_dir" ]] || continue
-              target_name="$(basename "$target_dir")"
-              target_triple="${target_name#target-}"
-              pair_id="ocaml-${VER}-host-${host_triple}-target-${target_triple}"
+      - name: Upload all 39 toolchain artifacts in parallel (compressionLevel=0)
+        uses: actions/github-script@v7
+        env:
+          ARCHIVES_DIR: ${{ runner.temp }}/archives
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { DefaultArtifactClient } = require('@actions/artifact');
 
-              tar -C "$target_dir" --zstd -cf "${OUT_DIR}/${pair_id}.tar.zst" .
-            done
-          done
+            const artifactClient = new DefaultArtifactClient();
+            const dir = process.env.ARCHIVES_DIR;
+            const files = fs.readdirSync(dir).filter(f => f.endsWith('.tar.zst')).sort();
 
-          if [[ -d "${{ runner.temp }}/deferred-from-linux" ]]; then
-            cp -a "${{ runner.temp }}/deferred-from-linux" "${{ runner.temp }}/macos-handoff/deferred-from-linux"
-          fi
+            console.log(`Uploading ${files.length} toolchain archives with concurrency=8 and compressionLevel=0...`);
+            const concurrency = 8;
+            let idx = 0;
+            async function worker() {
+              while (idx < files.length) {
+                const file = files[idx++];
+                const fullPath = path.join(dir, file);
+                const artifactName = file.replace(/\.tar\.zst$/, '');
+                await artifactClient.uploadArtifact(artifactName, [fullPath], dir, {
+                  retentionDays: 7,
+                  compressionLevel: 0,
+                });
+              }
+            }
+            await Promise.all(Array.from({ length: concurrency }, () => worker()));
+            console.log(`Uploaded all ${files.length} toolchain artifacts!`);
 
-      - name: Upload macOS test handoff
+      - name: Upload Linux -> macOS deferred test bundles
         uses: actions/upload-artifact@v4
         with:
-          name: _internal-macos-handoff
-          path: ${{ runner.temp }}/macos-handoff
+          name: _internal-deferred-from-linux
+          path: ${{ runner.temp }}/deferred-from-linux
           retention-days: 1
-
-      - name: Upload Windows test handoff
-        uses: actions/upload-artifact@v4
-        with:
-          name: _internal-windows-handoff
-          path: ${{ runner.temp }}/windows-handoff
-          retention-days: 1
-
-      - name: Upload staged toolchain archives
-        uses: actions/upload-artifact@v4
-        with:
-          name: _internal-staged-archives
-          path: ${{ runner.temp }}/archives/*.tar.zst
-          retention-days: 1
+          compression-level: 1
 
   # ---------------------------------------------------------------------------
   # 2. Verify all macOS-hosted toolchains (aarch64-macos natively + x86_64-macos
@@ -146,32 +157,58 @@ jobs:
             sudo softwareupdate --install-rosetta --agree-to-license || true
           fi
 
-      - name: Download macOS test handoff
+      - name: Download macOS toolchain archives
         uses: actions/download-artifact@v4
         with:
-          name: _internal-macos-handoff
-          path: ${{ runner.temp }}/macos-handoff
+          pattern: ocaml-${{ inputs.ocaml_version }}-host-*-macos-none-target-*
+          path: ${{ runner.temp }}/macos-archives
+          merge-multiple: true
 
-      - name: Restore executable permissions on downloaded toolchains
+      - name: Download Linux -> macOS deferred test bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: _internal-deferred-from-linux
+          path: ${{ runner.temp }}/deferred-from-linux
+
+      - name: Extract macOS toolchains in parallel
         run: |
-          chmod -R +x "${{ runner.temp }}/macos-handoff/zig-out/${{ inputs.ocaml_version }}"/host-*/target-*/bin/* || true
-          if [[ -d "${{ runner.temp }}/macos-handoff/deferred-from-linux" ]]; then
-            find "${{ runner.temp }}/macos-handoff/deferred-from-linux" -type f -exec chmod +x {} +
-          fi
+          set -euo pipefail
+          VER="${{ inputs.ocaml_version }}"
+          ROOT="${{ runner.temp }}/macos-root/zig-out/${VER}"
+          ARCHIVES="${{ runner.temp }}/macos-archives"
+          mkdir -p "$ROOT"
+
+          extract_one() {
+            local archive="$1"
+            local root="$2"
+            local ver="$3"
+            local base
+            base="$(basename "$archive" .tar.zst)"
+            local rest="${base#ocaml-${ver}-host-}"
+            local host_triple="${rest%%-target-*}"
+            local target_triple="${rest#*-target-}"
+            local dest="${root}/host-${host_triple}/target-${target_triple}"
+            mkdir -p "$dest"
+            zstd -d -c "$archive" | tar -xf - -C "$dest"
+          }
+          export -f extract_one
+
+          find "$ARCHIVES" -name '*.tar.zst' -print0 \
+            | xargs -0 -P 8 -I {} bash -c 'extract_one "$1" "$2" "$3"' _ {} "$ROOT" "$VER"
+
+          find "${{ runner.temp }}/deferred-from-linux" -type f -exec chmod +x {} +
 
       - name: Execute Linux -> macOS cross-compiled test bundles
         run: |
-          if [[ -d "${{ runner.temp }}/macos-handoff/deferred-from-linux" ]]; then
-            zig build -Docaml verify \
-              -Docaml-version=${{ inputs.ocaml_version }} \
-              -Drun-deferred=${{ runner.temp }}/macos-handoff/deferred-from-linux
-          fi
+          zig build -Docaml verify \
+            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Drun-deferred=${{ runner.temp }}/deferred-from-linux
 
       - name: Verify all macOS-hosted toolchains (aarch64-macos & x86_64-macos)
         run: |
           zig build -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
-            -Dverify-root=${{ runner.temp }}/macos-handoff/zig-out/${{ inputs.ocaml_version }} \
+            -Dverify-root=${{ runner.temp }}/macos-root/zig-out/${{ inputs.ocaml_version }} \
             -Dverify-jobs=8 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-macos
 
@@ -181,6 +218,7 @@ jobs:
           name: _internal-deferred-from-macos
           path: ${{ runner.temp }}/deferred-from-macos
           retention-days: 1
+          compression-level: 1
 
   # ---------------------------------------------------------------------------
   # 3. Verify all Windows-hosted toolchains on a Depot Windows runner.
@@ -200,19 +238,37 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
-      - name: Download Windows test handoff
+      - name: Download Windows toolchain archives
         uses: actions/download-artifact@v4
         with:
-          name: _internal-windows-handoff
-          path: ${{ runner.temp }}/windows-handoff
+          pattern: ocaml-${{ inputs.ocaml_version }}-host-x86_64-windows-gnu-target-*
+          path: ${{ runner.temp }}/windows-archives
+          merge-multiple: true
 
-      - name: Verify all Windows-hosted toolchains
+      - name: Extract & verify all Windows-hosted toolchains
         shell: bash
         run: |
+          set -euo pipefail
+          VER="${{ inputs.ocaml_version }}"
+          ROOT="${RUNNER_TEMP}/windows-root/zig-out/${VER}"
+          ARCHIVES="${RUNNER_TEMP}/windows-archives"
+          mkdir -p "$ROOT"
+
+          for archive in "$ARCHIVES"/*.tar.zst; do
+            base="$(basename "$archive" .tar.zst)"
+            rest="${base#ocaml-${VER}-host-}"
+            host_triple="${rest%%-target-*}"
+            target_triple="${rest#*-target-}"
+            dest="${ROOT}/host-${host_triple}/target-${target_triple}"
+            mkdir -p "$dest"
+            zstd -d -c "$archive" | tar -xf - -C "$dest" &
+          done
+          wait
+
           rm -rf zig-pkg .zig-cache
           zig build -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
-            -Dverify-root="${RUNNER_TEMP}/windows-handoff/zig-out/${{ inputs.ocaml_version }}" \
+            -Dverify-root="$ROOT" \
             -Dverify-jobs=4 \
             -Dsave-deferred="${RUNNER_TEMP}/deferred-from-windows"
 
@@ -222,11 +278,11 @@ jobs:
           name: _internal-deferred-from-windows
           path: ${{ runner.temp }}/deferred-from-windows
           retention-days: 1
+          compression-level: 1
 
   # ---------------------------------------------------------------------------
   # 4. Execute the Linux/Windows binaries cross-compiled by the macOS and
-  #    Windows hosts, then publish all 39 verified toolchains as individual
-  #    downloadable artifacts on the GitHub Actions run.
+  #    Windows hosts, and clean up internal handoff artifacts.
   # ---------------------------------------------------------------------------
   publish-toolchains:
     name: Publish Verified Toolchains
@@ -235,12 +291,12 @@ jobs:
       - test-macos
       - test-windows
     runs-on: depot-ubuntu-24.04-8
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Zig, QEMU & Wine
+      - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -256,6 +312,12 @@ jobs:
             curl \
             ca-certificates
 
+      - name: Restore sysroot cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zcaml
+          key: zcaml-sysroots-v2
+
       - name: Download deferred bundles from macOS & Windows hosts
         uses: actions/download-artifact@v4
         with:
@@ -265,54 +327,26 @@ jobs:
 
       - name: Execute Linux & Windows target binaries compiled on macOS & Windows
         run: |
-          if [[ -d "${{ runner.temp }}/deferred-bundles" ]]; then
-            find "${{ runner.temp }}/deferred-bundles" -type f -exec chmod +x {} +
-            zig build -Docaml verify \
-              -Docaml-version=${{ inputs.ocaml_version }} \
-              -Drun-deferred=${{ runner.temp }}/deferred-bundles
-          fi
-
-      - name: Download staged toolchain archives
-        uses: actions/download-artifact@v4
-        with:
-          name: _internal-staged-archives
-          path: ${{ runner.temp }}/archives
-
-      - name: Publish each verified (host, target) toolchain artifact to the run
-        uses: actions/github-script@v7
-        env:
-          ARCHIVES_DIR: ${{ runner.temp }}/archives
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const { DefaultArtifactClient } = require('@actions/artifact');
-
-            const artifactClient = new DefaultArtifactClient();
-            const dir = process.env.ARCHIVES_DIR;
-            const files = fs.readdirSync(dir).filter(f => f.endsWith('.tar.zst')).sort();
-
-            console.log(`Uploading ${files.length} verified toolchain artifacts...`);
-            for (const file of files) {
-              const fullPath = path.join(dir, file);
-              const artifactName = file.replace(/\.tar\.zst$/, '');
-              await artifactClient.uploadArtifact(artifactName, [fullPath], dir, {
-                retentionDays: 7,
-              });
-            }
-            console.log(`Successfully published all ${files.length} toolchain artifacts!`);
+          find "${{ runner.temp }}/deferred-bundles" -type f -exec chmod +x {} +
+          zig build -Docaml verify \
+            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Drun-deferred=${{ runner.temp }}/deferred-bundles
 
       - name: Clean up internal handoff artifacts
+        if: always()
         uses: actions/github-script@v7
+        env:
+          JOB_STATUS: ${{ job.status }}
         with:
           script: |
+            const failed = process.env.JOB_STATUS !== 'success';
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               run_id: context.runId,
             });
             for (const artifact of artifacts) {
-              if (artifact.name.startsWith('_internal-')) {
+              if (failed || artifact.name.startsWith('_internal-')) {
                 await github.rest.actions.deleteArtifact({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
