@@ -20,7 +20,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Build the entire 39-pair matrix on an 8-core Depot Ubuntu runner (4x
+  # 1. Build the entire matrix on an 8-core Depot Ubuntu runner (4x
   #    rate vs 16x on 32-core), verify all 27 Linux-hosted pairs, and upload
   #    each (host, target) .tar.zst archive in parallel with compressionLevel=0.
   # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ jobs:
             -Dverify-jobs=8 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-linux
 
-      - name: Package all 39 (host, target) toolchain archives in parallel
+      - name: Package all (host, target) toolchain archives in parallel
         run: |
           set -euo pipefail
           VER="${{ inputs.ocaml_version }}"
@@ -111,7 +111,7 @@ jobs:
           retention-days: 1
           compression-level: 1
 
-      - name: Upload all 39 toolchain artifacts in parallel (compressionLevel=0)
+      - name: Upload all toolchain artifacts in parallel (compressionLevel=0)
         uses: actions/github-script@v7
         env:
           ARCHIVES_DIR: ${{ runner.temp }}/archives
