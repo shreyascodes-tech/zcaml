@@ -6,8 +6,12 @@ const OutputFile = utils.OutputFile;
 
 const Self = @This();
 
-ocaml_src_dir: InputDir,
-out_file: OutputFile,
+const Unit = Manifest.Unit;
+const WaveUnit = Manifest.WaveUnit;
+const Src = Manifest.Src;
+
+/// x86-only backend modules (`asmcomp/x86_*`)
+const intel_archs: []const Manifest.Arch = &.{ .amd64, .i386 };
 
 const core_include_dirs = [_][]const u8{
     "utils",
@@ -26,6 +30,9 @@ const core_include_dirs = [_][]const u8{
     "tools",
 };
 
+ocaml_src_dir: InputDir,
+out_file: OutputFile,
+
 pub fn run(self: *Self, init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
@@ -35,12 +42,10 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     var root_dir = try std.Io.Dir.cwd().openDir(io, src_root, .{});
     defer root_dir.close(io);
 
-    // 1. Parse VERSION and build-aux/ocaml_version.m4
     const version_m4 = try root_dir.readFileAlloc(io, "build-aux/ocaml_version.m4", arena, .unlimited);
     const version_file = try root_dir.readFileAlloc(io, "VERSION", arena, .unlimited);
     const ver = try parseOcamlVersion(arena, version_m4, version_file);
 
-    // 2. Query root Makefile and Makefile.build_config.in via `make -s -n clean`
     const root_vars = try queryMakeVars(io, gpa, arena, src_root, "Makefile", &.{
         "ARCH=amd64",
         "NATIVE_COMPILER=true",
@@ -88,7 +93,6 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "ROOTDIR=.",
     }, &.{"OC_COMMON_COMPFLAGS"});
 
-    // 3. Query stdlib and otherlibs Makefiles
     const stdlib_basenames = root_vars.get("STDLIB_MODULE_BASENAMES").?;
     const stdlib_plan = try computeStdlibPlan(io, gpa, arena, src_root, root_dir, stdlib_basenames);
 
@@ -112,7 +116,6 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "EXTRACAMLFLAGS=", "O=o", "A=a", "S=s", "SO=so", "EXE=",
     }, &.{"COMPFLAGS"});
 
-    // 4. Runtime C sources
     const rt_common = root_vars.get("runtime_COMMON_C_SOURCES").?;
     const rt_unix = if (root_vars.get("runtime_UNIX_C_SOURCES")) |s| (if (s.len > 0) s else &[_][]const u8{"unix"}) else &[_][]const u8{"unix"};
     const rt_win32 = if (root_vars.get("runtime_WIN32_C_SOURCES")) |s| (if (s.len > 0) s else &[_][]const u8{"win32"}) else &[_][]const u8{"win32"};
@@ -135,7 +138,6 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         if (!containsStr(pervasives.items, p)) try pervasives.append(arena, p);
     }
 
-    // 5. Compiler & Tools module lists and waves
     const arch_specific = root_vars.get("ARCH_SPECIFIC").?;
     const comp_lists: CompilerLists = .{
         .ocamlcommon_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlcommon_CMO_FILES").?, ".cmo"),
@@ -169,7 +171,6 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     try all_odoc_cmos.append(arena, "ocamldoc/odoc_test");
     const ocamldoc_plan = try computeSubdirPlan(io, arena, root_dir, all_odoc_cmos.items, &.{}, &.{}, ocamldoc_lib_keys, true);
 
-    // 6. Serialize Manifest as ZON
     const manifest: Manifest = .{
         .version = ver,
         .runtime = .{
@@ -239,18 +240,112 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     try fw.flush();
 }
 
-const Unit = Manifest.Unit;
-const WaveUnit = Manifest.WaveUnit;
-const Src = Manifest.Src;
+fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_file: []const u8) !Manifest.Version {
+    const dev_str = extractM4Define(version_m4, "OCAML__DEVELOPMENT_VERSION") orelse @panic("Missing OCAML__DEVELOPMENT_VERSION");
+    const major = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MAJOR").?, 10);
+    const minor = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MINOR").?, 10);
+    const patchlevel = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_PATCHLEVEL").?, 10);
+    const release_number = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__RELEASE_NUMBER").?, 10);
+    const extra = extractM4Define(version_m4, "OCAML__VERSION_EXTRA") orelse "";
+    const extra_prefix = extractM4Define(version_m4, "OCAML__VERSION_EXTRA_PREFIX") orelse "+";
+    const version_string = if (extra.len == 0)
+        try std.fmt.allocPrint(arena, "{d}.{d}.{d}", .{ major, minor, patchlevel })
+    else
+        try std.fmt.allocPrint(arena, "{d}.{d}.{d}{s}{s}", .{ major, minor, patchlevel, extra_prefix, extra });
 
-/// x86-only backend modules (`asmcomp/x86_*`)
-const intel_archs: []const Manifest.Arch = &.{ .amd64, .i386 };
+    const first_line = std.mem.trim(u8, std.mem.sliceTo(version_file, '\n'), " \t\r");
+    if (!std.mem.eql(u8, first_line, version_string)) @panic("VERSION mismatch");
 
-fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
-    for (haystack) |s| {
-        if (std.mem.eql(u8, s, needle)) return true;
+    const prefix = extractM4Define(version_m4, "MAGIC_NUMBER__PREFIX").?;
+    const ver = extractM4Define(version_m4, "MAGIC_NUMBER__VERSION").?;
+    const exec_format = extractM4Define(version_m4, "EXEC__FORMAT").?;
+
+    return .{
+        .string = version_string,
+        .major = major,
+        .minor = minor,
+        .patchlevel = patchlevel,
+        .release_number = release_number,
+        .dev = std.mem.eql(u8, dev_str, "true"),
+        .extra = extra,
+        .extra_prefix = extra_prefix,
+        .number = major * 10000 + minor * 100 + patchlevel,
+        .magic = .{
+            .prefix = prefix,
+            .version = ver,
+            .exec_format = exec_format,
+            .exec_length = prefix.len + exec_format.len + ver.len,
+            .numbers = .{
+                .exec = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "EXEC"),
+                .cmi = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMI"),
+                .cmo = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMO"),
+                .cma = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMA"),
+                .cmx_clambda = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMX_CLAMBDA"),
+                .cmxa_clambda = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMXA_CLAMBDA"),
+                .ast_impl = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "AST_IMPL"),
+                .ast_intf = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "AST_INTF"),
+                .cmxs = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMXS"),
+                .cmt = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMT"),
+                .linear = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "LINEAR"),
+            },
+        },
+    };
+}
+
+fn extractM4Define(src: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, src, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (std.mem.startsWith(u8, line, "m4_define(")) {
+            const inner = line["m4_define(".len..];
+            const after_key = if (std.mem.startsWith(u8, inner, "[")) blk: {
+                const k_end = std.mem.indexOfScalar(u8, inner[1..], ']') orelse continue;
+                const k = inner[1 .. 1 + k_end];
+                if (!std.mem.eql(u8, k, key)) continue;
+                break :blk inner[1 + k_end + 1 ..];
+            } else blk: {
+                const k_end = std.mem.indexOfScalar(u8, inner, ',') orelse continue;
+                const k = std.mem.trim(u8, inner[0..k_end], " \t");
+                if (!std.mem.eql(u8, k, key)) continue;
+                break :blk inner[k_end..];
+            };
+
+            const comma_idx = std.mem.indexOfScalar(u8, after_key, ',') orelse continue;
+            const rhs = std.mem.trimStart(u8, after_key[comma_idx + 1 ..], " \t");
+            if (std.mem.startsWith(u8, rhs, "[")) {
+                const val_end = std.mem.indexOfScalar(u8, rhs[1..], ']') orelse continue;
+                return rhs[1 .. 1 + val_end];
+            }
+        }
     }
-    return false;
+    return null;
+}
+
+fn extractMagicNumber(
+    arena: std.mem.Allocator,
+    version_m4: []const u8,
+    prefix: []const u8,
+    ver: []const u8,
+    exec_fmt: []const u8,
+    kind: []const u8,
+) ![]const u8 {
+    var lines = std.mem.splitScalar(u8, version_m4, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (std.mem.startsWith(u8, line, "DEFINE_MAGIC_NUMBER([")) {
+            const inner = line["DEFINE_MAGIC_NUMBER([".len..];
+            const k_end = std.mem.indexOfScalar(u8, inner, ']') orelse continue;
+            if (!std.mem.eql(u8, inner[0..k_end], kind)) continue;
+            const rest = std.mem.trim(u8, inner[k_end + 1 ..], " \t,");
+            if (std.mem.startsWith(u8, rest, "[")) {
+                const c_end = std.mem.indexOfScalar(u8, rest[1..], ']') orelse continue;
+                return std.fmt.allocPrint(arena, "{s}{s}{s}", .{ prefix, rest[1 .. 1 + c_end], ver });
+            } else if (std.mem.startsWith(u8, rest, "EXEC__FORMAT")) {
+                return std.fmt.allocPrint(arena, "{s}{s}{s}", .{ prefix, exec_fmt, ver });
+            }
+        }
+    }
+    @panic("Magic number not found");
 }
 
 fn queryMakeVars(
@@ -264,7 +359,7 @@ fn queryMakeVars(
 ) !std.StringHashMapUnmanaged([]const []const u8) {
     var stdin_buf: std.ArrayList(u8) = .empty;
     for (var_names) |vname| {
-        try stdin_buf.appendSlice(arena, try std.fmt.allocPrint(arena, "$(info ZCAML:{s}=$({s}))\n", .{ vname, vname }));
+        try stdin_buf.print(arena, "$(info ZCAML:{s}=$({s}))\n", .{ vname, vname });
     }
     return queryMakeRaw(io, gpa, arena, src_root, makefile_rel, make_overrides, stdin_buf.items);
 }
@@ -334,6 +429,144 @@ fn queryMakeRaw(
     }
 
     return map;
+}
+
+const StdlibPlan = struct {
+    compflags: []const []const u8,
+    plan: Manifest.Plan,
+    /// module names archived into stdlib.cma, in link order
+    cma: []const []const u8,
+};
+
+fn computeStdlibPlan(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    src_root: []const u8,
+    root_dir: std.Io.Dir,
+    basenames: []const []const u8,
+) !StdlibPlan {
+    // Query COMPFLAGS and ./Compflags for every stdlib unit in a single `make` invocation
+    var make_stdin: std.ArrayList(u8) = .empty;
+    try make_stdin.appendSlice(arena, "$(info ZCAML:COMPFLAGS=$(COMPFLAGS))\n");
+    for (basenames) |base| {
+        const mod_name = try stdlibModuleName(arena, base);
+        for ([_][]const u8{ "cmi", "cmo", "cmx" }) |ext| {
+            try make_stdin.print(arena, "$(info ZCAML:{s}.{s}=$(shell ./Compflags {s}.{s}))\n", .{ mod_name, ext, mod_name, ext });
+        }
+    }
+    for ([_][]const u8{ "cmo", "cmx" }) |ext| {
+        try make_stdin.print(arena, "$(info ZCAML:std_exit.{s}=$(shell ./Compflags std_exit.{s}))\n", .{ ext, ext });
+    }
+
+    const stdlib_vars = try queryMakeRaw(io, gpa, arena, src_root, "stdlib/Makefile", &.{
+        "O=o", "A=a", "S=s", "SO=so", "EXE=",
+    }, make_stdin.items);
+
+    const stdlib_depend = try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited);
+    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
+    try parseDependUnionInto(arena, stdlib_depend, "", &dep_map);
+
+    var wave_units: std.ArrayList(WaveUnit) = .empty;
+    var cmo_units: std.ArrayList(Unit) = .empty;
+    var cma: std.ArrayList([]const u8) = .empty;
+    var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty;
+
+    for (basenames) |base| {
+        const mod_name = try stdlibModuleName(arena, base);
+        const is_stdlib = std.mem.eql(u8, base, "stdlib");
+        const is_labels = std.mem.endsWith(u8, base, "Labels");
+        const cmi_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name})) orelse &.{};
+        const cmo_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name})) orelse &.{};
+        const cmx_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name})) orelse &.{};
+
+        const ml_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.ml", .{base});
+        const mli_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.mli", .{base});
+        const ml_src: Src = if (std.mem.eql(u8, base, "sys"))
+            .{ .gen = .stdlib_sys_ml }
+        else if (is_stdlib)
+            .{ .expanded = ml_rel }
+        else
+            .{ .upstream = ml_rel };
+
+        try cmi_by_basename.put(arena, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}), mod_name);
+        if (!is_stdlib and !std.mem.eql(u8, mod_name, "camlinternalFormatBasics")) {
+            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}), &.{"stdlib.cmi"});
+            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name}), &.{"stdlib.cmi"});
+            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name}), &.{"stdlib.cmx"});
+        }
+
+        if (fileExists(io, root_dir, mli_rel)) {
+            const mli_src: Src = if (is_stdlib or is_labels) .{ .expanded = mli_rel } else .{ .upstream = mli_rel };
+            try wave_units.append(arena, .{ .kind = .intf, .unit = .{
+                .key = mod_name,
+                .name = mod_name,
+                .src = mli_src,
+                .flags = cmi_flags,
+                .dest = .lib,
+            } });
+            try cmo_units.append(arena, .{
+                .key = mod_name,
+                .name = mod_name,
+                .src = ml_src,
+                .flags = cmo_flags,
+                .native_flags = cmx_flags,
+                .dest = .lib,
+            });
+        } else {
+            try wave_units.append(arena, .{ .kind = .impl, .unit = .{
+                .key = mod_name,
+                .name = mod_name,
+                .src = ml_src,
+                .flags = cmi_flags,
+                .native_flags = cmx_flags,
+                .dest = .lib,
+            } });
+        }
+        try cma.append(arena, mod_name);
+    }
+
+    // std_exit is not part of stdlib.cma; it is linked last into every executable.
+    const std_exit_flags = stdlib_vars.get("std_exit.cmo") orelse &.{};
+    try cmi_by_basename.put(arena, "std_exit.cmi", "std_exit");
+    try addDepsToMap(arena, &dep_map, "std_exit.cmi", &.{"stdlib.cmi"});
+    try addDepsToMap(arena, &dep_map, "std_exit.cmx", &.{"stdlib.cmx"});
+    if (fileExists(io, root_dir, "stdlib/std_exit.mli")) {
+        try wave_units.append(arena, .{ .kind = .intf, .unit = .{
+            .key = "std_exit",
+            .name = "std_exit",
+            .src = .{ .upstream = "stdlib/std_exit.mli" },
+            .flags = std_exit_flags,
+            .dest = .lib,
+        } });
+    }
+    try cmo_units.append(arena, .{
+        .key = "std_exit",
+        .name = "std_exit",
+        .src = .{ .upstream = "stdlib/std_exit.ml" },
+        .flags = std_exit_flags,
+        .native_flags = stdlib_vars.get("std_exit.cmx") orelse &.{},
+        .dest = .lib,
+    });
+
+    return .{
+        .compflags = stdlib_vars.get("COMPFLAGS").?,
+        .plan = .{
+            .cmi_waves = try sortCmiWaves(arena, wave_units.items, &dep_map, &cmi_by_basename),
+            .cmo_units = cmo_units.items,
+            .cmx_waves = try nativeWaves(arena, wave_units.items, cmo_units.items, &dep_map, false),
+        },
+        .cma = cma.items,
+    };
+}
+
+fn stdlibModuleName(arena: std.mem.Allocator, basename: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, basename, "stdlib") or std.mem.startsWith(u8, basename, "camlinternal")) {
+        return basename;
+    }
+    var cap = try arena.dupe(u8, basename);
+    cap[0] = std.ascii.toUpper(cap[0]);
+    return std.fmt.allocPrint(arena, "stdlib__{s}", .{cap});
 }
 
 const CompilerLists = struct {
@@ -428,15 +661,6 @@ fn computeCompilerPlan(
     var cmi_only_keys: std.ArrayList([]const u8) = .empty;
     var cmi_only_set: std.StringHashMapUnmanaged(void) = .empty;
 
-    const addCmoKey = struct {
-        fn call(a: std.mem.Allocator, list: *std.ArrayList([]const u8), set: *std.StringHashMapUnmanaged(void), k: []const u8) !void {
-            if (!set.contains(k)) {
-                try set.put(a, k, {});
-                try list.append(a, k);
-            }
-        }
-    }.call;
-
     const cmo_slices = [_][]const []const u8{
         lists.ocamlcommon_cmos,
         &.{ "utils/config_main" },
@@ -466,7 +690,12 @@ fn computeCompilerPlan(
         },
     };
     for (cmo_slices) |slice| {
-        for (slice) |k| try addCmoKey(arena, &cmo_keys, &cmo_key_set, k);
+        for (slice) |k| {
+            if (!cmo_key_set.contains(k)) {
+                try cmo_key_set.put(arena, k, {});
+                try cmo_keys.append(arena, k);
+            }
+        }
     }
 
     const cmi_slices = [_][]const []const u8{
@@ -557,61 +786,6 @@ fn computeCompilerPlan(
     };
 }
 
-fn nativeToplevelKeys(arena: std.mem.Allocator, keys: []const []const u8) ![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    for (keys) |key| {
-        if (std.mem.startsWith(u8, key, "toplevel/byte/")) {
-            if (std.mem.endsWith(u8, key, "/topeval")) try out.append(arena, "toplevel/native/tophooks");
-            try out.append(arena, try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{std.fs.path.basename(key)}));
-        } else try out.append(arena, key);
-    }
-    return out.items;
-}
-
-fn nativeWaves(arena: std.mem.Allocator, cmis: []const WaveUnit, cmos: []const Unit, deps: *const std.StringHashMapUnmanaged([]const []const u8), compiler_plan: bool) ![]const []const Unit {
-    var units: std.ArrayList(Unit) = .empty;
-    for (cmis) |wu| if (wu.kind == .impl) {
-        try units.append(arena, wu.unit);
-    };
-    for (cmos) |original| {
-        var u = original;
-        if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/byte/")) {
-            u.key = try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{u.name});
-            u.src = .{ .upstream = try std.fmt.allocPrint(arena, "{s}.ml", .{u.key}) };
-        }
-        try units.append(arena, u);
-    }
-    if (compiler_plan) try units.append(arena, compilerUnit("toplevel/native/tophooks", .{ .upstream = "toplevel/native/tophooks.ml" }));
-    var pending: std.StringHashMapUnmanaged(void) = .empty;
-    for (units.items) |u| try pending.put(arena, try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key}), {});
-    var waves: std.ArrayList([]const Unit) = .empty;
-    while (pending.count() != 0) {
-        var wave: std.ArrayList(Unit) = .empty;
-        for (units.items) |u| {
-            const key = try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key});
-            if (!pending.contains(key)) continue;
-            var ready = true;
-            if (deps.get(key)) |imports| for (imports) |dep| {
-                const actual = if (compiler_plan and (std.mem.eql(u8, dep, "toplevel/topmain.cmi") or std.mem.eql(u8, dep, "toplevel/topeval.cmi") or std.mem.eql(u8, dep, "toplevel/trace.cmi")))
-                    try std.fmt.allocPrint(arena, "toplevel/native/{s}.cmx", .{std.fs.path.stem(dep)})
-                else if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/") and !std.mem.startsWith(u8, u.key, "toplevel/byte/") and std.mem.startsWith(u8, dep, "toplevel/byte/"))
-                    try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{std.fs.path.basename(dep)})
-                else
-                    dep;
-                if (!std.mem.eql(u8, key, actual) and pending.contains(actual)) {
-                    ready = false;
-                    break;
-                }
-            };
-            if (ready) try wave.append(arena, u);
-        }
-        if (wave.items.len == 0) @panic("native implementation dependency cycle");
-        for (wave.items) |u| _ = pending.remove(try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key}));
-        try waves.append(arena, wave.items);
-    }
-    return waves.items;
-}
-
 fn compilerUnit(key: []const u8, src: Src) Unit {
     return .{
         .key = key,
@@ -625,10 +799,6 @@ fn compilerUnit(key: []const u8, src: Src) Unit {
         else
             .lib,
     };
-}
-
-fn cmiName(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "{s}.cmi", .{std.fs.path.basename(key)});
 }
 
 fn computeSubdirPlan(
@@ -676,6 +846,17 @@ fn computeSubdirPlan(
         .cmo_units = cmo_units.items,
         .cmx_waves = if (with_native) try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, false) else &.{},
     };
+}
+
+fn nativeToplevelKeys(arena: std.mem.Allocator, keys: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (keys) |key| {
+        if (std.mem.startsWith(u8, key, "toplevel/byte/")) {
+            if (std.mem.endsWith(u8, key, "/topeval")) try out.append(arena, "toplevel/native/tophooks");
+            try out.append(arena, try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{std.fs.path.basename(key)}));
+        } else try out.append(arena, key);
+    }
+    return out.items;
 }
 
 fn sortCmiWaves(
@@ -741,6 +922,54 @@ fn sortCmiWaves(
     }
 
     return waves.items;
+}
+
+fn nativeWaves(arena: std.mem.Allocator, cmis: []const WaveUnit, cmos: []const Unit, deps: *const std.StringHashMapUnmanaged([]const []const u8), compiler_plan: bool) ![]const []const Unit {
+    var units: std.ArrayList(Unit) = .empty;
+    for (cmis) |wu| if (wu.kind == .impl) {
+        try units.append(arena, wu.unit);
+    };
+    for (cmos) |original| {
+        var u = original;
+        if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/byte/")) {
+            u.key = try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{u.name});
+            u.src = .{ .upstream = try std.fmt.allocPrint(arena, "{s}.ml", .{u.key}) };
+        }
+        try units.append(arena, u);
+    }
+    if (compiler_plan) try units.append(arena, compilerUnit("toplevel/native/tophooks", .{ .upstream = "toplevel/native/tophooks.ml" }));
+    var pending: std.StringHashMapUnmanaged(void) = .empty;
+    for (units.items) |u| try pending.put(arena, try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key}), {});
+    var waves: std.ArrayList([]const Unit) = .empty;
+    while (pending.count() != 0) {
+        var wave: std.ArrayList(Unit) = .empty;
+        for (units.items) |u| {
+            const key = try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key});
+            if (!pending.contains(key)) continue;
+            var ready = true;
+            if (deps.get(key)) |imports| for (imports) |dep| {
+                const actual = if (compiler_plan and (std.mem.eql(u8, dep, "toplevel/topmain.cmi") or std.mem.eql(u8, dep, "toplevel/topeval.cmi") or std.mem.eql(u8, dep, "toplevel/trace.cmi")))
+                    try std.fmt.allocPrint(arena, "toplevel/native/{s}.cmx", .{std.fs.path.stem(dep)})
+                else if (compiler_plan and std.mem.startsWith(u8, u.key, "toplevel/") and !std.mem.startsWith(u8, u.key, "toplevel/byte/") and std.mem.startsWith(u8, dep, "toplevel/byte/"))
+                    try std.fmt.allocPrint(arena, "toplevel/native/{s}", .{std.fs.path.basename(dep)})
+                else
+                    dep;
+                if (!std.mem.eql(u8, key, actual) and pending.contains(actual)) {
+                    ready = false;
+                    break;
+                }
+            };
+            if (ready) try wave.append(arena, u);
+        }
+        if (wave.items.len == 0) @panic("native implementation dependency cycle");
+        for (wave.items) |u| _ = pending.remove(try std.fmt.allocPrint(arena, "{s}.cmx", .{u.key}));
+        try waves.append(arena, wave.items);
+    }
+    return waves.items;
+}
+
+fn cmiName(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}.cmi", .{std.fs.path.basename(key)});
 }
 
 fn resolveMliSource(
@@ -889,258 +1118,11 @@ fn normalizeDepTok(arena: std.mem.Allocator, subdir_prefix: []const u8, tok: []c
     return tok;
 }
 
-fn stdlibModuleName(arena: std.mem.Allocator, basename: []const u8) ![]const u8 {
-    if (std.mem.eql(u8, basename, "stdlib") or std.mem.startsWith(u8, basename, "camlinternal")) {
-        return basename;
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| {
+        if (std.mem.eql(u8, s, needle)) return true;
     }
-    var cap = try arena.dupe(u8, basename);
-    cap[0] = std.ascii.toUpper(cap[0]);
-    return std.fmt.allocPrint(arena, "stdlib__{s}", .{cap});
-}
-
-const StdlibPlan = struct {
-    compflags: []const []const u8,
-    plan: Manifest.Plan,
-    /// module names archived into stdlib.cma, in link order
-    cma: []const []const u8,
-};
-
-fn computeStdlibPlan(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    arena: std.mem.Allocator,
-    src_root: []const u8,
-    root_dir: std.Io.Dir,
-    basenames: []const []const u8,
-) !StdlibPlan {
-    // Query COMPFLAGS and ./Compflags for every stdlib unit in a single `make` invocation
-    var make_stdin: std.ArrayList(u8) = .empty;
-    try make_stdin.appendSlice(arena, "$(info ZCAML:COMPFLAGS=$(COMPFLAGS))\n");
-    for (basenames) |base| {
-        const mod_name = try stdlibModuleName(arena, base);
-        for ([_][]const u8{ "cmi", "cmo", "cmx" }) |ext| {
-            try make_stdin.appendSlice(arena, try std.fmt.allocPrint(
-                arena,
-                "$(info ZCAML:{s}.{s}=$(shell ./Compflags {s}.{s}))\n",
-                .{ mod_name, ext, mod_name, ext },
-            ));
-        }
-    }
-    for ([_][]const u8{ "cmo", "cmx" }) |ext| {
-        try make_stdin.appendSlice(arena, try std.fmt.allocPrint(
-            arena,
-            "$(info ZCAML:std_exit.{s}=$(shell ./Compflags std_exit.{s}))\n",
-            .{ ext, ext },
-        ));
-    }
-
-    const stdlib_vars = try queryMakeRaw(io, gpa, arena, src_root, "stdlib/Makefile", &.{
-        "O=o", "A=a", "S=s", "SO=so", "EXE=",
-    }, make_stdin.items);
-
-    const stdlib_depend = try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited);
-    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    try parseDependUnionInto(arena, stdlib_depend, "", &dep_map);
-
-    var wave_units: std.ArrayList(WaveUnit) = .empty;
-    var cmo_units: std.ArrayList(Unit) = .empty;
-    var cma: std.ArrayList([]const u8) = .empty;
-    var cmi_by_basename: std.StringHashMapUnmanaged([]const u8) = .empty;
-
-    for (basenames) |base| {
-        const mod_name = try stdlibModuleName(arena, base);
-        const is_stdlib = std.mem.eql(u8, base, "stdlib");
-        const is_labels = std.mem.endsWith(u8, base, "Labels");
-        const cmi_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name})) orelse &.{};
-        const cmo_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name})) orelse &.{};
-        const cmx_flags = stdlib_vars.get(try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name})) orelse &.{};
-
-        const ml_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.ml", .{base});
-        const mli_rel = try std.fmt.allocPrint(arena, "stdlib/{s}.mli", .{base});
-        const ml_src: Src = if (std.mem.eql(u8, base, "sys"))
-            .{ .gen = .stdlib_sys_ml }
-        else if (is_stdlib)
-            .{ .expanded = ml_rel }
-        else
-            .{ .upstream = ml_rel };
-
-        try cmi_by_basename.put(arena, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}), mod_name);
-        if (!is_stdlib and !std.mem.eql(u8, mod_name, "camlinternalFormatBasics")) {
-            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmi", .{mod_name}), &.{"stdlib.cmi"});
-            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmo", .{mod_name}), &.{"stdlib.cmi"});
-            try addDepsToMap(arena, &dep_map, try std.fmt.allocPrint(arena, "{s}.cmx", .{mod_name}), &.{"stdlib.cmx"});
-        }
-
-        if (fileExists(io, root_dir, mli_rel)) {
-            const mli_src: Src = if (is_stdlib or is_labels) .{ .expanded = mli_rel } else .{ .upstream = mli_rel };
-            try wave_units.append(arena, .{ .kind = .intf, .unit = .{
-                .key = mod_name,
-                .name = mod_name,
-                .src = mli_src,
-                .flags = cmi_flags,
-                .dest = .lib,
-            } });
-            try cmo_units.append(arena, .{
-                .key = mod_name,
-                .name = mod_name,
-                .src = ml_src,
-                .flags = cmo_flags,
-                .native_flags = cmx_flags,
-                .dest = .lib,
-            });
-        } else {
-            try wave_units.append(arena, .{ .kind = .impl, .unit = .{
-                .key = mod_name,
-                .name = mod_name,
-                .src = ml_src,
-                .flags = cmi_flags,
-                .native_flags = cmx_flags,
-                .dest = .lib,
-            } });
-        }
-        try cma.append(arena, mod_name);
-    }
-
-    // std_exit is not part of stdlib.cma; it is linked last into every executable.
-    const std_exit_flags = stdlib_vars.get("std_exit.cmo") orelse &.{};
-    try cmi_by_basename.put(arena, "std_exit.cmi", "std_exit");
-    try addDepsToMap(arena, &dep_map, "std_exit.cmi", &.{"stdlib.cmi"});
-    try addDepsToMap(arena, &dep_map, "std_exit.cmx", &.{"stdlib.cmx"});
-    if (fileExists(io, root_dir, "stdlib/std_exit.mli")) {
-        try wave_units.append(arena, .{ .kind = .intf, .unit = .{
-            .key = "std_exit",
-            .name = "std_exit",
-            .src = .{ .upstream = "stdlib/std_exit.mli" },
-            .flags = std_exit_flags,
-            .dest = .lib,
-        } });
-    }
-    try cmo_units.append(arena, .{
-        .key = "std_exit",
-        .name = "std_exit",
-        .src = .{ .upstream = "stdlib/std_exit.ml" },
-        .flags = std_exit_flags,
-        .native_flags = stdlib_vars.get("std_exit.cmx") orelse &.{},
-        .dest = .lib,
-    });
-
-    return .{
-        .compflags = stdlib_vars.get("COMPFLAGS").?,
-        .plan = .{
-            .cmi_waves = try sortCmiWaves(arena, wave_units.items, &dep_map, &cmi_by_basename),
-            .cmo_units = cmo_units.items,
-            .cmx_waves = try nativeWaves(arena, wave_units.items, cmo_units.items, &dep_map, false),
-        },
-        .cma = cma.items,
-    };
-}
-
-fn parseOcamlVersion(arena: std.mem.Allocator, version_m4: []const u8, version_file: []const u8) !Manifest.Version {
-    const dev_str = extractM4Define(version_m4, "OCAML__DEVELOPMENT_VERSION") orelse @panic("Missing OCAML__DEVELOPMENT_VERSION");
-    const major = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MAJOR").?, 10);
-    const minor = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_MINOR").?, 10);
-    const patchlevel = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__VERSION_PATCHLEVEL").?, 10);
-    const release_number = try std.fmt.parseInt(u32, extractM4Define(version_m4, "OCAML__RELEASE_NUMBER").?, 10);
-    const extra = extractM4Define(version_m4, "OCAML__VERSION_EXTRA") orelse "";
-    const extra_prefix = extractM4Define(version_m4, "OCAML__VERSION_EXTRA_PREFIX") orelse "+";
-    const version_string = if (extra.len == 0)
-        try std.fmt.allocPrint(arena, "{d}.{d}.{d}", .{ major, minor, patchlevel })
-    else
-        try std.fmt.allocPrint(arena, "{d}.{d}.{d}{s}{s}", .{ major, minor, patchlevel, extra_prefix, extra });
-
-    const first_line = std.mem.trim(u8, std.mem.sliceTo(version_file, '\n'), " \t\r");
-    if (!std.mem.eql(u8, first_line, version_string)) @panic("VERSION mismatch");
-
-    const prefix = extractM4Define(version_m4, "MAGIC_NUMBER__PREFIX").?;
-    const ver = extractM4Define(version_m4, "MAGIC_NUMBER__VERSION").?;
-    const exec_format = extractM4Define(version_m4, "EXEC__FORMAT").?;
-
-    return .{
-        .string = version_string,
-        .major = major,
-        .minor = minor,
-        .patchlevel = patchlevel,
-        .release_number = release_number,
-        .dev = std.mem.eql(u8, dev_str, "true"),
-        .extra = extra,
-        .extra_prefix = extra_prefix,
-        .number = major * 10000 + minor * 100 + patchlevel,
-        .magic = .{
-            .prefix = prefix,
-            .version = ver,
-            .exec_format = exec_format,
-            .exec_length = prefix.len + exec_format.len + ver.len,
-            .numbers = .{
-                .exec = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "EXEC"),
-                .cmi = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMI"),
-                .cmo = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMO"),
-                .cma = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMA"),
-                .cmx_clambda = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMX_CLAMBDA"),
-                .cmxa_clambda = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMXA_CLAMBDA"),
-                .ast_impl = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "AST_IMPL"),
-                .ast_intf = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "AST_INTF"),
-                .cmxs = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMXS"),
-                .cmt = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "CMT"),
-                .linear = try extractMagicNumber(arena, version_m4, prefix, ver, exec_format, "LINEAR"),
-            },
-        },
-    };
-}
-
-fn extractM4Define(src: []const u8, key: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, src, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (std.mem.startsWith(u8, line, "m4_define(")) {
-            const inner = line["m4_define(".len..];
-            const after_key = if (std.mem.startsWith(u8, inner, "[")) blk: {
-                const k_end = std.mem.indexOfScalar(u8, inner[1..], ']') orelse continue;
-                const k = inner[1 .. 1 + k_end];
-                if (!std.mem.eql(u8, k, key)) continue;
-                break :blk inner[1 + k_end + 1 ..];
-            } else blk: {
-                const k_end = std.mem.indexOfScalar(u8, inner, ',') orelse continue;
-                const k = std.mem.trim(u8, inner[0..k_end], " \t");
-                if (!std.mem.eql(u8, k, key)) continue;
-                break :blk inner[k_end..];
-            };
-
-            const comma_idx = std.mem.indexOfScalar(u8, after_key, ',') orelse continue;
-            const rhs = std.mem.trimStart(u8, after_key[comma_idx + 1 ..], " \t");
-            if (std.mem.startsWith(u8, rhs, "[")) {
-                const val_end = std.mem.indexOfScalar(u8, rhs[1..], ']') orelse continue;
-                return rhs[1 .. 1 + val_end];
-            }
-        }
-    }
-    return null;
-}
-
-fn extractMagicNumber(
-    arena: std.mem.Allocator,
-    version_m4: []const u8,
-    prefix: []const u8,
-    ver: []const u8,
-    exec_fmt: []const u8,
-    kind: []const u8,
-) ![]const u8 {
-    var lines = std.mem.splitScalar(u8, version_m4, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (std.mem.startsWith(u8, line, "DEFINE_MAGIC_NUMBER([")) {
-            const inner = line["DEFINE_MAGIC_NUMBER([".len..];
-            const k_end = std.mem.indexOfScalar(u8, inner, ']') orelse continue;
-            if (!std.mem.eql(u8, inner[0..k_end], kind)) continue;
-            const rest = std.mem.trim(u8, inner[k_end + 1 ..], " \t,");
-            if (std.mem.startsWith(u8, rest, "[")) {
-                const c_end = std.mem.indexOfScalar(u8, rest[1..], ']') orelse continue;
-                return std.fmt.allocPrint(arena, "{s}{s}{s}", .{ prefix, rest[1 .. 1 + c_end], ver });
-            } else if (std.mem.startsWith(u8, rest, "EXEC__FORMAT")) {
-                return std.fmt.allocPrint(arena, "{s}{s}{s}", .{ prefix, exec_fmt, ver });
-            }
-        }
-    }
-    @panic("Magic number not found");
+    return false;
 }
 
 fn fileExists(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) bool {

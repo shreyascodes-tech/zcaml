@@ -13,14 +13,20 @@ const Versions = @This();
 
 b: *std.Build,
 
+/// A supported OCaml release, e.g. `.@"5.5.1"`. Declaration order follows `build.zig.zon`.
+pub const Version = @Enum(u8, .exhaustive, names: {
+    var names: [dep_names.len][]const u8 = undefined;
+    for (&names, dep_names) |*n, d| n.* = versionName(d);
+    break :names &names;
+}, &std.simd.iota(u8, dep_names.len));
+
+pub const all = std.enums.values(Version);
+
+/// Newest release (first `ocaml_*` dependency).
+pub const latest: Version = @fromBackingInt(@as(u8, 0));
+
 pub fn init(b: *std.Build) Versions {
     return .{ .b = b };
-}
-
-/// The source tree of `v`, or `null` if the (lazy) dependency hasn't been fetched
-/// yet; zig fetches it and re-runs the build script.
-pub fn dependency(self: Versions, v: Version) ?*std.Build.Dependency {
-    return self.b.lazyDependency(dependencyName(v), .{});
 }
 
 /// The source tree of `v` with its manifest loaded, or `null` if not fetched yet.
@@ -29,6 +35,31 @@ pub fn source(self: Versions, v: Version) ?*const Source {
     const src = self.b.allocator.create(Source) catch @panic("OOM");
     src.* = .load(self.b, dep, v);
     return src;
+}
+
+/// The source tree of `v`, or `null` if the (lazy) dependency hasn't been fetched
+/// yet; zig fetches it and re-runs the build script.
+pub fn dependency(self: Versions, v: Version) ?*std.Build.Dependency {
+    return self.b.lazyDependency(dependencyName(v), .{});
+}
+
+/// Path of the manifest relative to the build root, e.g. `build/manifests/v5_5_1.zon`.
+pub fn manifestPath(v: Version) []const u8 {
+    return switch (v) {
+        inline else => |tag| comptime "build/manifests/v" ++ slug(tag) ++ ".zon",
+    };
+}
+
+/// Name of the source dependency in `build.zig.zon`, e.g. `ocaml_5_5_1`.
+pub fn dependencyName(v: Version) []const u8 {
+    return switch (v) {
+        inline else => |tag| comptime dep_names[@backingInt(tag)],
+    };
+}
+
+/// `5_5_1`
+pub fn slug(v: Version) []const u8 {
+    return dependencyName(v)[dep_prefix.len..];
 }
 
 const dep_prefix = "ocaml_";
@@ -51,34 +82,3 @@ fn versionName(comptime dep: []const u8) []const u8 {
         return &final;
     }
 }
-
-/// A supported OCaml release, e.g. `.@"5.5.1"`. Declaration order follows `build.zig.zon`.
-pub const Version = @Enum(u8, .exhaustive, names: {
-    var names: [dep_names.len][]const u8 = undefined;
-    for (&names, dep_names) |*n, d| n.* = versionName(d);
-    break :names &names;
-}, &std.simd.iota(u8, dep_names.len));
-
-pub const all = std.enums.values(Version);
-
-/// Name of the source dependency in `build.zig.zon`, e.g. `ocaml_5_5_1`.
-pub fn dependencyName(v: Version) []const u8 {
-    return switch (v) {
-        inline else => |tag| comptime dep_names[@backingInt(tag)],
-    };
-}
-
-/// `5_5_1`
-pub fn slug(v: Version) []const u8 {
-    return dependencyName(v)[dep_prefix.len..];
-}
-
-/// Path of the manifest relative to the build root, e.g. `build/manifests/v5_5_1.zon`.
-pub fn manifestPath(v: Version) []const u8 {
-    return switch (v) {
-        inline else => |tag| comptime "build/manifests/v" ++ slug(tag) ++ ".zon",
-    };
-}
-
-/// Newest release (first `ocaml_*` dependency).
-pub const latest: Version = @fromBackingInt(@intCast(0));

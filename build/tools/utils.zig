@@ -1,3 +1,9 @@
+//! Build-time and run-time file and directory wrappers for generator tools.
+//!
+//! Types here operate in two modes governed by `mode`:
+//! - `.build`: used inside `build.zig` to configure tool execution steps (`.of(...)`, `.lazyPath()`).
+//! - `.run`: used inside tool `run(...)` methods to access CLI arguments and perform I/O (`.path()`, `.open(...)`, etc.).
+
 const std = @import("std");
 
 pub var mode: enum { build, run } = .build;
@@ -7,12 +13,12 @@ pub const InputFile = union(enum) {
     cli: []const u8,
 
     pub fn of(lp: std.Build.LazyPath) InputFile {
-        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        std.debug.assert(mode == .build);
         return .{ .lazy = lp };
     }
 
     pub fn path(self: InputFile) []const u8 {
-        std.debug.assert(mode == .run); // must only be used in the run handlers of the commands
+        std.debug.assert(mode == .run);
         return self.cli;
     }
 
@@ -42,23 +48,22 @@ pub const OutputFile = union(enum) {
     cli: []const u8,
 
     pub fn of(basename: []const u8) OutputFile {
-        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        std.debug.assert(mode == .build);
         return .{
             .lazy = .{
                 .basename = basename,
-                // safety: the path is set by the run handler. any use of this path before calling run is illegal
                 .path = undefined,
             },
         };
     }
 
     pub fn lazyPath(self: OutputFile) std.Build.LazyPath {
-        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        std.debug.assert(mode == .build);
         return self.lazy.path;
     }
 
     pub fn path(self: OutputFile) []const u8 {
-        std.debug.assert(mode == .run); // must only be used in the run handlers of the commands
+        std.debug.assert(mode == .run);
         return self.cli;
     }
 
@@ -84,12 +89,12 @@ pub const InputDir = union(enum) {
     cli: []const u8,
 
     pub fn of(lp: std.Build.LazyPath) InputDir {
-        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        std.debug.assert(mode == .build);
         return .{ .lazy = lp };
     }
 
     pub fn path(self: InputDir) []const u8 {
-        std.debug.assert(mode == .run); // must only be used in the run handlers of the commands
+        std.debug.assert(mode == .run);
         return self.cli;
     }
 
@@ -106,23 +111,22 @@ pub const OutputDir = union(enum) {
     cli: []const u8,
 
     pub fn of(basename: []const u8) OutputDir {
-        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        std.debug.assert(mode == .build);
         return .{
             .lazy = .{
                 .basename = basename,
-                // safety: the path is set by the run handler. any use of this path before calling run is illegal
                 .path = undefined,
             },
         };
     }
 
     pub fn lazyPath(self: OutputDir) std.Build.LazyPath {
-        std.debug.assert(mode == .build); // must not be used in the run handlers of the commands
+        std.debug.assert(mode == .build);
         return self.lazy.path;
     }
 
     pub fn path(self: OutputDir) []const u8 {
-        std.debug.assert(mode == .run); // must only be used in the run handlers of the commands
+        std.debug.assert(mode == .run);
         return self.cli;
     }
 

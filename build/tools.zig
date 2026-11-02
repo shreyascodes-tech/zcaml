@@ -1,11 +1,11 @@
 const std = @import("std");
 const utils = @import("tools/utils.zig");
+const gen_ocaml_sources = @import("tools/gen_ocaml_sources.zig");
+
 pub const InputFile = utils.InputFile;
 pub const OutputFile = utils.OutputFile;
 pub const InputDir = utils.InputDir;
 pub const OutputDir = utils.OutputDir;
-
-const gen_ocaml_sources = @import("tools/gen_ocaml_sources.zig");
 
 pub const Command = union(enum) {
     gen_runtime: @import("tools/gen_runtime.zig"),
@@ -52,7 +52,7 @@ pub const Command = union(enum) {
                 run_tool.addArg(command_name);
 
                 const tool_args = &@field(self, command_name);
-                const T = std.meta.fieldInfo(Command, tag).type;
+                const T = @FieldType(Command, command_name);
 
                 inline for (comptime std.meta.fieldNames(T)) |field| {
                     addNamedFieldArg(b, run_tool, field, &@field(tool_args, field));
@@ -77,9 +77,75 @@ pub fn run(b: *std.Build, comptime tag: Tag, args: Args(tag)) struct { Args(tag)
     return .{ @field(cmd, @tagName(tag)), step };
 }
 
-fn isListSlice(comptime T: type) bool {
-    if (T == []const u8 or T == []u8) return false;
-    return @typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice;
+pub fn main(init: std.process.Init) !void {
+    utils.mode = .run;
+
+    const gpa = init.gpa;
+    const arena = init.arena.allocator();
+
+    var args = try init.minimal.args.iterateAllocator(gpa);
+    defer args.deinit();
+    _ = args.skip();
+
+    const command_name = args.next() orelse return printUsage(gpa, null);
+    const command_tag = std.meta.stringToEnum(Tag, command_name) orelse return printUsage(gpa, command_name);
+
+    var parser = ArgParser{ .args_it = &args };
+    @setEvalBranchQuota(100_000);
+    switch (command_tag) {
+        inline else => |tag| {
+            const T = @FieldType(Command, @tagName(tag));
+            const TFieldEnum = std.meta.FieldEnum(T);
+
+            var result: T = undefined;
+            var found: std.EnumSet(TFieldEnum) = .empty;
+            while (parser.next()) |named| {
+                const field = std.meta.stringToEnum(TFieldEnum, named.name) orelse {
+                    std.log.warn("unknown option: '{s}' for command '{s}'", .{ named.name, command_name });
+                    continue;
+                };
+
+                switch (field) {
+                    inline else => |f| {
+                        const FieldType = @FieldType(T, @tagName(f));
+                        if (found.contains(field) and !comptime isListSlice(FieldType)) {
+                            std.log.warn("option '{s}' specified multiple times, ignoring", .{named.name});
+                            continue;
+                        }
+
+                        try assignFieldValue(arena, FieldType, &@field(result, @tagName(f)), named.value, found.contains(field));
+                        found.insert(field);
+                    },
+                }
+            }
+
+            var missing_required = false;
+            var not_found_it = found.complement().iterator();
+            const struct_info = @typeInfo(T).@"struct";
+            while (not_found_it.next()) |field| {
+                switch (field) {
+                    inline else => |f| {
+                        const idx = @backingInt(f);
+                        const FieldType = struct_info.field_types[idx];
+
+                        if (struct_info.field_attrs[idx].defaultValue(FieldType)) |default_val| {
+                            @field(result, @tagName(f)) = default_val;
+                        } else if (@typeInfo(FieldType) == .optional) {
+                            @field(result, @tagName(f)) = null;
+                        } else if (comptime isListSlice(FieldType)) {
+                            @field(result, @tagName(f)) = &.{};
+                        } else {
+                            std.log.err("missing required option '--{t}' for command '{s}'", .{ f, command_name });
+                            missing_required = true;
+                        }
+                    },
+                }
+            }
+
+            if (missing_required) std.process.exit(1);
+            try result.run(init);
+        },
+    }
 }
 
 fn addNamedFieldArg(
@@ -143,75 +209,47 @@ fn addSingleNamedArg(
     }
 }
 
-pub fn main(init: std.process.Init) !void {
-    utils.mode = .run;
-
-    const gpa = init.gpa;
-    const arena = init.arena.allocator();
-
-    var args = try init.minimal.args.iterateAllocator(gpa);
-    defer args.deinit();
-    _ = args.skip();
-
-    const command_name = args.next() orelse return printUsage(gpa, null);
-    const command_tag = std.meta.stringToEnum(Tag, command_name) orelse return printUsage(gpa, command_name);
-
-    var parser = ArgParser{ .args_it = &args };
-    @setEvalBranchQuota(100_000);
-    switch (command_tag) {
-        inline else => |tag| {
-            const T = std.meta.fieldInfo(Command, tag).type;
-            const TFieldEnum = std.meta.FieldEnum(T);
-
-            var result: T = undefined;
-            var found: std.EnumSet(TFieldEnum) = .empty;
-            while (parser.next()) |named| {
-                const field = std.meta.stringToEnum(TFieldEnum, named.name) orelse {
-                    std.log.warn("unknown option: '{s}' for command '{s}'", .{ named.name, command_name });
-                    continue;
-                };
-
-                switch (field) {
-                    inline else => |f| {
-                        const FieldType = std.meta.fieldInfo(T, f).type;
-                        if (found.contains(field) and !comptime isListSlice(FieldType)) {
-                            std.log.warn("option '{s}' specified multiple times, ignoring", .{named.name});
-                            continue;
-                        }
-
-                        try assignFieldValue(arena, FieldType, &@field(result, @tagName(f)), named.value, found.contains(field));
-                        found.insert(field);
-                    },
-                }
-            }
-
-            var missing_required = false;
-            var not_found_it = found.complement().iterator();
-            while (not_found_it.next()) |field| {
-                switch (field) {
-                    inline else => |f| {
-                        const field_info = std.meta.fieldInfo(T, f);
-                        const FieldType = field_info.type;
-
-                        if (field_info.attrs.defaultValue(FieldType)) |default_val| {
-                            @field(result, @tagName(f)) = default_val;
-                        } else if (@typeInfo(FieldType) == .optional) {
-                            @field(result, @tagName(f)) = null;
-                        } else if (comptime isListSlice(FieldType)) {
-                            @field(result, @tagName(f)) = &.{};
-                        } else {
-                            std.log.err("missing required option '--{t}' for command '{s}'", .{ f, command_name });
-                            missing_required = true;
-                        }
-                    },
-                }
-            }
-
-            if (missing_required) std.process.exit(1);
-            try result.run(init);
-        },
-    }
+fn isListSlice(comptime T: type) bool {
+    if (T == []const u8 or T == []u8) return false;
+    return @typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice;
 }
+
+const ArgParser = struct {
+    pending: ?[]const u8 = null,
+    args_it: *std.process.Args.Iterator,
+
+    const Named = struct {
+        name: []const u8,
+        value: ?[]const u8,
+    };
+
+    pub fn next(self: *ArgParser) ?Named {
+        while (true) {
+            const arg = self.args_it.next() orelse {
+                if (self.pending) |name| {
+                    self.pending = null;
+                    return .{ .name = name, .value = null };
+                }
+                return null;
+            };
+
+            if (self.pending) |name| {
+                if (std.mem.startsWith(u8, arg, "--")) {
+                    self.pending = arg[2..];
+                    return .{ .name = name, .value = null };
+                }
+                self.pending = null;
+                return .{ .name = name, .value = arg };
+            }
+
+            if (std.mem.startsWith(u8, arg, "--")) {
+                self.pending = arg[2..];
+                continue;
+            }
+            std.debug.panic("unexpected positional argument '{s}'", .{arg});
+        }
+    }
+};
 
 fn assignFieldValue(
     arena: std.mem.Allocator,
@@ -270,40 +308,3 @@ fn printUsage(gpa: std.mem.Allocator, command: ?[]const u8) noreturn {
     if (command) |c| std.log.err("Unknown command: '{s}'", .{c});
     std.process.exit(1);
 }
-
-const ArgParser = struct {
-    pending: ?[]const u8 = null,
-    args_it: *std.process.Args.Iterator,
-
-    const Named = struct {
-        name: []const u8,
-        value: ?[]const u8,
-    };
-
-    pub fn next(self: *ArgParser) ?Named {
-        while (true) {
-            const arg = self.args_it.next() orelse {
-                if (self.pending) |name| {
-                    self.pending = null;
-                    return .{ .name = name, .value = null };
-                }
-                return null;
-            };
-
-            if (self.pending) |name| {
-                if (std.mem.startsWith(u8, arg, "--")) {
-                    self.pending = arg[2..];
-                    return .{ .name = name, .value = null };
-                }
-                self.pending = null;
-                return .{ .name = name, .value = arg };
-            }
-
-            if (std.mem.startsWith(u8, arg, "--")) {
-                self.pending = arg[2..];
-                continue;
-            }
-            std.debug.panic("unexpected positional argument '{s}'", .{arg});
-        }
-    }
-};

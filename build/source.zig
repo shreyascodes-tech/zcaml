@@ -14,15 +14,7 @@ manifest: Manifest,
 
 pub fn load(b: *std.Build, dep: *std.Build.Dependency, version: Versions.Version) Source {
     const manifest_path = Versions.manifestPath(version);
-    const zon_src_file = b.root.openFile(b.graph.io, manifest_path, .{ .mode = .read_only }) catch |err| std.debug.panic(
-        "Failed to open manifest '{s}' for OCaml {t} ({t}). Run `zig build generate`.",
-        .{ manifest_path, version, err },
-    );
-    defer zon_src_file.close(b.graph.io);
-
-    var zon_src_read_buf: [2048]u8 = undefined;
-    var zon_src_reader = zon_src_file.reader(b.graph.io, &zon_src_read_buf);
-    const zon_src = zon_src_reader.interface.allocRemainingAlignedSentinel(b.allocator, .unlimited, .of(u8), 0) catch |err| std.debug.panic(
+    const zon_src = readFileZ(b, b.root, manifest_path) catch |err| std.debug.panic(
         "Failed to read manifest '{s}' for OCaml {t} ({t}). Run `zig build generate`.",
         .{ manifest_path, version, err },
     );
@@ -53,14 +45,7 @@ pub fn path(self: Source, sub_path: []const u8) std.Build.LazyPath {
 
 /// Read a file from the source tree at configure time.
 pub fn read(self: Source, sub_path: []const u8) []const u8 {
-    const file = self.dep.builder.root.openFile(self.b.graph.io, sub_path, .{ .mode = .read_only }) catch |err| std.debug.panic(
-        "Failed to read '{s}' from OCaml source dependency: {t}",
-        .{ sub_path, err },
-    );
-    defer file.close(self.b.graph.io);
-    var buf: [2048]u8 = undefined;
-    var reader = file.reader(self.b.graph.io, &buf);
-    return reader.interface.allocRemainingAlignedSentinel(self.b.allocator, .unlimited, .of(u8), 0) catch |err| std.debug.panic(
+    return readFileZ(self.b, self.dep.builder.root, sub_path) catch |err| std.debug.panic(
         "Failed to read '{s}' from OCaml source dependency: {t}",
         .{ sub_path, err },
     );
@@ -79,25 +64,6 @@ pub fn prefixMap(self: Source) []const u8 {
     return b.fmt(".={s}:={s}/:.={s}:={s}/:={s}/:=./{s}/:.={s}/stdlib:={s}/stdlib/:={s}/stdlib/:=./{s}/stdlib/", .{
         root, root, abs, abs, relative, relative, abs, abs, relative, relative,
     });
-}
-
-fn absolutePath(b: *std.Build, cache_path: std.Build.Cache.Path) []const u8 {
-    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = cache_path.root_dir.handle.realPath(b.graph.io, &buf) catch @panic("cannot resolve build directory");
-    return std.fs.path.resolve(b.allocator, &.{ buf[0..len], cache_path.sub_path }) catch @panic("OOM");
-}
-
-fn encodePrefix(b: *std.Build, prefix: []const u8) []const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    for (prefix) |c| {
-        result.appendSlice(b.allocator, switch (c) {
-            '%' => "%#",
-            '=' => "%+",
-            ':' => "%.",
-            else => &.{c},
-        }) catch @panic("OOM");
-    }
-    return result.toOwnedSlice(b.allocator) catch @panic("OOM");
 }
 
 /// Render a `@var@` template from the source tree.
@@ -147,11 +113,14 @@ pub const Resolver = struct {
         const b = self.source.b;
         return switch (src) {
             .upstream => |p| self.source.path(p),
-            .arch => |name| self.source.path(b.fmt("asmcomp/{s}/{s}", .{
-                if (self.arch) |a| @tagName(a) else std.debug.panic("'{s}' needs a native backend", .{name}),
-                name,
-            })),
-            .expanded => |p| (self.expanded_dir orelse std.debug.panic("expanded source '{s}' not available here", .{p})).path(b, p),
+            .arch => |name| blk: {
+                const arch = self.arch orelse std.debug.panic("'{s}' needs a native backend", .{name});
+                break :blk self.source.path(b.fmt("asmcomp/{t}/{s}", .{ arch, name }));
+            },
+            .expanded => |p| blk: {
+                const dir = self.expanded_dir orelse std.debug.panic("expanded source '{s}' not available here", .{p});
+                break :blk dir.path(b, p);
+            },
             .gen => |g| self.gen.get(g) orelse std.debug.panic("generated source '{t}' not available here", .{g}),
         };
     }
@@ -181,3 +150,30 @@ pub const Resolver = struct {
         };
     }
 };
+
+fn absolutePath(b: *std.Build, cache_path: std.Build.Cache.Path) []const u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = cache_path.root_dir.handle.realPath(b.graph.io, &buf) catch @panic("cannot resolve build directory");
+    return std.fs.path.resolve(b.allocator, &.{ buf[0..len], cache_path.sub_path }) catch @panic("OOM");
+}
+
+fn encodePrefix(b: *std.Build, prefix: []const u8) []const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    for (prefix) |c| {
+        result.appendSlice(b.allocator, switch (c) {
+            '%' => "%#",
+            '=' => "%+",
+            ':' => "%.",
+            else => &.{c},
+        }) catch @panic("OOM");
+    }
+    return result.toOwnedSlice(b.allocator) catch @panic("OOM");
+}
+
+fn readFileZ(b: *std.Build, dir: std.Build.Cache.Path, sub_path: []const u8) ![:0]u8 {
+    const file = try dir.openFile(b.graph.io, sub_path, .{ .mode = .read_only });
+    defer file.close(b.graph.io);
+    var buf: [2048]u8 = undefined;
+    var reader = file.reader(b.graph.io, &buf);
+    return reader.interface.allocRemainingAlignedSentinel(b.allocator, .unlimited, .of(u8), 0);
+}

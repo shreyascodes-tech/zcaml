@@ -25,6 +25,9 @@ const otherlibs = @import("otherlibs.zig");
 const driver = @import("driver.zig");
 const Ocamlc = driver.Ocamlc;
 const Ocamlopt = driver.Ocamlopt;
+const LazyPath = std.Build.LazyPath;
+const SMap = std.StringHashMapUnmanaged;
+
 pub const Source = @import("source.zig");
 pub const Platform = @import("platform.zig");
 pub const Versions = @import("versions.zig");
@@ -41,21 +44,21 @@ build_rt: runtime.Artifacts,
 stdlib_common: stdlib.Common,
 comp_shared: compiler.Shared,
 
-runtimes: std.StringHashMapUnmanaged(runtime.Artifacts) = .empty,
-launch_infos: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty,
-stdlibs: std.StringHashMapUnmanaged(stdlib.Artifacts) = .empty,
-nat_stdlib_dirs: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty,
+runtimes: SMap(runtime.Artifacts) = .empty,
+launch_infos: SMap(LazyPath) = .empty,
+stdlibs: SMap(stdlib.Artifacts) = .empty,
+nat_stdlib_dirs: SMap(LazyPath) = .empty,
 arch_bytes: std.AutoHashMapUnmanaged(?Platform.Arch, compiler.ArchByte) = .empty,
-byte_commons: std.StringHashMapUnmanaged(compiler.ByteCommon) = .empty,
-raw_emitters: std.StringHashMapUnmanaged(Ocamlopt) = .empty,
-otherlibs_map: std.StringHashMapUnmanaged(otherlibs.Artifacts) = .empty,
-native_compilers: std.StringHashMapUnmanaged(compiler.ArchNative) = .empty,
-native_commons: std.StringHashMapUnmanaged(compiler.NativeCommon) = .empty,
-ocamlats: std.StringHashMapUnmanaged(std.Build.LazyPath) = .empty,
+byte_commons: SMap(compiler.ByteCommon) = .empty,
+raw_emitters: SMap(Ocamlopt) = .empty,
+otherlibs_map: SMap(otherlibs.Artifacts) = .empty,
+native_compilers: SMap(compiler.ArchNative) = .empty,
+native_commons: SMap(compiler.NativeCommon) = .empty,
+ocamlnats: SMap(LazyPath) = .empty,
 debugger_byte: ?extras.DebuggerByte = null,
 odoc_byte: ?extras.OcamldocByte = null,
-odoc_nats: std.StringHashMapUnmanaged(extras.OcamldocNative) = .empty,
-toolchains: std.StringHashMapUnmanaged(Toolchain) = .empty,
+odoc_nats: SMap(extras.OcamldocNative) = .empty,
+toolchains: SMap(Toolchain) = .empty,
 
 pub const Options = struct {
     ocamldoc: bool = false,
@@ -63,29 +66,6 @@ pub const Options = struct {
     ocamlnat: bool = false,
     bytecode_tools: bool = false,
     runtime_variants: bool = false,
-};
-
-pub const Toolchain = struct {
-    b: *std.Build,
-    /// The install tree, see the module docs.
-    layout: std.Build.LazyPath,
-    host_rt: runtime.Artifacts,
-    target_rt: runtime.Artifacts,
-    stdlib: stdlib.Artifacts,
-    compiler: compiler.Artifacts,
-    otherlibs: otherlibs.Artifacts,
-    ocamlnat: ?std.Build.LazyPath = null,
-    ocamldebug: ?extras.DebuggerArtifacts = null,
-    ocamldoc: ?extras.OcamldocArtifacts = null,
-
-    /// Install the layout to `<install prefix>/<sub_path>`.
-    pub fn addInstall(self: Toolchain, step: *std.Build.Step, sub_path: []const u8) void {
-        step.dependOn(&self.b.addInstallDirectory(.{
-            .source_dir = self.layout,
-            .install_dir = .prefix,
-            .install_subdir = sub_path,
-        }).step);
-    }
 };
 
 pub fn init(src: *const Source, opts: Options) Ocaml {
@@ -112,280 +92,28 @@ pub fn init(src: *const Source, opts: Options) Ocaml {
     return self;
 }
 
-fn codeKey(self: *Ocaml, p: Platform) []const u8 {
-    return self.src.b.fmt("{s}-{s}", .{ p.archName(), p.system });
-}
+pub const Toolchain = struct {
+    b: *std.Build,
+    /// The install tree, see the module docs.
+    layout: LazyPath,
+    host_rt: runtime.Artifacts,
+    target_rt: runtime.Artifacts,
+    stdlib: stdlib.Artifacts,
+    compiler: compiler.Artifacts,
+    otherlibs: otherlibs.Artifacts,
+    ocamlnat: ?LazyPath = null,
+    ocamldebug: ?extras.DebuggerArtifacts = null,
+    ocamldoc: ?extras.OcamldocArtifacts = null,
 
-fn getRuntime(self: *Ocaml, p: Platform) runtime.Artifacts {
-    if (self.runtimes.get(p.triplet)) |rt| return rt;
-    const rt = runtime.build(self.src.*, self.rt_common, .{
-        .platform = p,
-        .variants = self.opts.runtime_variants,
-    });
-    self.runtimes.put(self.src.b.allocator, p.triplet, rt) catch @panic("OOM");
-    return rt;
-}
-
-fn launchInfo(self: *Ocaml, p: Platform) std.Build.LazyPath {
-    if (self.launch_infos.get(p.triplet)) |li| return li;
-    const li = stdlib.buildLaunchInfoDir(self.src.*, self.getRuntime(p));
-    self.launch_infos.put(self.src.b.allocator, p.triplet, li) catch @panic("OOM");
-    return li;
-}
-
-fn getArchByte(self: *Ocaml, arch: ?Platform.Arch) compiler.ArchByte {
-    if (self.arch_bytes.get(arch)) |ab| return ab;
-    const ab = compiler.buildArchByte(self.src, self.comp_shared, arch);
-    self.arch_bytes.put(self.src.b.allocator, arch, ab) catch @panic("OOM");
-    return ab;
-}
-
-fn getByteCommon(self: *Ocaml, host: Platform, target: Platform) compiler.ByteCommon {
-    const b = self.src.b;
-    const key = b.fmt("{s}->{s}", .{ host.triplet, target.triplet });
-    if (self.byte_commons.get(key)) |bc| return bc;
-    const bc = compiler.buildByteCommon(self.src, self.comp_shared, self.getArchByte(target.arch), host, target, self.launchInfo(host));
-    self.byte_commons.put(b.allocator, key, bc) catch @panic("OOM");
-    return bc;
-}
-
-fn ocamlcFor(self: *Ocaml, host: Platform, target: Platform) Ocamlc {
-    return .{
-        .b = self.src.b,
-        .ocamlrun = self.comp_shared.build_ocamlrun,
-        .exe = self.getByteCommon(host, target).ocamlc_byte,
-        .stdlib_dir = self.getStdlib(target).dir,
-        .primitives = null,
-        .prefix_map = self.src.prefixMap(),
-        .cwd = self.src.path(""),
-    };
-}
-
-fn getRawEmitter(self: *Ocaml, target: Platform) Ocamlopt {
-    if (self.raw_emitters.get(target.triplet)) |opt| return opt;
-    const b = self.src.b;
-    if (!self.build_platform.hasNativeCompiler()) {
-        const opt: Ocamlopt = .{
-            .b = b,
-            .ocamlrun = self.comp_shared.build_ocamlrun,
-            .exe = self.getByteCommon(self.build_platform, target).ocamlopt_byte,
-            .stdlib_dir = null,
-            .prefix_map = self.src.prefixMap(),
-            .cwd = self.src.path(""),
-        };
-        self.raw_emitters.put(b.allocator, target.triplet, opt) catch @panic("OOM");
-        return opt;
+    /// Install the layout to `<install prefix>/<sub_path>`.
+    pub fn addInstall(self: Toolchain, step: *std.Build.Step, sub_path: []const u8) void {
+        step.dependOn(&self.b.addInstallDirectory(.{
+            .source_dir = self.layout,
+            .install_dir = .prefix,
+            .install_subdir = sub_path,
+        }).step);
     }
-
-    if (target.eql(self.build_platform)) {
-        const boot_opt: Ocamlopt = .{
-            .b = b,
-            .ocamlrun = self.comp_shared.build_ocamlrun,
-            .exe = self.getByteCommon(self.build_platform, self.build_platform).ocamlopt_byte,
-            .stdlib_dir = null,
-            .prefix_map = self.src.prefixMap(),
-            .cwd = self.src.path(""),
-        };
-        self.raw_emitters.put(b.allocator, self.build_platform.triplet, boot_opt) catch @panic("OOM");
-        const ocamlopt_opt = self.getNativeCommon(self.build_platform, self.build_platform, self.build_platform).ocamlopt_opt;
-        const fast_opt: Ocamlopt = .{
-            .b = b,
-            .ocamlrun = null,
-            .exe = ocamlopt_opt,
-            .stdlib_dir = null,
-            .prefix_map = self.src.prefixMap(),
-            .cwd = self.src.path(""),
-        };
-        self.raw_emitters.put(b.allocator, self.build_platform.triplet, fast_opt) catch @panic("OOM");
-        return fast_opt;
-    } else {
-        const ocamlopt_opt = self.getNativeCommon(self.build_platform, self.build_platform, target).ocamlopt_opt;
-        const fast_opt: Ocamlopt = .{
-            .b = b,
-            .ocamlrun = null,
-            .exe = ocamlopt_opt,
-            .stdlib_dir = null,
-            .prefix_map = self.src.prefixMap(),
-            .cwd = self.src.path(""),
-        };
-        self.raw_emitters.put(b.allocator, target.triplet, fast_opt) catch @panic("OOM");
-        return fast_opt;
-    }
-}
-
-fn getStdlib(self: *Ocaml, target: Platform) stdlib.Artifacts {
-    if (self.stdlibs.get(target.triplet)) |s| return s;
-    const byte_stdlib = stdlib.buildForTarget(self.src, self.stdlib_common, target.arch, self.launchInfo(target));
-    if (!target.hasNativeCompiler()) {
-        self.stdlibs.put(self.src.b.allocator, target.triplet, byte_stdlib) catch @panic("OOM");
-        return byte_stdlib;
-    }
-    const raw_emitter = self.getRawEmitter(target);
-    if (self.stdlibs.get(target.triplet)) |s| return s;
-
-    const b = self.src.b;
-    const key = self.codeKey(target);
-    const nat_dir = self.nat_stdlib_dirs.get(key) orelse blk: {
-        const d = stdlib.buildNativeDir(self.src, byte_stdlib, raw_emitter, target);
-        self.nat_stdlib_dirs.put(b.allocator, key, d) catch @panic("OOM");
-        break :blk d;
-    };
-    const s = stdlib.attachNativeDir(b, byte_stdlib, nat_dir);
-    self.stdlibs.put(b.allocator, target.triplet, s) catch @panic("OOM");
-    return s;
-}
-
-fn getEmitter(self: *Ocaml, target: Platform) Ocamlopt {
-    var opt = self.getRawEmitter(target);
-    opt.stdlib_dir = self.getStdlib(target).dir;
-    return opt;
-}
-
-fn getOtherlibs(self: *Ocaml, target: Platform) otherlibs.Artifacts {
-    if (self.otherlibs_map.get(target.triplet)) |libs| return libs;
-    const libs = otherlibs.build(self.src, .{
-        .target_rt = self.getRuntime(target),
-        .stdlib = self.getStdlib(target),
-        .ocamlc = self.ocamlcFor(target, target),
-        .ocamlopt = if (target.hasNativeCompiler()) self.getEmitter(target) else undefined,
-    });
-    self.otherlibs_map.put(self.src.b.allocator, target.triplet, libs) catch @panic("OOM");
-    return libs;
-}
-
-fn getNativeCompiler(self: *Ocaml, code: Platform, target_arch: ?Platform.Arch) compiler.ArchNative {
-    const b = self.src.b;
-    const key = b.fmt("{s}->{s}", .{ self.codeKey(code), if (target_arch) |a| @tagName(a) else "none" });
-    if (self.native_compilers.get(key)) |an| return an;
-
-    const is_same_arch = target_arch != null and code.arch != null and target_arch.? == code.arch.?;
-    const dynlink_dir: ?std.Build.LazyPath = if (is_same_arch) self.getOtherlibs(code).dynlink_dir else null;
-    const frontend: ?compiler.ArchNative = if (is_same_arch) null else self.getNativeCompiler(code, code.arch);
-
-    const an = compiler.buildArchNative(
-        self.src,
-        self.comp_shared,
-        self.getArchByte(target_arch),
-        self.getEmitter(code),
-        self.getRuntime(code),
-        dynlink_dir,
-        frontend,
-    );
-    self.native_compilers.put(b.allocator, key, an) catch @panic("OOM");
-    return an;
-}
-
-fn getNativeCommon(self: *Ocaml, code: Platform, host: Platform, target: Platform) compiler.NativeCommon {
-    const b = self.src.b;
-    const key = b.fmt("{s}:{s}->{s}", .{ self.codeKey(code), host.triplet, target.triplet });
-    if (self.native_commons.get(key)) |nc| return nc;
-    const nc = compiler.buildNativeCommon(
-        self.src,
-        self.getArchByte(target.arch),
-        self.getNativeCompiler(code, target.arch),
-        self.getByteCommon(host, target).config_main_ml,
-        self.getEmitter(code),
-        self.getRuntime(code),
-    );
-    self.native_commons.put(b.allocator, key, nc) catch @panic("OOM");
-    return nc;
-}
-
-fn getOcamlnat(self: *Ocaml, target: Platform) std.Build.LazyPath {
-    if (self.ocamlats.get(target.triplet)) |p| return p;
-    const p = extras.linkOcamlnat(
-        self.src.b,
-        self.getArchByte(target.arch),
-        self.getNativeCompiler(target, target.arch),
-        self.getNativeCommon(target, target, target),
-        self.getEmitter(target),
-        self.getRuntime(target),
-        self.getOtherlibs(target).dynlink_dir,
-    );
-    self.ocamlats.put(self.src.b.allocator, target.triplet, p) catch @panic("OOM");
-    return p;
-}
-
-fn getDebuggerByte(self: *Ocaml, target: Platform) extras.DebuggerByte {
-    if (self.debugger_byte) |db| return db;
-    const arch_byte = self.getArchByte(target.arch);
-    const db = extras.compileDebugger(
-        self.src,
-        self.ocamlcFor(target, target),
-        arch_byte.sources,
-        arch_byte.compiled.cmis_dir,
-        self.getOtherlibs(target),
-    );
-    self.debugger_byte = db;
-    return db;
-}
-
-fn getDebugger(self: *Ocaml, host: Platform, target: Platform) extras.DebuggerArtifacts {
-    const base = self.getDebuggerByte(target);
-    return extras.linkDebugger(
-        self.src,
-        base,
-        self.ocamlcFor(host, target),
-        self.getArchByte(target.arch),
-        self.getByteCommon(host, target),
-        self.getOtherlibs(target),
-        host,
-        self.launchInfo(host),
-    );
-}
-
-fn getOcamldocByte(self: *Ocaml, target: Platform) extras.OcamldocByte {
-    if (self.odoc_byte) |ob| return ob;
-    const arch_byte = self.getArchByte(target.arch);
-    const ob = extras.compileOcamldocByte(
-        self.src,
-        self.ocamlcFor(target, target),
-        arch_byte.sources,
-        arch_byte.compiled.cmis_dir,
-        self.getOtherlibs(target),
-    );
-    self.odoc_byte = ob;
-    return ob;
-}
-
-fn getOcamldocNative(self: *Ocaml, target: Platform) extras.OcamldocNative {
-    if (self.odoc_nats.get(target.triplet)) |on| return on;
-    const odoc_byte = self.getOcamldocByte(target);
-    const arch_byte = self.getArchByte(target.arch);
-    const arch_nat = self.getNativeCompiler(target, target.arch);
-    const nat_common = self.getNativeCommon(target, target, target);
-    const on = extras.compileOcamldocNative(
-        self.src,
-        odoc_byte,
-        self.getEmitter(target),
-        arch_byte.compiled.cmis_dir,
-        arch_nat,
-        nat_common,
-        self.getOtherlibs(target),
-        self.getRuntime(target),
-    );
-    self.odoc_nats.put(self.src.b.allocator, target.triplet, on) catch @panic("OOM");
-    return on;
-}
-
-fn getOcamldoc(self: *Ocaml, host: Platform, target: Platform) extras.OcamldocArtifacts {
-    const odoc_byte = self.getOcamldocByte(target);
-    const odoc_nat: ?extras.OcamldocNative = if (target.hasNativeCompiler())
-        self.getOcamldocNative(target)
-    else
-        null;
-    return extras.linkOcamldoc(
-        self.src,
-        odoc_byte,
-        odoc_nat,
-        self.ocamlcFor(host, target),
-        self.getByteCommon(host, target).ocamlcommon_cma,
-        self.getOtherlibs(target),
-        target,
-        host,
-        self.launchInfo(host),
-    );
-}
+};
 
 pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resolved: std.Build.ResolvedTarget) Toolchain {
     const b = self.src.b;
@@ -466,29 +194,261 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     return tc;
 }
 
-const Layout = struct {
-    b: *std.Build,
-    wf: *std.Build.Step.WriteFile,
+fn getRuntime(self: *Ocaml, p: Platform) runtime.Artifacts {
+    if (self.runtimes.get(p.triplet)) |rt| return rt;
+    const rt = runtime.build(self.src.*, self.rt_common, .{
+        .platform = p,
+        .variants = self.opts.runtime_variants,
+    });
+    self.runtimes.put(self.src.b.allocator, p.triplet, rt) catch @panic("OOM");
+    return rt;
+}
 
-    fn file(self: Layout, src: std.Build.LazyPath, dest: []const u8) void {
-        _ = self.wf.addCopyFile(src, dest);
+fn launchInfo(self: *Ocaml, p: Platform) LazyPath {
+    if (self.launch_infos.get(p.triplet)) |li| return li;
+    const li = stdlib.buildLaunchInfoDir(self.src.*, self.getRuntime(p));
+    self.launch_infos.put(self.src.b.allocator, p.triplet, li) catch @panic("OOM");
+    return li;
+}
+
+fn getStdlib(self: *Ocaml, target: Platform) stdlib.Artifacts {
+    if (self.stdlibs.get(target.triplet)) |s| return s;
+    const byte_stdlib = stdlib.buildForTarget(self.src, self.stdlib_common, target.arch, self.launchInfo(target));
+    if (!target.hasNativeCompiler()) {
+        self.stdlibs.put(self.src.b.allocator, target.triplet, byte_stdlib) catch @panic("OOM");
+        return byte_stdlib;
+    }
+    const raw_emitter = self.getRawEmitter(target);
+    if (self.stdlibs.get(target.triplet)) |s| return s;
+
+    const b = self.src.b;
+    const key = self.codeKey(target);
+    const nat_dir = self.nat_stdlib_dirs.get(key) orelse blk: {
+        const d = stdlib.buildNativeDir(self.src, byte_stdlib, raw_emitter, target);
+        self.nat_stdlib_dirs.put(b.allocator, key, d) catch @panic("OOM");
+        break :blk d;
+    };
+    const s = stdlib.attachNativeDir(b, byte_stdlib, nat_dir);
+    self.stdlibs.put(b.allocator, target.triplet, s) catch @panic("OOM");
+    return s;
+}
+
+fn getRawEmitter(self: *Ocaml, target: Platform) Ocamlopt {
+    if (self.raw_emitters.get(target.triplet)) |opt| return opt;
+    const b = self.src.b;
+    if (!self.build_platform.hasNativeCompiler()) {
+        const opt = self.rawOcamlopt(self.comp_shared.build_ocamlrun, self.getByteCommon(self.build_platform, target).ocamlopt_byte);
+        self.raw_emitters.put(b.allocator, target.triplet, opt) catch @panic("OOM");
+        return opt;
     }
 
-    fn dir(self: Layout, src: std.Build.LazyPath, dest: []const u8, exclude_extensions: []const []const u8) void {
-        _ = self.wf.addCopyDirectory(src, dest, .{ .exclude_extensions = exclude_extensions });
+    if (target.eql(self.build_platform)) {
+        const boot_opt = self.rawOcamlopt(self.comp_shared.build_ocamlrun, self.getByteCommon(self.build_platform, self.build_platform).ocamlopt_byte);
+        // Seed the bootstrap bytecode emitter to break the cycle when getNativeCommon compiles the native stdlib for build_platform.
+        self.raw_emitters.put(b.allocator, self.build_platform.triplet, boot_opt) catch @panic("OOM");
     }
+    const ocamlopt_opt = self.getNativeCommon(self.build_platform, self.build_platform, target).ocamlopt_opt;
+    const fast_opt = self.rawOcamlopt(null, ocamlopt_opt);
+    self.raw_emitters.put(b.allocator, target.triplet, fast_opt) catch @panic("OOM");
+    return fast_opt;
+}
 
-    /// Install a compiled artifact, using `lib<name>.a` for static archives (as OCaml expects on mingw).
-    fn artifact(self: Layout, a: *std.Build.Step.Compile, dest_dir: []const u8) void {
-        const name = if (a.kind == .lib and a.linkage == .static)
-            self.b.fmt("lib{s}.a", .{a.name})
-        else
-            a.out_filename;
-        self.file(a.getEmittedBin(), self.b.fmt("{s}/{s}", .{ dest_dir, name }));
-    }
-};
+fn rawOcamlopt(self: *const Ocaml, ocamlrun: ?*std.Build.Step.Compile, exe: LazyPath) Ocamlopt {
+    return .{
+        .b = self.src.b,
+        .ocamlrun = ocamlrun,
+        .exe = exe,
+        .stdlib_dir = null,
+        .prefix_map = self.src.prefixMap(),
+        .cwd = self.src.path(""),
+    };
+}
 
-fn assembleLayout(self: *const Ocaml, tc: Toolchain) std.Build.LazyPath {
+fn getEmitter(self: *Ocaml, target: Platform) Ocamlopt {
+    var opt = self.getRawEmitter(target);
+    opt.stdlib_dir = self.getStdlib(target).dir;
+    return opt;
+}
+
+fn getArchByte(self: *Ocaml, arch: ?Platform.Arch) compiler.ArchByte {
+    if (self.arch_bytes.get(arch)) |ab| return ab;
+    const ab = compiler.buildArchByte(self.src, self.comp_shared, arch);
+    self.arch_bytes.put(self.src.b.allocator, arch, ab) catch @panic("OOM");
+    return ab;
+}
+
+fn getByteCommon(self: *Ocaml, host: Platform, target: Platform) compiler.ByteCommon {
+    const b = self.src.b;
+    const key = b.fmt("{s}->{s}", .{ host.triplet, target.triplet });
+    if (self.byte_commons.get(key)) |bc| return bc;
+    const bc = compiler.buildByteCommon(self.src, self.comp_shared, self.getArchByte(target.arch), host, target, self.launchInfo(host));
+    self.byte_commons.put(b.allocator, key, bc) catch @panic("OOM");
+    return bc;
+}
+
+fn ocamlcFor(self: *Ocaml, host: Platform, target: Platform) Ocamlc {
+    return .{
+        .b = self.src.b,
+        .ocamlrun = self.comp_shared.build_ocamlrun,
+        .exe = self.getByteCommon(host, target).ocamlc_byte,
+        .stdlib_dir = self.getStdlib(target).dir,
+        .primitives = null,
+        .prefix_map = self.src.prefixMap(),
+        .cwd = self.src.path(""),
+    };
+}
+
+fn getOtherlibs(self: *Ocaml, target: Platform) otherlibs.Artifacts {
+    if (self.otherlibs_map.get(target.triplet)) |libs| return libs;
+    const libs = otherlibs.build(self.src, .{
+        .target_rt = self.getRuntime(target),
+        .stdlib = self.getStdlib(target),
+        .ocamlc = self.ocamlcFor(target, target),
+        .ocamlopt = if (target.hasNativeCompiler()) self.getEmitter(target) else undefined,
+    });
+    self.otherlibs_map.put(self.src.b.allocator, target.triplet, libs) catch @panic("OOM");
+    return libs;
+}
+
+fn getNativeCompiler(self: *Ocaml, code: Platform, target_arch: ?Platform.Arch) compiler.ArchNative {
+    const b = self.src.b;
+    const key = b.fmt("{s}->{s}", .{ self.codeKey(code), if (target_arch) |a| @tagName(a) else "none" });
+    if (self.native_compilers.get(key)) |an| return an;
+
+    const is_same_arch = target_arch != null and code.arch != null and target_arch.? == code.arch.?;
+    const dynlink_dir: ?LazyPath = if (is_same_arch) self.getOtherlibs(code).dynlink_dir else null;
+    const frontend: ?compiler.ArchNative = if (is_same_arch) null else self.getNativeCompiler(code, code.arch);
+
+    const an = compiler.buildArchNative(
+        self.src,
+        self.comp_shared,
+        self.getArchByte(target_arch),
+        self.getEmitter(code),
+        self.getRuntime(code),
+        dynlink_dir,
+        frontend,
+    );
+    self.native_compilers.put(b.allocator, key, an) catch @panic("OOM");
+    return an;
+}
+
+fn getNativeCommon(self: *Ocaml, code: Platform, host: Platform, target: Platform) compiler.NativeCommon {
+    const b = self.src.b;
+    const key = b.fmt("{s}:{s}->{s}", .{ self.codeKey(code), host.triplet, target.triplet });
+    if (self.native_commons.get(key)) |nc| return nc;
+    const nc = compiler.buildNativeCommon(
+        self.src,
+        self.getArchByte(target.arch),
+        self.getNativeCompiler(code, target.arch),
+        self.getByteCommon(host, target).config_main_ml,
+        self.getEmitter(code),
+        self.getRuntime(code),
+    );
+    self.native_commons.put(b.allocator, key, nc) catch @panic("OOM");
+    return nc;
+}
+
+fn getOcamlnat(self: *Ocaml, target: Platform) LazyPath {
+    if (self.ocamlnats.get(target.triplet)) |p| return p;
+    const p = extras.linkOcamlnat(
+        self.src.b,
+        self.getArchByte(target.arch),
+        self.getNativeCompiler(target, target.arch),
+        self.getNativeCommon(target, target, target),
+        self.getEmitter(target),
+        self.getRuntime(target),
+        self.getOtherlibs(target).dynlink_dir,
+    );
+    self.ocamlnats.put(self.src.b.allocator, target.triplet, p) catch @panic("OOM");
+    return p;
+}
+
+fn getDebugger(self: *Ocaml, host: Platform, target: Platform) extras.DebuggerArtifacts {
+    const base = self.getDebuggerByte(target);
+    return extras.linkDebugger(
+        self.src,
+        base,
+        self.ocamlcFor(host, target),
+        self.getArchByte(target.arch),
+        self.getByteCommon(host, target),
+        self.getOtherlibs(target),
+        host,
+        self.launchInfo(host),
+    );
+}
+
+fn getDebuggerByte(self: *Ocaml, target: Platform) extras.DebuggerByte {
+    if (self.debugger_byte) |db| return db;
+    const arch_byte = self.getArchByte(target.arch);
+    const db = extras.compileDebugger(
+        self.src,
+        self.ocamlcFor(target, target),
+        arch_byte.sources,
+        arch_byte.compiled.cmis_dir,
+        self.getOtherlibs(target),
+    );
+    self.debugger_byte = db;
+    return db;
+}
+
+fn getOcamldoc(self: *Ocaml, host: Platform, target: Platform) extras.OcamldocArtifacts {
+    const odoc_byte = self.getOcamldocByte(target);
+    const odoc_nat: ?extras.OcamldocNative = if (target.hasNativeCompiler())
+        self.getOcamldocNative(target)
+    else
+        null;
+    return extras.linkOcamldoc(
+        self.src,
+        odoc_byte,
+        odoc_nat,
+        self.ocamlcFor(host, target),
+        self.getByteCommon(host, target).ocamlcommon_cma,
+        self.getOtherlibs(target),
+        target,
+        host,
+        self.launchInfo(host),
+    );
+}
+
+fn getOcamldocByte(self: *Ocaml, target: Platform) extras.OcamldocByte {
+    if (self.odoc_byte) |ob| return ob;
+    const arch_byte = self.getArchByte(target.arch);
+    const ob = extras.compileOcamldocByte(
+        self.src,
+        self.ocamlcFor(target, target),
+        arch_byte.sources,
+        arch_byte.compiled.cmis_dir,
+        self.getOtherlibs(target),
+    );
+    self.odoc_byte = ob;
+    return ob;
+}
+
+fn getOcamldocNative(self: *Ocaml, target: Platform) extras.OcamldocNative {
+    if (self.odoc_nats.get(target.triplet)) |on| return on;
+    const odoc_byte = self.getOcamldocByte(target);
+    const arch_byte = self.getArchByte(target.arch);
+    const arch_nat = self.getNativeCompiler(target, target.arch);
+    const nat_common = self.getNativeCommon(target, target, target);
+    const on = extras.compileOcamldocNative(
+        self.src,
+        odoc_byte,
+        self.getEmitter(target),
+        arch_byte.compiled.cmis_dir,
+        arch_nat,
+        nat_common,
+        self.getOtherlibs(target),
+        self.getRuntime(target),
+    );
+    self.odoc_nats.put(self.src.b.allocator, target.triplet, on) catch @panic("OOM");
+    return on;
+}
+
+fn codeKey(self: *Ocaml, p: Platform) []const u8 {
+    return self.src.b.fmt("{s}-{s}", .{ p.archName(), p.system });
+}
+
+fn assembleLayout(self: *const Ocaml, tc: Toolchain) LazyPath {
     const src = self.src.*;
     const b = src.b;
     const host_exe = tc.host_rt.platform.exeExt();
@@ -512,7 +472,7 @@ fn assembleLayout(self: *const Ocaml, tc: Toolchain) std.Build.LazyPath {
     const progs = tc.compiler.programs;
     // also installed as `<name>.byte`, upstream's name for the bytecode build
     // (ocamlc.byte and ocamlopt.byte are debug-stripped, matching upstream install)
-    for ([_]struct { []const u8, std.Build.LazyPath }{
+    for ([_]struct { []const u8, LazyPath }{
         .{ "ocamlc", progs.ocamlc_stripped },
         .{ "ocamlopt", progs.ocamlopt_stripped },
         .{ "ocamllex", progs.ocamllex },
@@ -543,7 +503,7 @@ fn assembleLayout(self: *const Ocaml, tc: Toolchain) std.Build.LazyPath {
         layout.dir(odoc.lib_dir, lib ++ "/ocamldoc", &.{});
     }
     if (self.opts.bytecode_tools) {
-        for ([_]struct { []const u8, std.Build.LazyPath }{
+        for ([_]struct { []const u8, LazyPath }{
             .{ "cmpbyt", progs.cmpbyt },
             .{ "dumpobj", progs.dumpobj },
             .{ "primreq", progs.primreq },
@@ -552,7 +512,7 @@ fn assembleLayout(self: *const Ocaml, tc: Toolchain) std.Build.LazyPath {
             layout.file(entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
         }
     }
-    for ([_]struct { []const u8, std.Build.LazyPath }{
+    for ([_]struct { []const u8, LazyPath }{
         .{ "ocamlcmt", progs.ocamlcmt },
         .{ "ocamlprof", progs.ocamlprof },
         .{ "ocamlcp", progs.ocamlcp },
@@ -603,3 +563,25 @@ fn assembleLayout(self: *const Ocaml, tc: Toolchain) std.Build.LazyPath {
 
     return layout.wf.getDirectory();
 }
+
+const Layout = struct {
+    b: *std.Build,
+    wf: *std.Build.Step.WriteFile,
+
+    fn file(self: Layout, src: LazyPath, dest: []const u8) void {
+        _ = self.wf.addCopyFile(src, dest);
+    }
+
+    fn dir(self: Layout, src: LazyPath, dest: []const u8, exclude_extensions: []const []const u8) void {
+        _ = self.wf.addCopyDirectory(src, dest, .{ .exclude_extensions = exclude_extensions });
+    }
+
+    /// Install a compiled artifact, using `lib<name>.a` for static archives (as OCaml expects on mingw).
+    fn artifact(self: Layout, a: *std.Build.Step.Compile, dest_dir: []const u8) void {
+        const name = if (a.kind == .lib and a.linkage == .static)
+            self.b.fmt("lib{s}.a", .{a.name})
+        else
+            a.out_filename;
+        self.file(a.getEmittedBin(), self.b.fmt("{s}/{s}", .{ dest_dir, name }));
+    }
+};

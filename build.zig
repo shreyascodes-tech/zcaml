@@ -29,48 +29,49 @@ pub fn build(b: *std.Build) !void {
         const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
         const src = ocaml_versions.source(version) orelse return;
 
-        if (b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)")) |host_str| {
+        const host_opt = b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)");
+        const default_extra = host_opt == null;
+        var ocaml: Ocaml = .init(src, .{
+            .ocamldoc = ocamldoc_opt orelse default_extra,
+            .ocamldebug = ocamldebug_opt orelse default_extra,
+            .ocamlnat = ocamlnat_opt orelse default_extra,
+            .bytecode_tools = bytecode_tools_opt orelse default_extra,
+            .runtime_variants = runtime_variants_opt orelse default_extra,
+        });
+
+        if (host_opt) |host_str| {
             const host = Ocaml.resolveTarget(b, host_str);
             const target = if (b.option([]const u8, "ocaml-target", "where compiled programs run (default: host)")) |s|
                 Ocaml.resolveTarget(b, s)
             else
                 host;
 
-            const sub_path = b.option([]const u8, "ocaml-prefix", "install sub-path under the install prefix") orelse b.fmt(
-                "{t}/host-{s}/target-{s}",
-                .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
-            );
+            const sub_path = b.option([]const u8, "ocaml-prefix", "install sub-path under the install prefix") orelse
+                defaultSubPath(b, version, host, target);
 
-            var ocaml: Ocaml = .init(src, .{
-                .ocamldoc = ocamldoc_opt orelse false,
-                .ocamldebug = ocamldebug_opt orelse false,
-                .ocamlnat = ocamlnat_opt orelse false,
-                .bytecode_tools = bytecode_tools_opt orelse false,
-                .runtime_variants = runtime_variants_opt orelse false,
-            });
             const toolchain = ocaml.build(host, target);
             toolchain.addInstall(b.getInstallStep(), sub_path);
         } else {
             b.getInstallStep().dependOn(&b.addFail("missing -Docaml-host (or run `zig build -Docaml matrix`)").step);
-            var ocaml: Ocaml = .init(src, .{
-                .ocamldoc = ocamldoc_opt orelse true,
-                .ocamldebug = ocamldebug_opt orelse true,
-                .ocamlnat = ocamlnat_opt orelse true,
-                .bytecode_tools = bytecode_tools_opt orelse true,
-                .runtime_variants = runtime_variants_opt orelse true,
-            });
             for (matrix_pairs) |pair| {
                 const host = Ocaml.resolveTarget(b, pair.host);
                 const target = Ocaml.resolveTarget(b, pair.target);
                 const tc = ocaml.build(host, target);
-                const sub_path = b.fmt(
-                    "{t}/host-{s}/target-{s}",
-                    .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
-                );
-                tc.addInstall(matrix_step, sub_path);
+                tc.addInstall(matrix_step, defaultSubPath(b, version, host, target));
             }
         }
     }
+}
+
+fn defaultSubPath(b: *std.Build, version: Ocaml.Version, host: std.Build.ResolvedTarget, target: std.Build.ResolvedTarget) []const u8 {
+    return b.fmt(
+        "{t}/host-{s}/target-{s}",
+        .{
+            version,
+            host.result.linuxTriple(b.allocator) catch @panic("OOM"),
+            target.result.linuxTriple(b.allocator) catch @panic("OOM"),
+        },
+    );
 }
 
 pub const Pair = struct {
@@ -97,17 +98,14 @@ pub const all_targets = [_][]const u8{
 /// Static list of `(host, target)` pairs built by `zig build -Docaml matrix`.
 pub const matrix_pairs = blk: {
     var pairs: []const Pair = &.{};
-    // 1. All self-hosted toolchains (T -> T)
     for (all_targets) |t| {
         pairs = pairs ++ .{Pair{ .host = t, .target = t }};
     }
-    // 2. x86_64-linux-gnu -> all other targets
     for (all_targets) |t| {
         if (!std.mem.eql(u8, t, "x86_64-linux-gnu")) {
             pairs = pairs ++ .{Pair{ .host = "x86_64-linux-gnu", .target = t }};
         }
     }
-    // 3. Common cross-compilation pairs from other primary hosts
     for ([_]Pair{
         // aarch64-linux-gnu host
         .{ .host = "aarch64-linux-gnu", .target = "x86_64-linux-gnu" },

@@ -11,6 +11,13 @@ const stdlib = @import("stdlib.zig");
 const configure = @import("configure.zig");
 const LazyPath = std.Build.LazyPath;
 
+pub const Options = struct {
+    target_rt: runtime.Artifacts,
+    stdlib: stdlib.Artifacts,
+    ocamlc: Ocamlc,
+    ocamlopt: Ocamlopt,
+};
+
 pub const Artifacts = struct {
     libs: []const Lib,
     /// Also needed when compiling the native toplevel, debugger, and ocamldoc.
@@ -46,13 +53,6 @@ pub const Stubs = struct {
 pub const Header = struct {
     source: LazyPath,
     dest_name: []const u8,
-};
-
-pub const Options = struct {
-    target_rt: runtime.Artifacts,
-    stdlib: stdlib.Artifacts,
-    ocamlc: Ocamlc,
-    ocamlopt: Ocamlopt,
 };
 
 pub fn build(src: *const Source, options: Options) Artifacts {
@@ -168,6 +168,30 @@ const Ctx = struct {
         return lib.finish("dynlink", null, &.{}, false);
     }
 
+    fn buildStubLib(
+        self: Ctx,
+        name: []const u8,
+        linkage: std.builtin.LinkMode,
+        sub: []const u8,
+        files: []const []const u8,
+        cflags: []const []const u8,
+    ) *std.Build.Step.Compile {
+        const bb = self.src.b;
+        const l = bb.addLibrary(.{
+            .linkage = linkage,
+            .name = name,
+            .root_module = runtime.cModule(bb, self.platform(), .{ .pic = true }),
+        });
+        const mod = l.root_module;
+        self.options.target_rt.addIncludes(self.src.*, mod);
+        mod.addIncludePath(self.src.path("otherlibs/unix"));
+        mod.addIncludePath(self.src.path("otherlibs/unix/caml"));
+        mod.addIncludePath(self.src.path(sub));
+        mod.addIncludePath(self.src.path(bb.fmt("{s}/caml", .{sub})));
+        mod.addCSourceFiles(.{ .root = self.src.path(""), .files = files, .flags = cflags });
+        return l;
+    }
+
     /// Build a static + shared stub library pair from C sources under `dir`.
     fn buildStubs(
         self: Ctx,
@@ -191,34 +215,8 @@ const Ctx = struct {
         }, extra_cflags));
         const nat_cflags = driver.concat(b, byt_cflags, p.nativeDefines(b));
 
-        const lib = struct {
-            fn make(
-                ctx: Ctx,
-                name: []const u8,
-                linkage: std.builtin.LinkMode,
-                sub: []const u8,
-                files: []const []const u8,
-                cflags: []const []const u8,
-            ) *std.Build.Step.Compile {
-                const bb = ctx.src.b;
-                const l = bb.addLibrary(.{
-                    .linkage = linkage,
-                    .name = name,
-                    .root_module = runtime.cModule(bb, ctx.platform(), .{ .pic = true }),
-                });
-                const mod = l.root_module;
-                ctx.options.target_rt.addIncludes(ctx.src.*, mod);
-                mod.addIncludePath(ctx.src.path("otherlibs/unix"));
-                mod.addIncludePath(ctx.src.path("otherlibs/unix/caml"));
-                mod.addIncludePath(ctx.src.path(sub));
-                mod.addIncludePath(ctx.src.path(bb.fmt("{s}/caml", .{sub})));
-                mod.addCSourceFiles(.{ .root = ctx.src.path(""), .files = files, .flags = cflags });
-                return l;
-            }
-        }.make;
-
         const shared: ?*std.Build.Step.Compile = if (!p.is_windows) blk: {
-            const dll = lib(self, byt_name, .dynamic, dir, c_files, byt_cflags);
+            const dll = self.buildStubLib(byt_name, .dynamic, dir, c_files, byt_cflags);
             dll.linker_allow_shlib_undefined = true;
             for (shared_libs) |l| dll.root_module.linkSystemLibrary(l, .{});
             break :blk dll;
@@ -226,8 +224,8 @@ const Ctx = struct {
 
         return .{
             .byt_name = byt_name,
-            .static_byt = lib(self, byt_name, .static, dir, c_files, byt_cflags),
-            .static_nat = lib(self, nat_name, .static, dir, c_files, nat_cflags),
+            .static_byt = self.buildStubLib(byt_name, .static, dir, c_files, byt_cflags),
+            .static_nat = self.buildStubLib(nat_name, .static, dir, c_files, nat_cflags),
             .shared_byt = shared,
         };
     }

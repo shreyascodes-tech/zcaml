@@ -3,6 +3,7 @@
 const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
+const driver = @import("driver.zig");
 const configure = @import("configure.zig");
 const Tools = @import("tools.zig");
 
@@ -16,44 +17,6 @@ pub const Common = struct {
     opnames_ml: std.Build.LazyPath,
     version_h: std.Build.LazyPath,
     exec_h: std.Build.LazyPath,
-};
-
-pub const Artifacts = struct {
-    platform: Platform,
-    /// Generated headers: `build_config.h` and `caml/{m,s,version,exec,opnames,jumptbl}.h`.
-    headers_dir: std.Build.LazyPath,
-    primitives: std.Build.LazyPath,
-    ocamlyacc: *std.Build.Step.Compile,
-    libcamlrun: *std.Build.Step.Compile,
-    libcamlrun_pic: ?*std.Build.Step.Compile = null,
-    libcamlrun_shared: ?*std.Build.Step.Compile = null,
-    libcamlrund: ?*std.Build.Step.Compile = null,
-    libcamlruni: ?*std.Build.Step.Compile = null,
-    ocamlrun: *std.Build.Step.Compile,
-    ocamlrund: ?*std.Build.Step.Compile = null,
-    ocamlruni: ?*std.Build.Step.Compile = null,
-    libasmrun: ?*std.Build.Step.Compile = null,
-    libasmrun_pic: ?*std.Build.Step.Compile = null,
-    libasmrun_shared: ?*std.Build.Step.Compile = null,
-    libasmrund: ?*std.Build.Step.Compile = null,
-    libasmruni: ?*std.Build.Step.Compile = null,
-    libcomprmarsh: *std.Build.Step.Compile,
-    zstd_lib: *std.Build.Step.Compile,
-
-    /// Include paths for C code built against the runtime (runtime, stubs, ...).
-    pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
-        mod.addIncludePath(self.headers_dir);
-        mod.addIncludePath(self.headers_dir.path(src.b, "caml"));
-        mod.addIncludePath(src.path("runtime"));
-    }
-};
-
-pub const Options = struct {
-    platform: Platform,
-    /// Default stdlib location baked into `ocamlrun` (relative to its directory).
-    stdlib_dir: []const u8 = "../lib/ocaml",
-    /// Also build debug (`d`) and instrumented (`i`) runtime variants.
-    variants: bool = false,
 };
 
 pub fn buildCommon(src: Source) Common {
@@ -93,6 +56,44 @@ pub fn buildCommon(src: Source) Common {
     };
 }
 
+pub const Options = struct {
+    platform: Platform,
+    /// Default stdlib location baked into `ocamlrun` (relative to its directory).
+    stdlib_dir: []const u8 = "../lib/ocaml",
+    /// Also build debug (`d`) and instrumented (`i`) runtime variants.
+    variants: bool = false,
+};
+
+pub const Artifacts = struct {
+    platform: Platform,
+    /// Generated headers: `build_config.h` and `caml/{m,s,version,exec,opnames,jumptbl}.h`.
+    headers_dir: std.Build.LazyPath,
+    primitives: std.Build.LazyPath,
+    ocamlyacc: *std.Build.Step.Compile,
+    libcamlrun: *std.Build.Step.Compile,
+    libcamlrun_pic: ?*std.Build.Step.Compile = null,
+    libcamlrun_shared: ?*std.Build.Step.Compile = null,
+    libcamlrund: ?*std.Build.Step.Compile = null,
+    libcamlruni: ?*std.Build.Step.Compile = null,
+    ocamlrun: *std.Build.Step.Compile,
+    ocamlrund: ?*std.Build.Step.Compile = null,
+    ocamlruni: ?*std.Build.Step.Compile = null,
+    libasmrun: ?*std.Build.Step.Compile = null,
+    libasmrun_pic: ?*std.Build.Step.Compile = null,
+    libasmrun_shared: ?*std.Build.Step.Compile = null,
+    libasmrund: ?*std.Build.Step.Compile = null,
+    libasmruni: ?*std.Build.Step.Compile = null,
+    libcomprmarsh: *std.Build.Step.Compile,
+    zstd_lib: *std.Build.Step.Compile,
+
+    /// Include paths for C code built against the runtime (runtime, stubs, ...).
+    pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
+        mod.addIncludePath(self.headers_dir);
+        mod.addIncludePath(self.headers_dir.path(src.b, "caml"));
+        mod.addIncludePath(src.path("runtime"));
+    }
+};
+
 pub fn build(src: Source, common: Common, options: Options) Artifacts {
     const b = src.b;
     const m = src.manifest;
@@ -110,10 +111,8 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     zstd_lib.root_module.sanitize_c = .off;
     zstd_lib.root_module.strip = true;
 
-    // 1. Bytecode runtime sources
     const bytecode_c = runtimeSources(b, &.{ rt.common_c_sources, os_c_sources, rt.bytecode_only_c_sources }, null);
 
-    // 2. Configuration headers
     const headers = b.addWriteFiles();
     _ = headers.add("caml/m.h", configure.machineH(src, p));
     _ = headers.add("caml/s.h", configure.systemH(src, p));
@@ -142,9 +141,8 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
         "-Wno-unused-parameter",
         "-Wno-sign-compare",
     });
-    const cflags = if (p.is_elf) ocamlcConcat(b, runtime_cflags, &.{"-ffunction-sections"}) else runtime_cflags;
+    const cflags = if (p.is_elf) driver.concat(b, runtime_cflags, &.{"-ffunction-sections"}) else runtime_cflags;
 
-    // 3. ocamlyacc
     self.ocamlyacc = b.addExecutable(.{
         .name = "ocamlyacc",
         .root_module = cModule(b, p, .{}),
@@ -152,12 +150,11 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     self.addIncludes(src, self.ocamlyacc.root_module);
     self.ocamlyacc.root_module.addCSourceFiles(.{
         .root = src.path(""),
-        .files = ocamlcConcat(b, if (p.is_windows) &.{"yacc/wstr.c"} else &.{}, rt.ocamlyacc_c_sources),
+        .files = driver.concat(b, if (p.is_windows) &.{"yacc/wstr.c"} else &.{}, rt.ocamlyacc_c_sources),
         .flags = p.c.flags(b, &.{ "-DNDEBUG", "-DCAMLDLLIMPORT=" }),
     });
     if (p.is_windows) self.ocamlyacc.mingw_unicode_entry_point = true;
 
-    // 4. Bytecode runtime libraries and executables
     self.libcamlrun = buildRuntimeLib(self, src, "camlrun", .static, null, bytecode_c, cflags, true);
     self.ocamlrun = buildOcamlrunExe(self, src, "ocamlrun", common.prims_c, self.libcamlrun, cflags);
     if (!p.is_windows) {
@@ -165,35 +162,33 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
         self.libcamlrun_shared = buildRuntimeLib(self, src, "camlrun_shared", .dynamic, true, bytecode_c, cflags, true);
     }
     if (options.variants) {
-        const d_flags = ocamlcConcat(b, cflags, &.{"-DDEBUG"});
-        const i_flags = ocamlcConcat(b, cflags, &.{"-DCAML_INSTR"});
-        const d_files = ocamlcConcat(b, bytecode_c, &.{"runtime/instrtrace.c"});
+        const d_flags = driver.concat(b, cflags, &.{"-DDEBUG"});
+        const i_flags = driver.concat(b, cflags, &.{"-DCAML_INSTR"});
+        const d_files = driver.concat(b, bytecode_c, &.{"runtime/instrtrace.c"});
         self.libcamlrund = buildRuntimeLib(self, src, "camlrund", .static, null, d_files, d_flags, true);
         self.ocamlrund = buildOcamlrunExe(self, src, "ocamlrund", common.prims_c, self.libcamlrund.?, d_flags);
         self.libcamlruni = buildRuntimeLib(self, src, "camlruni", .static, null, bytecode_c, i_flags, true);
         self.ocamlruni = buildOcamlrunExe(self, src, "ocamlruni", common.prims_c, self.libcamlruni.?, i_flags);
     }
 
-    // 5. Native runtime libraries (targets with a native-code backend)
     if (p.runtimeAsmFile()) |asm_file| {
         const native_files = runtimeSources(
             b,
             &.{ rt.common_c_sources, os_c_sources, rt.native_only_c_sources },
             if (std.mem.endsWith(u8, asm_file, ".S")) b.fmt("runtime/{s}", .{asm_file}) else null,
         );
-        const nat_flags = ocamlcConcat(b, cflags, p.nativeDefines(b));
+        const nat_flags = driver.concat(b, cflags, p.nativeDefines(b));
         self.libasmrun = buildRuntimeLib(self, src, "asmrun", .static, null, native_files, nat_flags, false);
         if (!p.is_windows) {
             self.libasmrun_pic = buildRuntimeLib(self, src, "asmrun_pic", .static, true, native_files, nat_flags, false);
             self.libasmrun_shared = buildRuntimeLib(self, src, "asmrun_shared", .dynamic, true, native_files, nat_flags, false);
         }
         if (options.variants) {
-            self.libasmrund = buildRuntimeLib(self, src, "asmrund", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DDEBUG"}), false);
-            self.libasmruni = buildRuntimeLib(self, src, "asmruni", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DCAML_INSTR"}), false);
+            self.libasmrund = buildRuntimeLib(self, src, "asmrund", .static, null, native_files, driver.concat(b, nat_flags, &.{"-DDEBUG"}), false);
+            self.libasmruni = buildRuntimeLib(self, src, "asmruni", .static, null, native_files, driver.concat(b, nat_flags, &.{"-DCAML_INSTR"}), false);
         }
     }
 
-    // 6. libcomprmarsh.a
     self.libcomprmarsh = b.addLibrary(.{
         .linkage = .static,
         .name = "comprmarsh",
@@ -204,6 +199,25 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     self.libcomprmarsh.root_module.addCSourceFile(.{ .file = src.path("runtime/zstd.c"), .flags = cflags });
 
     return self;
+}
+
+pub const ModuleOptions = struct {
+    optimize: std.builtin.OptimizeMode = .ReleaseFast,
+    pic: ?bool = null,
+    strip: ?bool = null,
+};
+
+/// A C-only module for `p`.
+pub fn cModule(b: *std.Build, p: Platform, opts: ModuleOptions) *std.Build.Module {
+    return b.createModule(.{
+        .target = p.resolved,
+        .optimize = opts.optimize,
+        .link_libc = true,
+        .pic = opts.pic,
+        // Cached CRT/compiler-rt objects can contain absolute Zig-install paths.
+        // Keep runtime assertions/variants, but omit C DWARF from shipped files.
+        .strip = opts.strip orelse true,
+    });
 }
 
 fn buildRuntimeLib(
@@ -255,25 +269,6 @@ fn buildOcamlrunExe(
     return exe;
 }
 
-pub const ModuleOptions = struct {
-    optimize: std.builtin.OptimizeMode = .ReleaseFast,
-    pic: ?bool = null,
-    strip: ?bool = null,
-};
-
-/// A C-only module for `p`.
-pub fn cModule(b: *std.Build, p: Platform, opts: ModuleOptions) *std.Build.Module {
-    return b.createModule(.{
-        .target = p.resolved,
-        .optimize = opts.optimize,
-        .link_libc = true,
-        .pic = opts.pic,
-        // Cached CRT/compiler-rt objects can contain absolute Zig-install paths.
-        // Keep runtime assertions/variants, but omit C DWARF from shipped files.
-        .strip = opts.strip orelse true,
-    });
-}
-
 /// `runtime/<name>.c` for every name in `lists`, plus an optional extra file.
 fn runtimeSources(b: *std.Build, lists: []const []const []const u8, extra: ?[]const u8) []const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
@@ -283,5 +278,3 @@ fn runtimeSources(b: *std.Build, lists: []const []const []const u8, extra: ?[]co
     if (extra) |e| out.append(b.allocator, e) catch @panic("OOM");
     return out.items;
 }
-
-const ocamlcConcat = @import("driver.zig").concat;

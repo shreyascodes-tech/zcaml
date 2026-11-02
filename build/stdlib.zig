@@ -8,41 +8,27 @@ const Ocamlopt = driver.Ocamlopt;
 const runtime = @import("runtime.zig");
 const configure = @import("configure.zig");
 const Tools = @import("tools.zig");
+const LazyPath = std.Build.LazyPath;
 
 pub const Common = struct {
     /// Bytecode stdlib files without `runtime-launch-info` (target-independent).
-    base_dir: std.Build.LazyPath,
+    base_dir: LazyPath,
     /// `runtime-launch-info` directory for the build host, used by build-time tools.
-    build_launch_info_dir: std.Build.LazyPath,
-    meta: std.Build.LazyPath,
-    expanded_dir: std.Build.LazyPath,
+    build_launch_info_dir: LazyPath,
+    meta: LazyPath,
+    expanded_dir: LazyPath,
     sources: Source.Resolver,
     compiled: Ocamlc.Compiled,
 };
 
-pub const Artifacts = struct {
-    /// Contents of `lib/ocaml/` contributed by the stdlib (flat, as upstream installs it).
-    dir: std.Build.LazyPath,
-    /// Directory containing only `runtime-launch-info` for this platform.
-    launch_info_dir: std.Build.LazyPath,
-    meta: std.Build.LazyPath,
-    /// Module-alias-expanded sources (`Manifest.Src.expanded`), also used by otherlibs.
-    expanded_dir: std.Build.LazyPath,
-    sources: Source.Resolver,
-    /// Bootstrap interfaces and sources reused by the native compiler.
-    compiled: Ocamlc.Compiled,
-};
-
-pub fn buildCommon(src: *const Source, primitives: std.Build.LazyPath, build_rt: runtime.Artifacts) Common {
+pub fn buildCommon(src: *const Source, primitives: LazyPath, build_rt: runtime.Artifacts) Common {
     const b = src.b;
     const m = src.manifest;
 
-    // 1. stdlib/sys.ml and stdlib/META
     const config = b.addWriteFiles();
     const sys_ml = config.add("sys.ml", configure.stdlibSysMl(src.*));
     const meta = config.add("META", src.renderMeta("stdlib/META.in", &.{}));
 
-    // 2. Alias-expanded sources
     const gen, _ = Tools.run(b, .gen_stdlib_sources, .{
         .ocaml_src_dir = .of(src.path("")),
         .expanded_dir = .of("stdlib_expanded"),
@@ -52,7 +38,6 @@ pub fn buildCommon(src: *const Source, primitives: std.Build.LazyPath, build_rt:
     var sources: Source.Resolver = .{ .source = src, .arch = null, .expanded_dir = expanded_dir };
     sources.gen.put(.stdlib_sys_ml, sys_ml);
 
-    // 3. Compile target-independent bytecode stdlib
     const boot: Ocamlc = .{
         .b = b,
         .ocamlrun = build_rt.ocamlrun,
@@ -92,7 +77,7 @@ pub fn buildCommon(src: *const Source, primitives: std.Build.LazyPath, build_rt:
     };
 }
 
-pub fn buildLaunchInfoDir(src: Source, rt: runtime.Artifacts) std.Build.LazyPath {
+pub fn buildLaunchInfoDir(src: Source, rt: runtime.Artifacts) LazyPath {
     const b = src.b;
     const header_exe = buildHeaderExe(src, rt);
     const gen, _ = Tools.run(b, .gen_launch_info, .{
@@ -104,7 +89,20 @@ pub fn buildLaunchInfoDir(src: Source, rt: runtime.Artifacts) std.Build.LazyPath
     return launch_wf.getDirectory();
 }
 
-pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform.Arch, launch_info_dir: std.Build.LazyPath) Artifacts {
+pub const Artifacts = struct {
+    /// Contents of `lib/ocaml/` contributed by the stdlib (flat, as upstream installs it).
+    dir: LazyPath,
+    /// Directory containing only `runtime-launch-info` for this platform.
+    launch_info_dir: LazyPath,
+    meta: LazyPath,
+    /// Module-alias-expanded sources (`Manifest.Src.expanded`), also used by otherlibs.
+    expanded_dir: LazyPath,
+    sources: Source.Resolver,
+    /// Bootstrap interfaces and sources reused by the native compiler.
+    compiled: Ocamlc.Compiled,
+};
+
+pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform.Arch, launch_info_dir: LazyPath) Artifacts {
     const b = src.b;
     const out = b.addWriteFiles();
     _ = out.addCopyDirectory(common.base_dir, "", .{});
@@ -123,7 +121,7 @@ pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform
 }
 
 /// Compile target-native `.cmx`, `.o`, `stdlib.cmxa`, and `stdlib.a` (depends only on `(arch, system)`).
-pub fn buildNativeDir(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) std.Build.LazyPath {
+pub fn buildNativeDir(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) LazyPath {
     const b = src.b;
     var opt = compiler;
     opt.stdlib_dir = null;
@@ -143,7 +141,7 @@ pub fn buildNativeDir(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p
     return out.getDirectory();
 }
 
-pub fn attachNativeDir(b: *std.Build, byte: Artifacts, nat_dir: std.Build.LazyPath) Artifacts {
+pub fn attachNativeDir(b: *std.Build, byte: Artifacts, nat_dir: LazyPath) Artifacts {
     const out = b.addWriteFiles();
     _ = out.addCopyDirectory(byte.dir, "", .{});
     _ = out.addCopyDirectory(nat_dir, "", .{});

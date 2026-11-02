@@ -101,18 +101,6 @@ fn writeJumptblH(self: *Self, io: std.Io, instruct_src: []const u8) !void {
     try file_writer.flush();
 }
 
-fn isIdentStart(c: u8) bool {
-    return c >= 'a' and c <= 'z';
-}
-
-fn isIdentCont(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_';
-}
-
-fn lessThanSlice(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
-}
-
 fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -146,9 +134,9 @@ fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !vo
 
             if (std.mem.startsWith(u8, line, prefix)) {
                 const rest = line[prefix.len..];
-                if (rest.len > 0 and isIdentStart(rest[0])) {
+                if (rest.len > 0 and std.ascii.isLower(rest[0])) {
                     var end: usize = 1;
-                    while (end < rest.len and isIdentCont(rest[end])) : (end += 1) {}
+                    while (end < rest.len and (std.ascii.isLower(rest[end]) or std.ascii.isDigit(rest[end]) or rest[end] == '_')) : (end += 1) {}
                     try prim_names.append(arena, try arena.dupe(u8, rest[0..end]));
                 }
 
@@ -234,53 +222,6 @@ fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !vo
     }
 }
 
-fn parseOpcodes(arena: std.mem.Allocator, instruct_src: []const u8) ![]const []const u8 {
-    const enum_pos = std.mem.indexOf(u8, instruct_src, "enum instructions") orelse return error.InstructionsEnumNotFound;
-    const brace_pos = std.mem.indexOfScalarPos(u8, instruct_src, enum_pos, '{') orelse return error.InstructionsBraceNotFound;
-    var idx = brace_pos + 1;
-
-    var opcodes: std.ArrayList([]const u8) = .empty;
-
-    while (idx < instruct_src.len) {
-        while (idx < instruct_src.len and (std.ascii.isWhitespace(instruct_src[idx]) or instruct_src[idx] == '/')) {
-            if (instruct_src[idx] == '/' and idx + 1 < instruct_src.len and instruct_src[idx + 1] == '*') {
-                const close_comment = std.mem.indexOfPos(u8, instruct_src, idx + 2, "*/") orelse return error.UnterminatedComment;
-                idx = close_comment + 2;
-            } else {
-                idx += 1;
-            }
-        }
-        if (idx >= instruct_src.len or instruct_src[idx] == '}') break;
-
-        if (std.ascii.isUpper(instruct_src[idx])) {
-            const start = idx;
-            idx += 1;
-            while (idx < instruct_src.len and (std.ascii.isUpper(instruct_src[idx]) or std.ascii.isDigit(instruct_src[idx]) or instruct_src[idx] == '_')) : (idx += 1) {}
-            const name = instruct_src[start..idx];
-
-            while (idx < instruct_src.len and (std.ascii.isWhitespace(instruct_src[idx]) or instruct_src[idx] == '/')) {
-                if (instruct_src[idx] == '/' and idx + 1 < instruct_src.len and instruct_src[idx + 1] == '*') {
-                    const close_comment = std.mem.indexOfPos(u8, instruct_src, idx + 2, "*/") orelse return error.UnterminatedComment;
-                    idx = close_comment + 2;
-                } else {
-                    idx += 1;
-                }
-            }
-
-            if (idx < instruct_src.len and instruct_src[idx] == ',') {
-                idx += 1;
-                try opcodes.append(arena, name);
-            } else if (idx < instruct_src.len and instruct_src[idx] == '}') {
-                break;
-            }
-        } else {
-            idx += 1;
-        }
-    }
-
-    return opcodes.items;
-}
-
 fn writeOpcodes(self: *Self, io: std.Io, gpa: std.mem.Allocator, instruct_src: []const u8) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -328,4 +269,54 @@ fn writeOpcodes(self: *Self, io: std.Io, gpa: std.mem.Allocator, instruct_src: [
         }
         try file_writer.flush();
     }
+}
+
+fn parseOpcodes(arena: std.mem.Allocator, instruct_src: []const u8) ![]const []const u8 {
+    const enum_pos = std.mem.indexOf(u8, instruct_src, "enum instructions") orelse return error.InstructionsEnumNotFound;
+    const brace_pos = std.mem.indexOfScalarPos(u8, instruct_src, enum_pos, '{') orelse return error.InstructionsBraceNotFound;
+    var idx = brace_pos + 1;
+
+    var opcodes: std.ArrayList([]const u8) = .empty;
+
+    while (idx < instruct_src.len) {
+        idx = try skipWhitespaceAndComments(instruct_src, idx);
+        if (idx >= instruct_src.len or instruct_src[idx] == '}') break;
+
+        if (std.ascii.isUpper(instruct_src[idx])) {
+            const start = idx;
+            idx += 1;
+            while (idx < instruct_src.len and (std.ascii.isUpper(instruct_src[idx]) or std.ascii.isDigit(instruct_src[idx]) or instruct_src[idx] == '_')) : (idx += 1) {}
+            const name = instruct_src[start..idx];
+
+            idx = try skipWhitespaceAndComments(instruct_src, idx);
+
+            if (idx < instruct_src.len and instruct_src[idx] == ',') {
+                idx += 1;
+                try opcodes.append(arena, name);
+            } else if (idx < instruct_src.len and instruct_src[idx] == '}') {
+                break;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+
+    return opcodes.items;
+}
+
+fn skipWhitespaceAndComments(src: []const u8, start_idx: usize) !usize {
+    var idx = start_idx;
+    while (idx < src.len and (std.ascii.isWhitespace(src[idx]) or src[idx] == '/')) {
+        if (src[idx] == '/' and idx + 1 < src.len and src[idx + 1] == '*') {
+            const close_comment = std.mem.indexOfPos(u8, src, idx + 2, "*/") orelse return error.UnterminatedComment;
+            idx = close_comment + 2;
+        } else {
+            idx += 1;
+        }
+    }
+    return idx;
+}
+
+fn lessThanSlice(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
 }

@@ -10,39 +10,6 @@ const Ocamlc = driver.Ocamlc;
 const Ocamlopt = driver.Ocamlopt;
 const LazyPath = std.Build.LazyPath;
 
-pub const OcamldocByte = struct {
-    sources: Source.Resolver,
-    compiled: Ocamlc.Compiled,
-    byte_lib_dir: LazyPath,
-    odoc_info_cma: LazyPath,
-    prog_cmos: []const LazyPath,
-};
-
-pub const OcamldocNative = struct {
-    lib_dir: LazyPath,
-    opt_exe: LazyPath,
-};
-
-pub const OcamldocArtifacts = struct {
-    byte: LazyPath,
-    opt: ?LazyPath = null,
-    lib_dir: LazyPath,
-};
-
-pub const DebuggerByte = struct {
-    cmi: LazyPath,
-    parser_aux_cmi: LazyPath,
-    cmis_dir: LazyPath,
-    packed_cmo: LazyPath,
-    entry_cmo: LazyPath,
-};
-
-pub const DebuggerArtifacts = struct {
-    exe: LazyPath,
-    cmi: LazyPath,
-    parser_aux_cmi: LazyPath,
-};
-
 pub fn linkOcamlnat(
     b: *std.Build,
     arch_byte: compiler.ArchByte,
@@ -54,18 +21,24 @@ pub fn linkOcamlnat(
 ) LazyPath {
     const runtime_dir = compiler.nativeRuntimeDir(b, rt);
 
-    const std_flags: []const []const u8 = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ compiler.stdlib_dir_from_bin };
-
     return opt.link(
         "ocamlnat",
         &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.bytecomp_cmxa, dynlink_dir.path(b, "dynlink.cmxa"), arch_nat.toplevel_cmxa.?, arch_nat.compiled.impls.get("toplevel/topstart").?.impl.cmx },
         .{
             .includes = &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, runtime_dir, dynlink_dir },
-            .flags = driver.concat(b, std_flags, &.{"-linkall"}),
+            .flags = driver.concat(b, compiler.native_link_flags, &.{"-linkall"}),
             .strip_debug = true,
         },
     );
 }
+
+pub const DebuggerByte = struct {
+    cmi: LazyPath,
+    parser_aux_cmi: LazyPath,
+    cmis_dir: LazyPath,
+    packed_cmo: LazyPath,
+    entry_cmo: LazyPath,
+};
 
 pub fn compileDebugger(
     src: *const Source,
@@ -114,6 +87,12 @@ pub fn compileDebugger(
     };
 }
 
+pub const DebuggerArtifacts = struct {
+    exe: LazyPath,
+    cmi: LazyPath,
+    parser_aux_cmi: LazyPath,
+};
+
 pub fn linkDebugger(
     src: *const Source,
     base: DebuggerByte,
@@ -128,9 +107,15 @@ pub fn linkDebugger(
     const stublibs = b.addWriteFiles();
     if (libs.unix_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll.getEmittedBin(), libs.unix_stubs.dllName(host));
     const dbg_flags: []const []const u8 = if (host.is_windows or libs.unix_stubs.shared_byt == null) &.{ "-linkall", "-no-check-prims" } else &.{"-linkall"};
-    var includes: std.ArrayList(LazyPath) = .empty;
-    includes.append(b.allocator, host_launch_info_dir) catch @panic("OOM");
-    includes.appendSlice(b.allocator, &.{ arch_byte.compiled.cmis_dir, libs.unix_dir, libs.dynlink_dir, base.cmis_dir, base.packed_cmo.dirname(), stublibs.getDirectory() }) catch @panic("OOM");
+    const includes: []const LazyPath = &.{
+        host_launch_info_dir,
+        arch_byte.compiled.cmis_dir,
+        libs.unix_dir,
+        libs.dynlink_dir,
+        base.cmis_dir,
+        base.packed_cmo.dirname(),
+        stublibs.getDirectory(),
+    };
     const exe = ocamlc.link("ocamldebug", &.{
         byte_common.ocamlcommon_cma,
         libs.unix_dir.path(b, "unix.cma"),
@@ -140,7 +125,7 @@ pub fn linkDebugger(
         base.packed_cmo,
         base.entry_cmo,
     }, .{
-        .includes = includes.items,
+        .includes = includes,
         .flags = driver.concat(b, compiler.launchFlags(b, host), dbg_flags),
     });
     return .{
@@ -149,6 +134,14 @@ pub fn linkDebugger(
         .parser_aux_cmi = base.parser_aux_cmi,
     };
 }
+
+pub const OcamldocByte = struct {
+    sources: Source.Resolver,
+    compiled: Ocamlc.Compiled,
+    byte_lib_dir: LazyPath,
+    odoc_info_cma: LazyPath,
+    prog_cmos: []const LazyPath,
+};
 
 pub fn compileOcamldocByte(
     src: *const Source,
@@ -195,6 +188,11 @@ pub fn compileOcamldocByte(
     };
 }
 
+pub const OcamldocNative = struct {
+    lib_dir: LazyPath,
+    opt_exe: LazyPath,
+};
+
 pub fn compileOcamldocNative(
     src: *const Source,
     odoc_byte: OcamldocByte,
@@ -223,9 +221,7 @@ pub fn compileOcamldocNative(
     }
 
     const runtime_dir = b.addWriteFiles();
-    _ = runtime_dir.addCopyFile(target_rt.libasmrun.?.getEmittedBin(), "libasmrun.a");
-    _ = runtime_dir.addCopyFile(target_rt.libcomprmarsh.getEmittedBin(), "libcomprmarsh.a");
-    _ = runtime_dir.addCopyFile(target_rt.zstd_lib.getEmittedBin(), "libzstd.a");
+    _ = runtime_dir.addCopyDirectory(compiler.nativeRuntimeDir(b, target_rt), "", .{});
     _ = runtime_dir.addCopyFile(libs.unix_stubs.static_nat.getEmittedBin(), "libunixnat.a");
     _ = runtime_dir.addCopyFile(libs.str_stubs.static_nat.getEmittedBin(), "libcamlstrnat.a");
 
@@ -241,7 +237,7 @@ pub fn compileOcamldocNative(
 
     const opt_exe = opt.link("ocamldoc.opt", nat_objs.items, .{
         .includes = &.{ cmis_dir, arch_nat.compiled.dir, nat_common.cmxa.dirname(), runtime_dir.getDirectory(), libs.unix_dir, libs.str_dir, libs.dynlink_dir, odoc_nat.dir },
-        .flags = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ compiler.stdlib_dir_from_bin },
+        .flags = compiler.native_link_flags,
         .strip_debug = true,
     });
 
@@ -250,6 +246,12 @@ pub fn compileOcamldocNative(
         .opt_exe = opt_exe,
     };
 }
+
+pub const OcamldocArtifacts = struct {
+    byte: LazyPath,
+    opt: ?LazyPath = null,
+    lib_dir: LazyPath,
+};
 
 pub fn linkOcamldoc(
     src: *const Source,
@@ -280,11 +282,13 @@ pub fn linkOcamldoc(
         driver.concat(b, compiler.launchFlags(b, host), &.{"-no-check-prims"})
     else
         compiler.launchFlags(b, host);
-    var includes: std.ArrayList(LazyPath) = .empty;
-    includes.append(b.allocator, host_launch_info_dir) catch @panic("OOM");
-    includes.appendSlice(b.allocator, &.{ odoc_byte.compiled.cmis_dir, stublibs.getDirectory() }) catch @panic("OOM");
+    const includes: []const LazyPath = &.{
+        host_launch_info_dir,
+        odoc_byte.compiled.cmis_dir,
+        stublibs.getDirectory(),
+    };
     const byte_exe = ocamlc.link("ocamldoc.byte", byte_objs.items, .{
-        .includes = includes.items,
+        .includes = includes,
         .flags = odoc_flags,
     });
 

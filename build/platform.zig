@@ -86,6 +86,20 @@ pub fn init(b: *std.Build, resolved: std.Build.ResolvedTarget) Platform {
     };
 }
 
+/// Parse `native`/`host` or a Zig / autoconf target triple.
+pub fn resolveTarget(b: *std.Build, target_str: []const u8) std.Build.ResolvedTarget {
+    const raw = if (std.mem.eql(u8, target_str, "native") or std.mem.eql(u8, target_str, "host")) blk: {
+        const h = b.graph.host.result;
+        break :blk b.fmt("{s}-{s}-{s}", .{ @tagName(h.cpu.arch), @tagName(h.os.tag), @tagName(h.abi) });
+    } else target_str;
+
+    const normalized = normalizeTriplet(raw);
+    const query = std.Target.Query.parse(.{ .arch_os_abi = normalized }) catch |err| {
+        std.debug.panic("Invalid target '{s}' (normalized: '{s}'): {t}", .{ target_str, normalized, err });
+    };
+    return b.resolveTargetQuery(query);
+}
+
 pub fn eql(a: Platform, b: Platform) bool {
     return std.mem.eql(u8, a.triplet, b.triplet);
 }
@@ -167,16 +181,17 @@ pub const CConfig = struct {
 
     pub fn init(t: std.Target) CConfig {
         const is_windows = t.os.tag == .windows;
+        const base_cflags: []const []const u8 = &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv" };
         return .{
             .cflags = if (is_windows)
-                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-mms-bitfields" }
+                base_cflags ++ .{"-mms-bitfields"}
             else if (t.abi.isMusl())
                 // Avoid copy relocations against Zig's link-time musl stubs.
-                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread", "-fPIC" }
+                base_cflags ++ .{ "-pthread", "-fPIC" }
             else if (t.cpu.arch == .powerpc64 or t.cpu.arch == .powerpc64le)
-                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread", "-mabi=ibmlongdouble" }
+                base_cflags ++ .{ "-pthread", "-mabi=ibmlongdouble" }
             else
-                &.{ "-O2", "-UNDEBUG", "-fno-strict-aliasing", "-fwrapv", "-pthread" },
+                base_cflags ++ .{"-pthread"},
             .cppflags = if (is_windows)
                 &.{ "-D__USE_MINGW_ANSI_STDIO=0", "-DUNICODE", "-D_UNICODE", "-DWINDOWS_UNICODE=1" }
             else
@@ -223,20 +238,6 @@ pub const CConfig = struct {
         return std.mem.join(b.allocator, " ", self.cppflags) catch @panic("OOM");
     }
 };
-
-/// Parse `native`/`host` or a Zig / autoconf target triple.
-pub fn resolveTarget(b: *std.Build, target_str: []const u8) std.Build.ResolvedTarget {
-    const raw = if (std.mem.eql(u8, target_str, "native") or std.mem.eql(u8, target_str, "host")) blk: {
-        const h = b.graph.host.result;
-        break :blk b.fmt("{s}-{s}-{s}", .{ @tagName(h.cpu.arch), @tagName(h.os.tag), @tagName(h.abi) });
-    } else target_str;
-
-    const normalized = normalizeTriplet(raw);
-    const query = std.Target.Query.parse(.{ .arch_os_abi = normalized }) catch |err| {
-        std.debug.panic("Invalid target '{s}' (normalized: '{s}'): {t}", .{ target_str, normalized, err });
-    };
-    return b.resolveTargetQuery(query);
-}
 
 /// Map common autoconf triplets to Zig triples.
 fn normalizeTriplet(str: []const u8) []const u8 {

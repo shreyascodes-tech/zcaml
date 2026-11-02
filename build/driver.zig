@@ -3,17 +3,8 @@ const std = @import("std");
 const Manifest = @import("manifests/manifest.zig");
 const Resolver = @import("source.zig").Resolver;
 const LazyPath = std.Build.LazyPath;
-
-pub fn concat(b: *std.Build, a: []const []const u8, c: []const []const u8) []const []const u8 {
-    return std.mem.concat(b.allocator, []const u8, &.{ a, c }) catch @panic("OOM");
-}
-
-pub fn isArchDependent(key: []const u8) bool {
-    return std.mem.startsWith(u8, key, "asmcomp/") or
-        std.mem.startsWith(u8, key, "driver/opt") or
-        std.mem.eql(u8, key, "file_formats/linear_format") or
-        std.mem.startsWith(u8, key, "toplevel/native/");
-}
+const SMap = std.StringHashMapUnmanaged;
+const SArrayMap = std.StringArrayHashMapUnmanaged;
 
 pub const Ocamlc = struct {
     b: *std.Build,
@@ -74,12 +65,7 @@ pub const Ocamlc = struct {
         run.addArg("-o");
         const cmi = run.addOutputFileArg(self.b.fmt("{s}.cmi", .{name}));
         run.addArgs(&.{ "-c", "-intf" });
-        if (opts.rel_src) |rel| {
-            run.addFileInput(src);
-            run.addArg(rel);
-        } else {
-            run.addFileArg(src);
-        }
+        addSourceArg(run, src, opts.rel_src);
         return .{ .cmi = cmi, .cmti = cmi.dirname().path(self.b, self.b.fmt("{s}.cmti", .{name})) };
     }
 
@@ -103,12 +89,7 @@ pub const Ocamlc = struct {
         run.addArg("-o");
         const cmo = run.addOutputFileArg(self.b.fmt("{s}.cmo", .{name}));
         run.addArgs(&.{ "-c", "-impl" });
-        if (opts.rel_src) |rel| {
-            run.addFileInput(src);
-            run.addArg(rel);
-        } else {
-            run.addFileArg(src);
-        }
+        addSourceArg(run, src, opts.rel_src);
         const dir = cmo.dirname();
         return .{
             .cmo = cmo,
@@ -138,11 +119,11 @@ pub const Ocamlc = struct {
     /// The compiled form of a `Manifest.Plan`.
     pub const Compiled = struct {
         /// Units that produced a `.cmi`, by key, in plan order.
-        intfs: std.StringArrayHashMapUnmanaged(CompiledIntf) = .empty,
+        intfs: SArrayMap(CompiledIntf) = .empty,
         /// Units that produced a `.cmo`, by key, in plan order.
-        impls: std.StringArrayHashMapUnmanaged(CompiledImpl) = .empty,
+        impls: SArrayMap(CompiledImpl) = .empty,
         /// Keys skipped because they don't apply to the target architecture.
-        skipped: std.StringHashMapUnmanaged(void) = .empty,
+        skipped: SMap(void) = .empty,
         /// Directory with every `.cmi` of the plan.
         cmis_dir: LazyPath,
 
@@ -184,7 +165,7 @@ pub const Ocamlc = struct {
         const gpa = b.allocator;
 
         var out: Compiled = .{ .cmis_dir = undefined };
-        var cmi_by_name: std.StringHashMapUnmanaged(LazyPath) = .empty;
+        var cmi_by_name: SMap(LazyPath) = .empty;
         var includes: std.ArrayList(LazyPath) = .empty;
         includes.appendSlice(gpa, opts.includes) catch @panic("OOM");
         const all_cmis = b.addWriteFiles();
@@ -302,15 +283,8 @@ pub const Ocamlopt = struct {
     };
 
     pub fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
-        const run = if (self.ocamlrun) |orun| blk: {
-            const r = self.b.addRunArtifact(orun);
-            r.addFileArg(self.exe);
-            break :blk r;
-        } else blk: {
-            const r = std.Build.Step.Run.create(self.b, "run ocamlopt");
-            r.addFileArg(self.exe);
-            break :blk r;
-        };
+        const run = if (self.ocamlrun) |orun| self.b.addRunArtifact(orun) else std.Build.Step.Run.create(self.b, "run ocamlopt");
+        run.addFileArg(self.exe);
         if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
         if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
         // Build steps must find the Zig used by this build, even when it was invoked
@@ -346,12 +320,7 @@ pub const Ocamlopt = struct {
         run.addArg("-o");
         const cmx = run.addOutputFileArg(self.b.fmt("{s}.cmx", .{name}));
         run.addArgs(&.{ "-c", "-impl" });
-        if (opts.rel_src) |rel| {
-            run.addFileInput(src);
-            run.addArg(rel);
-        } else {
-            run.addFileArg(src);
-        }
+        addSourceArg(run, src, opts.rel_src);
         return .{ .cmx = cmx, .obj = cmx.dirname().path(self.b, self.b.fmt("{s}.o", .{name})) };
     }
 
@@ -388,8 +357,8 @@ pub const Ocamlopt = struct {
     }
 
     pub const Compiled = struct {
-        impls: std.StringArrayHashMapUnmanaged(struct { unit: Manifest.Unit, impl: Impl }) = .empty,
-        skipped: std.StringHashMapUnmanaged(void) = .empty,
+        impls: SArrayMap(struct { unit: Manifest.Unit, impl: Impl }) = .empty,
+        skipped: SMap(void) = .empty,
         dir: LazyPath,
 
         pub fn cmx(self: Compiled, key: []const u8) ?LazyPath {
@@ -415,7 +384,7 @@ pub const Ocamlopt = struct {
         includes.appendSlice(b.allocator, opts.includes) catch @panic("OOM");
         includes.append(b.allocator, byte.cmis_dir) catch @panic("OOM");
         const all = b.addWriteFiles();
-        var cmis: std.StringHashMapUnmanaged(LazyPath) = .empty;
+        var cmis: SMap(LazyPath) = .empty;
         for (byte.intfs.values()) |i| cmis.put(b.allocator, i.unit.name, i.cmi) catch @panic("OOM");
         for (plan.cmx_waves) |wave| {
             const stage = b.addWriteFiles();
@@ -424,16 +393,11 @@ pub const Ocamlopt = struct {
                     out.skipped.put(b.allocator, u.key, {}) catch @panic("OOM");
                     continue;
                 }
-                const native = if (opts.reuse_frontend) |fe| blk: {
-                    if (!isArchDependent(u.key)) {
-                        if (fe.impls.get(u.key)) |prev| break :blk prev.impl;
-                    }
-                    break :blk self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
-                        .includes = includes.items,
-                        .flags = concat(b, concat(b, opts.flags, u.flags), u.native_flags),
-                        .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
-                    });
-                } else self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
+                const reused: ?Impl = if (opts.reuse_frontend) |fe|
+                    if (!isArchDependent(u.key)) if (fe.impls.get(u.key)) |prev| prev.impl else null else null
+                else
+                    null;
+                const native = reused orelse self.impl(sources.resolve(u.src), u.name, cmis.get(u.name).?, .{
                     .includes = includes.items,
                     .flags = concat(b, concat(b, opts.flags, u.flags), u.native_flags),
                     .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
@@ -450,3 +414,23 @@ pub const Ocamlopt = struct {
         return out;
     }
 };
+
+fn addSourceArg(run: *std.Build.Step.Run, src: LazyPath, rel_src: ?[]const u8) void {
+    if (rel_src) |rel| {
+        run.addFileInput(src);
+        run.addArg(rel);
+    } else {
+        run.addFileArg(src);
+    }
+}
+
+pub fn isArchDependent(key: []const u8) bool {
+    return std.mem.startsWith(u8, key, "asmcomp/") or
+        std.mem.startsWith(u8, key, "driver/opt") or
+        std.mem.eql(u8, key, "file_formats/linear_format") or
+        std.mem.startsWith(u8, key, "toplevel/native/");
+}
+
+pub fn concat(b: *std.Build, a: []const []const u8, c: []const []const u8) []const []const u8 {
+    return std.mem.concat(b.allocator, []const u8, &.{ a, c }) catch @panic("OOM");
+}
