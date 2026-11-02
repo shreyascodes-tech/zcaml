@@ -270,7 +270,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: ocaml-${{ inputs.ocaml_version }}-host-x86_64-windows-gnu-target-*
-          path: ${{ runner.temp }}/windows-archives
+          path: _windows-archives
           merge-multiple: true
 
       - name: Extract & verify all Windows-hosted toolchains
@@ -278,8 +278,8 @@ jobs:
         run: |
           set -euo pipefail
           VER="${{ inputs.ocaml_version }}"
-          ROOT="${RUNNER_TEMP}/windows-root/zig-out/${VER}"
-          ARCHIVES="${RUNNER_TEMP}/windows-archives"
+          ROOT="_windows-root/zig-out/${VER}"
+          ARCHIVES="_windows-archives"
           mkdir -p "$ROOT"
 
           for archive in "$ARCHIVES"/*.tar.zst; do
@@ -289,7 +289,7 @@ jobs:
             target_triple="${rest#*-target-}"
             dest="${ROOT}/host-${host_triple}/target-${target_triple}"
             mkdir -p "$dest"
-            zstd -d -c "$archive" | tar -xf - -C "$dest" &
+            zstd -d -c "$archive" | tar --force-local -xf - -C "$dest" &
           done
           wait
 
@@ -298,13 +298,13 @@ jobs:
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Dverify-root="$ROOT" \
             -Dverify-jobs=4 \
-            -Dsave-deferred="${RUNNER_TEMP}/deferred-from-windows"
+            -Dsave-deferred="_deferred-from-windows"
 
       - name: Upload Windows -> Linux cross-compiled test bundles
         uses: actions/upload-artifact@v4
         with:
           name: _internal-deferred-from-windows
-          path: ${{ runner.temp }}/deferred-from-windows
+          path: _deferred-from-windows
           retention-days: 1
           compression-level: 1
 
