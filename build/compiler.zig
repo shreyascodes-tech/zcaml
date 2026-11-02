@@ -462,7 +462,6 @@ pub const NativeCommon = struct {
     config_obj: LazyPath,
     cmxa: LazyPath,
     lib: LazyPath,
-    ocamlopt_opt: LazyPath,
 };
 
 pub fn buildNativeCommon(
@@ -471,7 +470,6 @@ pub fn buildNativeCommon(
     arch_nat: ArchNative,
     config_main_ml: LazyPath,
     opt: Ocamlopt,
-    rt: runtime.Artifacts,
 ) NativeCommon {
     const b = src.b;
     const cc = src.manifest.compiler;
@@ -489,21 +487,29 @@ pub fn buildNativeCommon(
         .flags = &.{ "-linkall", "-cclib", "-lcomprmarsh", "-cclib", "-lzstd" },
     });
 
+    return .{
+        .config_cmx = cfg_nat.cmx,
+        .config_obj = cfg_nat.obj,
+        .cmxa = common_archive.cmxa,
+        .lib = common_archive.lib,
+    };
+}
+
+pub fn linkOcamloptOpt(
+    b: *std.Build,
+    arch_byte: ArchByte,
+    arch_nat: ArchNative,
+    nat_common: NativeCommon,
+    opt: Ocamlopt,
+    rt: runtime.Artifacts,
+) LazyPath {
     const runtime_dir = nativeRuntimeDir(b, rt);
     const link_opts: Ocamlopt.Options = .{
         .includes = &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, runtime_dir },
         .flags = native_link_flags,
         .strip_debug = true,
     };
-    const ocamlopt_opt = opt.link("ocamlopt.opt", &.{ common_archive.cmxa, arch_nat.optcomp_cmxa, arch_nat.compiled.impls.get("driver/optmain").?.impl.cmx }, link_opts);
-
-    return .{
-        .config_cmx = cfg_nat.cmx,
-        .config_obj = cfg_nat.obj,
-        .cmxa = common_archive.cmxa,
-        .lib = common_archive.lib,
-        .ocamlopt_opt = ocamlopt_opt,
-    };
+    return opt.link("ocamlopt.opt", &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.compiled.impls.get("driver/optmain").?.impl.cmx }, link_opts);
 }
 
 pub const NativeCompilerLibs = struct {
@@ -547,7 +553,6 @@ pub fn linkNativePrograms(
     nat_common: NativeCommon,
     opt: Ocamlopt,
     rt: runtime.Artifacts,
-    ocamlopt_opt: LazyPath,
     ocamllex_opt: LazyPath,
 ) NativePrograms {
     const runtime_dir = nativeRuntimeDir(b, rt);
@@ -559,7 +564,7 @@ pub fn linkNativePrograms(
     };
     return .{
         .ocamlc = opt.link("ocamlc.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.compiled.impls.get("driver/main").?.impl.cmx }, opts),
-        .ocamlopt = ocamlopt_opt,
+        .ocamlopt = opt.link("ocamlopt.opt", &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.compiled.impls.get("driver/optmain").?.impl.cmx }, opts),
         .ocamllex = ocamllex_opt,
         .ocamldep = opt.link("ocamldep.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.compiled.impls.get("tools/ocamldep").?.impl.cmx }, opts),
         .ocamlobjinfo = opt.link("ocamlobjinfo.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.middleend_cmxa, arch_nat.compiled.impls.get("tools/objinfo").?.impl.cmx }, opts),

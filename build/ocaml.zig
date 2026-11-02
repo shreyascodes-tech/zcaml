@@ -151,16 +151,16 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     }
 
     if (host.hasNativeCompiler()) {
-        const ocamlopt_opt = self.getNativeCommon(host, host, target).ocamlopt_opt;
+        const arch_nat = self.getNativeCompiler(host, target.arch);
+        const nat_common = self.getNativeCommon(host, host, target);
         const ocamllex_opt = self.getOcamllexOpt(host);
         comp.native_programs = compiler.linkNativePrograms(
             b,
             target_arch_byte,
-            self.getNativeCompiler(host, target.arch),
-            self.getNativeCommon(host, host, target),
+            arch_nat,
+            nat_common,
             self.getEmitter(host),
             host_rt,
-            ocamlopt_opt,
             ocamllex_opt,
         );
     }
@@ -248,7 +248,7 @@ fn getRawEmitter(self: *Ocaml, target: Platform) Ocamlopt {
         // Seed the bootstrap bytecode emitter to break the cycle when getNativeCommon compiles the native stdlib for build_platform.
         self.raw_emitters.put(b.allocator, self.build_platform.triplet, boot_opt) catch @panic("OOM");
     }
-    const ocamlopt_opt = self.getNativeCommon(self.build_platform, self.build_platform, target).ocamlopt_opt;
+    const ocamlopt_opt = self.linkOcamloptOpt(self.build_platform, self.build_platform, target);
     const fast_opt = self.rawOcamlopt(null, ocamlopt_opt);
     self.raw_emitters.put(b.allocator, target.triplet, fast_opt) catch @panic("OOM");
     return fast_opt;
@@ -357,10 +357,20 @@ fn getNativeCommon(self: *Ocaml, code: Platform, host: Platform, target: Platfor
         self.getNativeCompiler(code, target.arch),
         self.getByteCommon(host, target).config_main_ml,
         self.getEmitter(code),
-        self.getRuntime(code),
     );
     self.native_commons.put(b.allocator, key, nc) catch @panic("OOM");
     return nc;
+}
+
+fn linkOcamloptOpt(self: *Ocaml, code: Platform, host: Platform, target: Platform) LazyPath {
+    return compiler.linkOcamloptOpt(
+        self.src.b,
+        self.getArchByte(target.arch),
+        self.getNativeCompiler(code, target.arch),
+        self.getNativeCommon(code, host, target),
+        self.getEmitter(code),
+        self.getRuntime(code),
+    );
 }
 
 fn getOcamlnat(self: *Ocaml, target: Platform) LazyPath {

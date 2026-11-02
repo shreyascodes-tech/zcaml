@@ -50,15 +50,11 @@ jobs:
             curl \
             ca-certificates
 
-      - name: Restore Zig global cache
+      - name: Restore sysroot cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/zig
-            ~/.cache/zcaml
-          key: zcaml-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon', 'build/**') }}
-          restore-keys: |
-            zcaml-zig-${{ env.ZIG_VERSION }}-
+          path: ~/.cache/zcaml
+          key: zcaml-sysroots-v2
 
       - name: Build full OCaml host -> target matrix
         run: zig build -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
