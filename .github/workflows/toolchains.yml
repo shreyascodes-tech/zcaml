@@ -20,14 +20,13 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Build the entire 39-pair matrix on a 16-core Depot Ubuntu runner (8x
-  #    rate vs 16x on 32-core, since the OCaml bootstrap phase is sequential),
-  #    verify all 27 Linux-hosted pairs, and upload each (host, target)
-  #    .tar.zst archive directly in parallel with compressionLevel: 0.
+  # 1. Build the entire 39-pair matrix on an 8-core Depot Ubuntu runner (4x
+  #    rate vs 16x on 32-core), verify all 27 Linux-hosted pairs, and upload
+  #    each (host, target) .tar.zst archive in parallel with compressionLevel=0.
   # ---------------------------------------------------------------------------
   build-and-test-linux:
     name: Build Matrix & Verify Linux + Wine
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-24.04-8
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -43,12 +42,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/zig
+            .zig-global-cache
             ~/.cache/zcaml
             zig-pkg
-          key: zcaml-linux-global-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig.zon') }}
+          key: zcaml-linux-global-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig.zon') }}
           restore-keys: |
-            zcaml-linux-global-${{ env.ZIG_VERSION }}-
+            zcaml-linux-global-v2-${{ env.ZIG_VERSION }}-
 
       - name: Install QEMU user-mode emulators & Wine
         run: |
@@ -62,13 +61,19 @@ jobs:
             ca-certificates
 
       - name: Build full OCaml host -> target matrix
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: zig build --verbose --summary all -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
 
       - name: Verify all Linux-hosted toolchains (native + QEMU + Wine)
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
-            -Dverify-jobs=16 \
+            -Dverify-jobs=8 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-linux
 
       - name: Package all 39 (host, target) toolchain archives in parallel
@@ -96,7 +101,7 @@ jobs:
           export -f pack_one
 
           find "zig-out/${VER}" -mindepth 2 -maxdepth 2 -type d -name 'target-*' -print0 \
-            | xargs -0 -P 16 -I {} bash -c 'pack_one "$1" "$2" "$3"' _ {} "$OUT_DIR" "$VER"
+            | xargs -0 -P 8 -I {} bash -c 'pack_one "$1" "$2" "$3"' _ {} "$OUT_DIR" "$VER"
 
       - name: Upload Linux -> macOS deferred test bundles
         uses: actions/upload-artifact@v4
@@ -188,11 +193,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/zig
+            .zig-global-cache
             .zig-cache
-          key: zcaml-macos-verify-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          key: zcaml-macos-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
           restore-keys: |
-            zcaml-macos-verify-${{ env.ZIG_VERSION }}-
+            zcaml-macos-verify-v2-${{ env.ZIG_VERSION }}-
 
       - name: Ensure Rosetta 2 is available for x86_64-macos testing
         run: |
@@ -213,7 +218,10 @@ jobs:
           name: _internal-deferred-from-linux
           path: ${{ runner.temp }}/deferred-from-linux
 
-      - name: Extract macOS toolchains in parallel
+      - name: Extract & verify all macOS toolchains
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           set -euo pipefail
           VER="${{ inputs.ocaml_version }}"
@@ -241,17 +249,10 @@ jobs:
 
           find "${{ runner.temp }}/deferred-from-linux" -type f -exec chmod +x {} +
 
-      - name: Execute Linux -> macOS cross-compiled test bundles
-        run: |
           zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
-            -Drun-deferred=${{ runner.temp }}/deferred-from-linux
-
-      - name: Verify all macOS-hosted toolchains (aarch64-macos & x86_64-macos)
-        run: |
-          zig build --verbose --summary all -Docaml verify \
-            -Docaml-version=${{ inputs.ocaml_version }} \
-            -Dverify-root=${{ runner.temp }}/macos-root/zig-out/${{ inputs.ocaml_version }} \
+            -Drun-deferred=${{ runner.temp }}/deferred-from-linux \
+            -Dverify-root="$ROOT" \
             -Dverify-jobs=8 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-macos
 
@@ -285,11 +286,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/AppData/Local/zig
+            .zig-global-cache
             .zig-cache
-          key: zcaml-windows-verify-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          key: zcaml-windows-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
           restore-keys: |
-            zcaml-windows-verify-${{ env.ZIG_VERSION }}-
+            zcaml-windows-verify-v2-${{ env.ZIG_VERSION }}-
 
       - name: Download Windows toolchain archives
         uses: actions/download-artifact@v4
@@ -300,6 +301,9 @@ jobs:
 
       - name: Extract & verify all Windows-hosted toolchains
         shell: bash
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           set -euo pipefail
           VER="${{ inputs.ocaml_version }}"
@@ -360,12 +364,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/zig
+            .zig-global-cache
             ~/.cache/zcaml
             .zig-cache
-          key: zcaml-linux-verify-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          key: zcaml-linux-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
           restore-keys: |
-            zcaml-linux-verify-${{ env.ZIG_VERSION }}-
+            zcaml-linux-verify-v2-${{ env.ZIG_VERSION }}-
 
       - name: Install QEMU & Wine for deferred cross-target execution
         run: |
@@ -385,6 +389,9 @@ jobs:
           merge-multiple: true
 
       - name: Execute Linux & Windows target binaries compiled on macOS & Windows
+        env:
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           find "${{ runner.temp }}/deferred-bundles" -type f -exec chmod +x {} +
           zig build --verbose --summary all -Docaml verify \

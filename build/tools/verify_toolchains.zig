@@ -192,7 +192,8 @@ pub fn run(self: *VerifyToolchains, init: std.process.Init) !void {
     if (self.run_deferred) |rd| {
         try Dir.cwd().createDirPath(io, rd);
         const rd_abs = try Dir.cwd().realPathFileAlloc(io, rd, arena);
-        return runDeferredBundles(init, cache_dir, fixtures_abs, rd_abs, self.jobs);
+        try runDeferredBundles(init, cache_dir, fixtures_abs, rd_abs, self.jobs);
+        if (!pathExists(io, self.root_dir)) return;
     }
 
     const root_abs = try Dir.cwd().realPathFileAlloc(io, self.root_dir, arena);
@@ -207,6 +208,7 @@ pub fn run(self: *VerifyToolchains, init: std.process.Init) !void {
             skipped_count += 1;
         }
     }
+    std.mem.sort(PairJob, runnable.items, cur, pairJobPriorityDesc);
 
     std.debug.print(
         "==> Running zcaml toolchain verification on {s} ({d} runnable, {d} for other host OS, jobs={d})\n",
@@ -358,6 +360,24 @@ fn discoverPairs(
 
 fn strLessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
+}
+
+fn jobPriority(cur: Triple, job: PairJob) u32 {
+    var score: u32 = 0;
+    if (job.target.isWindows()) score += 100;
+    if (!std.mem.eql(u8, job.host.arch, cur.arch)) score += 80;
+    if (job.host.isMusl() != cur.isMusl()) score += 20;
+    if (!std.mem.eql(u8, job.target.arch, cur.arch)) score += 10;
+    return score;
+}
+
+fn pairJobPriorityDesc(cur: Triple, a: PairJob, b: PairJob) bool {
+    const pa = jobPriority(cur, a);
+    const pb = jobPriority(cur, b);
+    if (pa != pb) return pa > pb;
+    const h_cmp = std.mem.order(u8, a.host.raw, b.host.raw);
+    if (h_cmp != .eq) return h_cmp == .lt;
+    return std.mem.order(u8, a.target.raw, b.target.raw) == .lt;
 }
 
 const ExecWrapper = struct {
