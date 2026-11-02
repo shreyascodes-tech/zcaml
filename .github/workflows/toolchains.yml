@@ -93,6 +93,14 @@ jobs:
           find "zig-out/${VER}" -mindepth 2 -maxdepth 2 -type d -name 'target-*' -print0 \
             | xargs -0 -P 32 -I {} bash -c 'pack_one "$1" "$2" "$3"' _ {} "$OUT_DIR" "$VER"
 
+      - name: Upload Linux -> macOS deferred test bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: _internal-deferred-from-linux
+          path: ${{ runner.temp }}/deferred-from-linux
+          retention-days: 1
+          compression-level: 1
+
       - name: Upload all 39 toolchain artifacts in parallel (compressionLevel=0)
         uses: actions/github-script@v7
         env:
@@ -101,36 +109,56 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
-            const { DefaultArtifactClient } = require('@actions/artifact');
+            const { execFile } = require('child_process');
 
-            const artifactClient = new DefaultArtifactClient();
+            const uploadEntry = path.resolve(__dirname, '../../../upload-artifact/v4/dist/index.js');
             const dir = process.env.ARCHIVES_DIR;
             const files = fs.readdirSync(dir).filter(f => f.endsWith('.tar.zst')).sort();
 
             console.log(`Uploading ${files.length} toolchain archives with concurrency=8 and compressionLevel=0...`);
             const concurrency = 8;
             let idx = 0;
+
+            function uploadOne(file) {
+              const fullPath = path.join(dir, file);
+              const artifactName = file.replace(/\.tar\.zst$/, '');
+              return new Promise((resolve, reject) => {
+                execFile(
+                  process.execPath,
+                  [uploadEntry],
+                  {
+                    env: {
+                      ...process.env,
+                      'INPUT_NAME': artifactName,
+                      'INPUT_PATH': fullPath,
+                      'INPUT_RETENTION-DAYS': '7',
+                      'INPUT_COMPRESSION-LEVEL': '0',
+                      'INPUT_IF-NO-FILES-FOUND': 'error',
+                      'INPUT_OVERWRITE': 'true',
+                      'INPUT_INCLUDE-HIDDEN-FILES': 'false',
+                    },
+                    maxBuffer: 10 * 1024 * 1024,
+                  },
+                  (err, stdout, stderr) => {
+                    if (err) {
+                      console.error(`Failed uploading ${artifactName}:\n${stdout}\n${stderr}`);
+                      return reject(err);
+                    }
+                    console.log(`Uploaded ${artifactName}`);
+                    resolve();
+                  }
+                );
+              });
+            }
+
             async function worker() {
               while (idx < files.length) {
                 const file = files[idx++];
-                const fullPath = path.join(dir, file);
-                const artifactName = file.replace(/\.tar\.zst$/, '');
-                await artifactClient.uploadArtifact(artifactName, [fullPath], dir, {
-                  retentionDays: 7,
-                  compressionLevel: 0,
-                });
+                await uploadOne(file);
               }
             }
             await Promise.all(Array.from({ length: concurrency }, () => worker()));
             console.log(`Uploaded all ${files.length} toolchain artifacts!`);
-
-      - name: Upload Linux -> macOS deferred test bundles
-        uses: actions/upload-artifact@v4
-        with:
-          name: _internal-deferred-from-linux
-          path: ${{ runner.temp }}/deferred-from-linux
-          retention-days: 1
-          compression-level: 1
 
   # ---------------------------------------------------------------------------
   # 2. Verify all macOS-hosted toolchains (aarch64-macos natively + x86_64-macos
