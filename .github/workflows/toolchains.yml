@@ -64,7 +64,7 @@ jobs:
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-        run: zig build --verbose --summary all -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
+        run: zig build --summary failures -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
 
       - name: Verify all Linux-hosted toolchains (native + QEMU + Wine)
         env:
@@ -240,7 +240,19 @@ jobs:
             local target_triple="${rest#*-target-}"
             local dest="${root}/host-${host_triple}/target-${target_triple}"
             mkdir -p "$dest"
-            zstd -d -c "$archive" | tar -xf - -C "$dest"
+            zstd -d -c "$archive" | tar \
+              --exclude='*compiler-libs*' \
+              --exclude='*.cmt' \
+              --exclude='*.cmti' \
+              --exclude='*.mli' \
+              --exclude='./bin/ocaml' \
+              --exclude='./bin/ocamlnat' \
+              --exclude='./bin/ocamlc' \
+              --exclude='./bin/ocamlopt' \
+              --exclude='./bin/ocamldep' \
+              --exclude='./bin/ocamlobjinfo' \
+              --exclude='./bin/ocamllex' \
+              -xf - -C "$dest"
           }
           export -f extract_one
 
@@ -306,6 +318,7 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           set -euo pipefail
+          powershell.exe -NoProfile -NonInteractive -Command "Add-MpPreference -ExclusionPath '$PWD', '$env:RUNNER_TEMP', '$env:TEMP' -ErrorAction SilentlyContinue" || true
           VER="${{ inputs.ocaml_version }}"
           ROOT="_windows-root/zig-out/${VER}"
           ARCHIVES="_windows-archives"
@@ -318,7 +331,19 @@ jobs:
             target_triple="${rest#*-target-}"
             dest="${ROOT}/host-${host_triple}/target-${target_triple}"
             mkdir -p "$dest"
-            zstd -d -c "$archive" | tar --force-local -xf - -C "$dest" &
+            zstd -d -c "$archive" | tar --force-local \
+              --exclude='*compiler-libs*' \
+              --exclude='*.cmt' \
+              --exclude='*.cmti' \
+              --exclude='*.mli' \
+              --exclude='./bin/ocaml.exe' \
+              --exclude='./bin/ocamlnat.exe' \
+              --exclude='./bin/ocamlc.exe' \
+              --exclude='./bin/ocamlopt.exe' \
+              --exclude='./bin/ocamldep.exe' \
+              --exclude='./bin/ocamlobjinfo.exe' \
+              --exclude='./bin/ocamllex.exe' \
+              -xf - -C "$dest" &
           done
           wait
 
