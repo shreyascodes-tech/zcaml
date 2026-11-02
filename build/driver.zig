@@ -168,10 +168,13 @@ pub const Ocamlc = struct {
         var cmi_by_name: SMap(LazyPath) = .empty;
         var includes: std.ArrayList(LazyPath) = .empty;
         includes.appendSlice(gpa, opts.includes) catch @panic("OOM");
+        if (opts.reuse_frontend) |fe| {
+            includes.append(gpa, fe.cmis_dir) catch @panic("OOM");
+        }
         const all_cmis = b.addWriteFiles();
 
         for (plan.cmi_waves) |wave| {
-            const wave_dir = b.addWriteFiles();
+            var wave_dir: ?*std.Build.Step.WriteFile = null;
             for (wave) |wu| {
                 const u = wu.unit;
                 if (opts.only_frontend and isArchDependent(u.key)) {
@@ -188,7 +191,6 @@ pub const Ocamlc = struct {
                         const prev = fe.intfs.get(u.key).?;
                         out.intfs.put(gpa, u.key, prev) catch @panic("OOM");
                         if (wu.kind == .impl) out.impls.put(gpa, u.key, fe.impls.get(u.key).?) catch @panic("OOM");
-                        _ = wave_dir.addCopyFile(prev.cmi, cmi_name);
                         _ = all_cmis.addCopyFile(prev.cmi, cmi_name);
                         cmi_by_name.put(gpa, u.name, prev.cmi) catch @panic("OOM");
                         continue;
@@ -215,11 +217,18 @@ pub const Ocamlc = struct {
                         break :blk r.cmi;
                     },
                 };
-                _ = wave_dir.addCopyFile(cmi, cmi_name);
+                const wd = wave_dir orelse blk: {
+                    const wf = b.addWriteFiles();
+                    wave_dir = wf;
+                    break :blk wf;
+                };
+                _ = wd.addCopyFile(cmi, cmi_name);
                 _ = all_cmis.addCopyFile(cmi, cmi_name);
                 cmi_by_name.put(gpa, u.name, cmi) catch @panic("OOM");
             }
-            includes.append(gpa, wave_dir.getDirectory()) catch @panic("OOM");
+            if (wave_dir) |wd| {
+                includes.append(gpa, wd.getDirectory()) catch @panic("OOM");
+            }
         }
 
         out.cmis_dir = all_cmis.getDirectory();
@@ -360,6 +369,7 @@ pub const Ocamlopt = struct {
         impls: SArrayMap(struct { unit: Manifest.Unit, impl: Impl }) = .empty,
         skipped: SMap(void) = .empty,
         dir: LazyPath,
+        frontend_dir: ?LazyPath = null,
 
         pub fn cmx(self: Compiled, key: []const u8) ?LazyPath {
             if (self.impls.get(key)) |u| return u.impl.cmx;
@@ -383,11 +393,15 @@ pub const Ocamlopt = struct {
         var includes: std.ArrayList(LazyPath) = .empty;
         includes.appendSlice(b.allocator, opts.includes) catch @panic("OOM");
         includes.append(b.allocator, byte.cmis_dir) catch @panic("OOM");
+        if (opts.reuse_frontend) |fe| {
+            includes.append(b.allocator, fe.frontend_dir.?) catch @panic("OOM");
+        }
         const all = b.addWriteFiles();
+        const fe_wf: ?*std.Build.Step.WriteFile = if (opts.reuse_frontend == null) b.addWriteFiles() else null;
         var cmis: SMap(LazyPath) = .empty;
         for (byte.intfs.values()) |i| cmis.put(b.allocator, i.unit.name, i.cmi) catch @panic("OOM");
         for (plan.cmx_waves) |wave| {
-            const stage = b.addWriteFiles();
+            var stage: ?*std.Build.Step.WriteFile = null;
             for (wave) |u| {
                 if (!u.enabledFor(sources.arch) or !sources.has(u.src) or (opts.skip_toplevel and std.mem.startsWith(u8, u.key, "toplevel/"))) {
                     out.skipped.put(b.allocator, u.key, {}) catch @panic("OOM");
@@ -403,14 +417,30 @@ pub const Ocamlopt = struct {
                     .rel_src = if (self.cwd != null) sources.relPath(u.src, self.strip_dir) else null,
                 });
                 out.impls.put(b.allocator, u.key, .{ .unit = u, .impl = native }) catch @panic("OOM");
-                if (!std.mem.eql(u8, u.key, "utils/config")) {
-                    _ = stage.addCopyFile(native.cmx, b.fmt("{s}.cmx", .{u.name}));
+                const cmx_name = b.fmt("{s}.cmx", .{u.name});
+                if (reused == null and !std.mem.eql(u8, u.key, "utils/config")) {
+                    const st = stage orelse blk: {
+                        const wf = b.addWriteFiles();
+                        stage = wf;
+                        break :blk wf;
+                    };
+                    _ = st.addCopyFile(native.cmx, cmx_name);
                 }
-                _ = all.addCopyFile(native.cmx, b.fmt("{s}.cmx", .{u.name}));
+                if (!std.mem.eql(u8, u.key, "utils/config")) {
+                    _ = all.addCopyFile(native.cmx, cmx_name);
+                    if (fe_wf) |fwf| {
+                        if (!isArchDependent(u.key)) {
+                            _ = fwf.addCopyFile(native.cmx, cmx_name);
+                        }
+                    }
+                }
             }
-            includes.append(b.allocator, stage.getDirectory()) catch @panic("OOM");
+            if (stage) |st| {
+                includes.append(b.allocator, st.getDirectory()) catch @panic("OOM");
+            }
         }
         out.dir = all.getDirectory();
+        out.frontend_dir = if (fe_wf) |fwf| fwf.getDirectory() else null;
         return out;
     }
 };

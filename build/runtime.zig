@@ -85,6 +85,7 @@ pub const Artifacts = struct {
     libasmruni: ?*std.Build.Step.Compile = null,
     libcomprmarsh: *std.Build.Step.Compile,
     zstd_lib: *std.Build.Step.Compile,
+    native_runtime_dir: ?std.Build.LazyPath = null,
 
     /// Include paths for C code built against the runtime (runtime, stubs, ...).
     pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
@@ -197,6 +198,14 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     self.addIncludes(src, self.libcomprmarsh.root_module);
     self.libcomprmarsh.root_module.linkLibrary(zstd_lib);
     self.libcomprmarsh.root_module.addCSourceFile(.{ .file = src.path("runtime/zstd.c"), .flags = cflags });
+
+    if (self.libasmrun) |asmrun| {
+        const runtime_dir = b.addWriteFiles();
+        _ = runtime_dir.addCopyFile(asmrun.getEmittedBin(), "libasmrun.a");
+        _ = runtime_dir.addCopyFile(self.libcomprmarsh.getEmittedBin(), "libcomprmarsh.a");
+        _ = runtime_dir.addCopyFile(self.zstd_lib.getEmittedBin(), "libzstd.a");
+        self.native_runtime_dir = runtime_dir.getDirectory();
+    }
 
     return self;
 }

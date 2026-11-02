@@ -43,6 +43,7 @@ rt_common: runtime.Common,
 build_rt: runtime.Artifacts,
 stdlib_common: stdlib.Common,
 comp_shared: compiler.Shared,
+ld_conf: LazyPath,
 
 runtimes: SMap(runtime.Artifacts) = .empty,
 launch_infos: SMap(LazyPath) = .empty,
@@ -87,6 +88,7 @@ pub fn init(src: *const Source, opts: Options) Ocaml {
         .build_rt = build_rt,
         .stdlib_common = stdlib_common,
         .comp_shared = comp_shared,
+        .ld_conf = b.addWriteFiles().add("ld.conf", "./stublibs\n.\n"),
     };
     self.runtimes.put(b.allocator, build_platform.triplet, build_rt) catch @panic("OOM");
     self.launch_infos.put(b.allocator, build_platform.triplet, stdlib_common.build_launch_info_dir) catch @panic("OOM");
@@ -95,8 +97,8 @@ pub fn init(src: *const Source, opts: Options) Ocaml {
 
 pub const Toolchain = struct {
     b: *std.Build,
-    /// The install tree, see the module docs.
-    layout: LazyPath,
+    ocaml_src: Source,
+    ld_conf: LazyPath,
     host_rt: runtime.Artifacts,
     target_rt: runtime.Artifacts,
     stdlib: stdlib.Artifacts,
@@ -106,13 +108,143 @@ pub const Toolchain = struct {
     ocamldebug: ?extras.DebuggerArtifacts = null,
     ocamldoc: ?extras.OcamldocArtifacts = null,
 
-    /// Install the layout to `<install prefix>/<sub_path>`.
+    /// Install the layout directly to `<install prefix>/<sub_path>`.
     pub fn addInstall(self: Toolchain, step: *std.Build.Step, sub_path: []const u8) void {
-        step.dependOn(&self.b.addInstallDirectory(.{
-            .source_dir = self.layout,
-            .install_dir = .prefix,
-            .install_subdir = sub_path,
-        }).step);
+        self.populateLayout(.{ .install = .{
+            .b = self.b,
+            .step = step,
+            .sub_path = sub_path,
+        } });
+    }
+
+    /// Materialize the install tree as a build-cache `LazyPath` directory.
+    pub fn layout(self: Toolchain) LazyPath {
+        const wf = self.b.addWriteFiles();
+        self.populateLayout(.{ .wf = .{ .b = self.b, .wf = wf } });
+        return wf.getDirectory();
+    }
+
+    fn populateLayout(tc: Toolchain, l: Layout) void {
+        const src = tc.ocaml_src;
+        const b = tc.b;
+        const host_exe = tc.host_rt.platform.exeExt();
+        const target = tc.target_rt.platform;
+        const target_exe = target.exeExt();
+        const bin = "bin";
+        const lib = "lib/ocaml";
+
+        // bin/: host runtime and tools (.opt defaults, with .byte always retained)
+        l.artifact(tc.host_rt.ocamlrun, bin);
+        if (tc.host_rt.ocamlrund) |a| l.artifact(a, bin);
+        if (tc.host_rt.ocamlruni) |a| l.artifact(a, bin);
+        l.artifact(tc.host_rt.ocamlyacc, bin);
+        if (!tc.host_rt.platform.eql(target)) {
+            l.file(tc.target_rt.ocamlrun.getEmittedBin(), b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
+            if (tc.target_rt.ocamlrund) |a| l.file(a.getEmittedBin(), b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));
+            if (tc.target_rt.ocamlruni) |a| l.file(a.getEmittedBin(), b.fmt("{s}/ocamlruni-target{s}", .{ bin, target_exe }));
+        }
+
+        const progs = tc.compiler.programs;
+        for ([_]struct { []const u8, LazyPath }{
+            .{ "ocamlc", progs.ocamlc },
+            .{ "ocamlopt", progs.ocamlopt },
+            .{ "ocamllex", progs.ocamllex },
+            .{ "ocamldep", progs.ocamldep },
+            .{ "ocamlobjinfo", progs.ocamlobjinfo },
+        }) |entry| {
+            const native = if (tc.compiler.native_programs) |p| blk: {
+                inline for (comptime std.meta.fieldNames(compiler.NativePrograms)) |name| {
+                    if (std.mem.eql(u8, name, entry[0])) break :blk @field(p, name);
+                }
+                unreachable;
+            } else null;
+            l.file(native orelse entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
+            if (native) |exe| l.file(exe, b.fmt("{s}/{s}.opt{s}", .{ bin, entry[0], host_exe }));
+            l.file(entry[1], b.fmt("{s}/{s}.byte{s}", .{ bin, entry[0], host_exe }));
+        }
+        if (tc.ocamlnat) |exe| l.file(exe, b.fmt("{s}/ocamlnat{s}", .{ bin, target_exe }));
+        if (tc.ocamldebug) |dbg| {
+            l.file(dbg.exe, b.fmt("{s}/ocamldebug{s}", .{ bin, host_exe }));
+            l.file(dbg.cmi, lib ++ "/compiler-libs/ocamldebug.cmi");
+            l.file(dbg.parser_aux_cmi, lib ++ "/compiler-libs/parser_aux.cmi");
+        }
+        if (tc.ocamldoc) |odoc| {
+            const default_odoc = if (tc.host_rt.platform.eql(target)) odoc.opt orelse odoc.byte else odoc.byte;
+            l.file(default_odoc, b.fmt("{s}/ocamldoc{s}", .{ bin, host_exe }));
+            if (odoc.opt) |exe| l.file(exe, b.fmt("{s}/ocamldoc.opt{s}", .{ bin, target_exe }));
+            l.file(odoc.byte, b.fmt("{s}/ocamldoc.byte{s}", .{ bin, host_exe }));
+            l.dir(odoc.lib_dir, lib ++ "/ocamldoc", &.{});
+        }
+        if (progs.bytecode_tools) |bt| {
+            for ([_]struct { []const u8, LazyPath }{
+                .{ "cmpbyt", bt.cmpbyt },
+                .{ "dumpobj", bt.dumpobj },
+                .{ "primreq", bt.primreq },
+                .{ "stripdebug", bt.stripdebug },
+            }) |entry| {
+                l.file(entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
+            }
+        }
+        for ([_]struct { []const u8, LazyPath }{
+            .{ "ocamlcmt", progs.ocamlcmt },
+            .{ "ocamlprof", progs.ocamlprof },
+            .{ "ocamlcp", progs.ocamlcp },
+            .{ "ocamloptp", progs.ocamloptp },
+            .{ "ocamlmklib", progs.ocamlmklib },
+            .{ "ocamlmktop", progs.ocamlmktop },
+            .{ "ocaml", progs.ocaml },
+        }) |entry| {
+            l.file(entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
+        }
+        l.file(progs.expunge, b.fmt("{s}/expunge{s}", .{ lib, host_exe }));
+
+        // lib/ocaml/: target runtime libraries, primitives, ld.conf, C headers
+        l.artifact(tc.target_rt.libcamlrun, lib);
+        if (tc.target_rt.libcamlrun_pic) |a| l.artifact(a, lib);
+        if (tc.target_rt.libcamlrun_shared) |a| l.artifact(a, lib);
+        if (tc.target_rt.libcamlrund) |a| l.artifact(a, lib);
+        if (tc.target_rt.libcamlruni) |a| l.artifact(a, lib);
+        if (tc.target_rt.libasmrun) |a| l.artifact(a, lib);
+        if (tc.target_rt.libasmrun_pic) |a| l.artifact(a, lib);
+        if (tc.target_rt.libasmrun_shared) |a| l.artifact(a, lib);
+        if (tc.target_rt.libasmrund) |a| l.artifact(a, lib);
+        if (tc.target_rt.libasmruni) |a| l.artifact(a, lib);
+        l.artifact(tc.target_rt.libcomprmarsh, lib);
+        l.artifact(tc.target_rt.zstd_lib, lib);
+        l.file(tc.target_rt.primitives, lib ++ "/primitives");
+        l.file(tc.ld_conf, lib ++ "/ld.conf");
+        l.dir(src.path("runtime/caml"), lib ++ "/caml", &.{ ".in", "dune" });
+        l.dir(tc.target_rt.headers_dir.path(b, "caml"), lib ++ "/caml", &.{});
+
+        // stdlib (flat in lib/ocaml/, as upstream)
+        l.dir(tc.stdlib.dir, lib, &.{});
+        l.file(tc.stdlib.meta, lib ++ "/stdlib/META");
+
+        // compiler-libs, profiling
+        l.dir(tc.compiler.base_compilerlibs_dir, lib ++ "/compiler-libs", &.{});
+        l.file(tc.compiler.ocamlcommon_cma, lib ++ "/compiler-libs/ocamlcommon.cma");
+        if (tc.compiler.nat_compilerlibs_dir) |nat_dir| {
+            l.dir(nat_dir, lib ++ "/compiler-libs", &.{});
+        }
+        if (tc.compiler.nat_common) |nc| {
+            l.file(nc.config_cmx, lib ++ "/compiler-libs/config.cmx");
+            l.file(nc.cmxa, lib ++ "/compiler-libs/ocamlcommon.cmxa");
+            l.file(nc.lib, lib ++ "/compiler-libs/ocamlcommon.a");
+        }
+        l.dir(tc.compiler.byte_profiling_dir, lib ++ "/profiling", &.{});
+        if (tc.compiler.nat_profiling_dir) |np| {
+            l.dir(np, lib ++ "/profiling", &.{});
+        }
+
+        // otherlibs: lib/ocaml/<lib>/, C stubs in lib/ocaml/ and lib/ocaml/stublibs/
+        for (tc.otherlibs.libs) |ol| {
+            l.dir(ol.dir, b.fmt("{s}/{s}", .{ lib, ol.name }), &.{});
+            const stubs = ol.stubs orelse continue;
+            l.artifact(stubs.static_byt, lib);
+            l.artifact(stubs.static_nat, lib);
+            if (stubs.shared_byt) |dll| l.file(dll.getEmittedBin(), b.fmt("{s}/stublibs/{s}", .{ lib, stubs.dllName(target) }));
+        }
+        for (tc.otherlibs.headers) |h| l.file(h.source, b.fmt("{s}/caml/{s}", .{ lib, h.dest_name }));
     }
 };
 
@@ -136,18 +268,14 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
         byte_common,
         host,
         self.launchInfo(host),
+        self.opts.bytecode_tools,
     );
 
     if (target.hasNativeCompiler()) {
-        const nat_libs = compiler.assembleNativeCompilerLibs(
-            b,
-            byte_common,
-            self.comp_shared.profiling_dir,
-            self.getNativeCompiler(target, target.arch),
-            self.getNativeCommon(target, host, target),
-        );
-        comp.compilerlibs_dir = nat_libs.compilerlibs_dir;
-        comp.profiling_dir = nat_libs.profiling_dir;
+        const target_nat = self.getNativeCompiler(target, target.arch);
+        comp.nat_compilerlibs_dir = target_nat.base_libs_dir;
+        comp.nat_profiling_dir = target_nat.profiling_dir;
+        comp.nat_common = self.getNativeCommon(target, host, target);
     }
 
     if (host.hasNativeCompiler()) {
@@ -178,9 +306,10 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     else
         null;
 
-    var tc: Toolchain = .{
+    const tc: Toolchain = .{
         .b = b,
-        .layout = undefined,
+        .ocaml_src = self.src.*,
+        .ld_conf = self.ld_conf,
         .host_rt = host_rt,
         .target_rt = target_rt,
         .stdlib = target_stdlib,
@@ -190,7 +319,6 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
         .ocamldebug = ocamldebug,
         .ocamldoc = ocamldoc,
     };
-    tc.layout = self.assembleLayout(tc);
     self.toolchains.put(b.allocator, pair_key, tc) catch @panic("OOM");
     return tc;
 }
@@ -214,22 +342,23 @@ fn launchInfo(self: *Ocaml, p: Platform) LazyPath {
 
 fn getStdlib(self: *Ocaml, target: Platform) stdlib.Artifacts {
     if (self.stdlibs.get(target.triplet)) |s| return s;
-    const byte_stdlib = stdlib.buildForTarget(self.src, self.stdlib_common, target.arch, self.launchInfo(target));
+    const b = self.src.b;
+    const li = self.launchInfo(target);
     if (!target.hasNativeCompiler()) {
-        self.stdlibs.put(self.src.b.allocator, target.triplet, byte_stdlib) catch @panic("OOM");
+        const byte_stdlib = stdlib.buildForTarget(self.src, self.stdlib_common, target.arch, li, null);
+        self.stdlibs.put(b.allocator, target.triplet, byte_stdlib) catch @panic("OOM");
         return byte_stdlib;
     }
     const raw_emitter = self.getRawEmitter(target);
     if (self.stdlibs.get(target.triplet)) |s| return s;
 
-    const b = self.src.b;
     const key = self.codeKey(target);
     const nat_dir = self.nat_stdlib_dirs.get(key) orelse blk: {
-        const d = stdlib.buildNativeDir(self.src, byte_stdlib, raw_emitter, target);
+        const d = stdlib.buildNativeDir(self.src, self.stdlib_common, raw_emitter, target);
         self.nat_stdlib_dirs.put(b.allocator, key, d) catch @panic("OOM");
         break :blk d;
     };
-    const s = stdlib.attachNativeDir(b, byte_stdlib, nat_dir);
+    const s = stdlib.buildForTarget(self.src, self.stdlib_common, target.arch, li, nat_dir);
     self.stdlibs.put(b.allocator, target.triplet, s) catch @panic("OOM");
     return s;
 }
@@ -473,140 +602,60 @@ fn codeKey(self: *Ocaml, p: Platform) []const u8 {
     return self.src.b.fmt("{s}-{s}", .{ p.archName(), p.system });
 }
 
-fn assembleLayout(self: *const Ocaml, tc: Toolchain) LazyPath {
-    const src = self.src.*;
-    const b = src.b;
-    const host_exe = tc.host_rt.platform.exeExt();
-    const target = tc.target_rt.platform;
-    const target_exe = target.exeExt();
-    const layout: Layout = .{ .b = b, .wf = b.addWriteFiles() };
-    const bin = "bin";
-    const lib = "lib/ocaml";
+const Layout = union(enum) {
+    install: struct {
+        b: *std.Build,
+        step: *std.Build.Step,
+        sub_path: []const u8,
+    },
+    wf: struct {
+        b: *std.Build,
+        wf: *std.Build.Step.WriteFile,
+    },
 
-    // bin/: host runtime and tools (.opt defaults, with .byte always retained)
-    layout.artifact(tc.host_rt.ocamlrun, bin);
-    if (tc.host_rt.ocamlrund) |a| layout.artifact(a, bin);
-    if (tc.host_rt.ocamlruni) |a| layout.artifact(a, bin);
-    layout.artifact(tc.host_rt.ocamlyacc, bin);
-    if (!tc.host_rt.platform.eql(target)) {
-        layout.file(tc.target_rt.ocamlrun.getEmittedBin(), b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
-        if (tc.target_rt.ocamlrund) |a| layout.file(a.getEmittedBin(), b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));
-        if (tc.target_rt.ocamlruni) |a| layout.file(a.getEmittedBin(), b.fmt("{s}/ocamlruni-target{s}", .{ bin, target_exe }));
+    fn b(self: Layout) *std.Build {
+        return switch (self) {
+            .install => |i| i.b,
+            .wf => |w| w.b,
+        };
     }
-
-    const progs = tc.compiler.programs;
-    // also installed as `<name>.byte`, upstream's name for the bytecode build
-    // (ocamlc.byte and ocamlopt.byte are debug-stripped, matching upstream install)
-    for ([_]struct { []const u8, LazyPath }{
-        .{ "ocamlc", progs.ocamlc_stripped },
-        .{ "ocamlopt", progs.ocamlopt_stripped },
-        .{ "ocamllex", progs.ocamllex },
-        .{ "ocamldep", progs.ocamldep },
-        .{ "ocamlobjinfo", progs.ocamlobjinfo },
-    }) |entry| {
-        const native = if (tc.compiler.native_programs) |p| blk: {
-            inline for (comptime std.meta.fieldNames(compiler.NativePrograms)) |name| {
-                if (std.mem.eql(u8, name, entry[0])) break :blk @field(p, name);
-            }
-            unreachable;
-        } else null;
-        layout.file(native orelse entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
-        if (native) |exe| layout.file(exe, b.fmt("{s}/{s}.opt{s}", .{ bin, entry[0], host_exe }));
-        layout.file(entry[1], b.fmt("{s}/{s}.byte{s}", .{ bin, entry[0], host_exe }));
-    }
-    if (tc.ocamlnat) |exe| layout.file(exe, b.fmt("{s}/ocamlnat{s}", .{ bin, target_exe }));
-    if (tc.ocamldebug) |dbg| {
-        layout.file(dbg.exe, b.fmt("{s}/ocamldebug{s}", .{ bin, host_exe }));
-        layout.file(dbg.cmi, lib ++ "/compiler-libs/ocamldebug.cmi");
-        layout.file(dbg.parser_aux_cmi, lib ++ "/compiler-libs/parser_aux.cmi");
-    }
-    if (tc.ocamldoc) |odoc| {
-        const default_odoc = if (tc.host_rt.platform.eql(target)) odoc.opt orelse odoc.byte else odoc.byte;
-        layout.file(default_odoc, b.fmt("{s}/ocamldoc{s}", .{ bin, host_exe }));
-        if (odoc.opt) |exe| layout.file(exe, b.fmt("{s}/ocamldoc.opt{s}", .{ bin, target_exe }));
-        layout.file(odoc.byte, b.fmt("{s}/ocamldoc.byte{s}", .{ bin, host_exe }));
-        layout.dir(odoc.lib_dir, lib ++ "/ocamldoc", &.{});
-    }
-    if (self.opts.bytecode_tools) {
-        for ([_]struct { []const u8, LazyPath }{
-            .{ "cmpbyt", progs.cmpbyt },
-            .{ "dumpobj", progs.dumpobj },
-            .{ "primreq", progs.primreq },
-            .{ "stripdebug", progs.stripdebug },
-        }) |entry| {
-            layout.file(entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
-        }
-    }
-    for ([_]struct { []const u8, LazyPath }{
-        .{ "ocamlcmt", progs.ocamlcmt },
-        .{ "ocamlprof", progs.ocamlprof },
-        .{ "ocamlcp", progs.ocamlcp },
-        .{ "ocamloptp", progs.ocamloptp },
-        .{ "ocamlmklib", progs.ocamlmklib },
-        .{ "ocamlmktop", progs.ocamlmktop },
-        .{ "ocaml", progs.ocaml },
-    }) |entry| {
-        layout.file(entry[1], b.fmt("{s}/{s}{s}", .{ bin, entry[0], host_exe }));
-    }
-    layout.file(progs.expunge, b.fmt("{s}/expunge{s}", .{ lib, host_exe }));
-
-    // lib/ocaml/: target runtime libraries, primitives, ld.conf, C headers
-    layout.artifact(tc.target_rt.libcamlrun, lib);
-    if (tc.target_rt.libcamlrun_pic) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libcamlrun_shared) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libcamlrund) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libcamlruni) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libasmrun) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libasmrun_pic) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libasmrun_shared) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libasmrund) |a| layout.artifact(a, lib);
-    if (tc.target_rt.libasmruni) |a| layout.artifact(a, lib);
-    layout.artifact(tc.target_rt.libcomprmarsh, lib);
-    layout.artifact(tc.target_rt.zstd_lib, lib);
-    layout.file(tc.target_rt.primitives, lib ++ "/primitives");
-    layout.file(b.addWriteFiles().add("ld.conf", "./stublibs\n.\n"), lib ++ "/ld.conf");
-    layout.dir(src.path("runtime/caml"), lib ++ "/caml", &.{ ".in", "dune" });
-    layout.dir(tc.target_rt.headers_dir.path(b, "caml"), lib ++ "/caml", &.{});
-
-    // stdlib (flat in lib/ocaml/, as upstream)
-    layout.dir(tc.stdlib.dir, lib, &.{});
-    layout.file(tc.stdlib.meta, lib ++ "/stdlib/META");
-
-    // compiler-libs, profiling
-    layout.dir(tc.compiler.compilerlibs_dir, lib ++ "/compiler-libs", &.{});
-    layout.dir(tc.compiler.profiling_dir, lib ++ "/profiling", &.{});
-
-    // otherlibs: lib/ocaml/<lib>/, C stubs in lib/ocaml/ and lib/ocaml/stublibs/
-    for (tc.otherlibs.libs) |l| {
-        layout.dir(l.dir, b.fmt("{s}/{s}", .{ lib, l.name }), &.{});
-        const stubs = l.stubs orelse continue;
-        layout.artifact(stubs.static_byt, lib);
-        layout.artifact(stubs.static_nat, lib);
-        if (stubs.shared_byt) |dll| layout.file(dll.getEmittedBin(), b.fmt("{s}/stublibs/{s}", .{ lib, stubs.dllName(target) }));
-    }
-    for (tc.otherlibs.headers) |h| layout.file(h.source, b.fmt("{s}/caml/{s}", .{ lib, h.dest_name }));
-
-    return layout.wf.getDirectory();
-}
-
-const Layout = struct {
-    b: *std.Build,
-    wf: *std.Build.Step.WriteFile,
 
     fn file(self: Layout, src: LazyPath, dest: []const u8) void {
-        _ = self.wf.addCopyFile(src, dest);
+        switch (self) {
+            .install => |i| {
+                const rel = if (i.sub_path.len == 0) dest else i.b.fmt("{s}/{s}", .{ i.sub_path, dest });
+                i.step.dependOn(&i.b.addInstallFileWithDir(src, .prefix, rel).step);
+            },
+            .wf => |w| {
+                _ = w.wf.addCopyFile(src, dest);
+            },
+        }
     }
 
     fn dir(self: Layout, src: LazyPath, dest: []const u8, exclude_extensions: []const []const u8) void {
-        _ = self.wf.addCopyDirectory(src, dest, .{ .exclude_extensions = exclude_extensions });
+        switch (self) {
+            .install => |i| {
+                const rel = if (i.sub_path.len == 0) dest else i.b.fmt("{s}/{s}", .{ i.sub_path, dest });
+                i.step.dependOn(&i.b.addInstallDirectory(.{
+                    .source_dir = src,
+                    .install_dir = .prefix,
+                    .install_subdir = rel,
+                    .exclude_extensions = exclude_extensions,
+                }).step);
+            },
+            .wf => |w| {
+                _ = w.wf.addCopyDirectory(src, dest, .{ .exclude_extensions = exclude_extensions });
+            },
+        }
     }
 
     /// Install a compiled artifact, using `lib<name>.a` for static archives (as OCaml expects on mingw).
     fn artifact(self: Layout, a: *std.Build.Step.Compile, dest_dir: []const u8) void {
+        const builder = self.b();
         const name = if (a.kind == .lib and a.linkage == .static)
-            self.b.fmt("lib{s}.a", .{a.name})
+            builder.fmt("lib{s}.a", .{a.name})
         else
             a.out_filename;
-        self.file(a.getEmittedBin(), self.b.fmt("{s}/{s}", .{ dest_dir, name }));
+        self.file(a.getEmittedBin(), builder.fmt("{s}/{s}", .{ dest_dir, name }));
     }
 };

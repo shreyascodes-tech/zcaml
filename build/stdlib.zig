@@ -102,11 +102,12 @@ pub const Artifacts = struct {
     compiled: Ocamlc.Compiled,
 };
 
-pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform.Arch, launch_info_dir: LazyPath) Artifacts {
+pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform.Arch, launch_info_dir: LazyPath, nat_dir: ?LazyPath) Artifacts {
     const b = src.b;
     const out = b.addWriteFiles();
     _ = out.addCopyDirectory(common.base_dir, "", .{});
     _ = out.addCopyFile(launch_info_dir.path(b, "runtime-launch-info"), "runtime-launch-info");
+    if (nat_dir) |nd| _ = out.addCopyDirectory(nd, "", .{});
 
     var sources = common.sources;
     sources.arch = target_arch;
@@ -121,13 +122,15 @@ pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform
 }
 
 /// Compile target-native `.cmx`, `.o`, `stdlib.cmxa`, and `stdlib.a` (depends only on `(arch, system)`).
-pub fn buildNativeDir(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p: Platform) LazyPath {
+pub fn buildNativeDir(src: *const Source, common: Common, compiler: Ocamlopt, p: Platform) LazyPath {
     const b = src.b;
     var opt = compiler;
     opt.stdlib_dir = null;
     opt.cwd = src.path("stdlib");
     opt.strip_dir = "stdlib";
-    const compiled = opt.compilePlan(src.manifest.stdlib.plan, byte.sources, byte.compiled, .{
+    var sources = common.sources;
+    sources.arch = p.arch;
+    const compiled = opt.compilePlan(src.manifest.stdlib.plan, sources, common.compiled, .{
         .flags = driver.concat(b, src.manifest.stdlib.compflags, if (p.is_elf) &.{"-function-sections"} else &.{}),
     });
     const out = b.addWriteFiles();
@@ -139,15 +142,6 @@ pub fn buildNativeDir(src: *const Source, byte: Artifacts, compiler: Ocamlopt, p
     _ = out.addCopyFile(archive.cmxa, "stdlib.cmxa");
     _ = out.addCopyFile(archive.lib, "stdlib.a");
     return out.getDirectory();
-}
-
-pub fn attachNativeDir(b: *std.Build, byte: Artifacts, nat_dir: LazyPath) Artifacts {
-    const out = b.addWriteFiles();
-    _ = out.addCopyDirectory(byte.dir, "", .{});
-    _ = out.addCopyDirectory(nat_dir, "", .{});
-    var result = byte;
-    result.dir = out.getDirectory();
-    return result;
 }
 
 /// Install the pristine source of a unit next to its artifacts (`stdlib/foo.ml` -> `foo.ml`).
