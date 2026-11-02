@@ -385,7 +385,7 @@ pub const ArchNative = struct {
     toplevel_cmxa: ?LazyPath,
     base_libs_dir: ?LazyPath,
     profiling_dir: ?LazyPath,
-    ocamllex_opt: ?LazyPath = null,
+    lex_compiled: ?Ocamlopt.Compiled = null,
 };
 
 pub fn buildArchNative(
@@ -393,7 +393,6 @@ pub fn buildArchNative(
     shared: Shared,
     arch_byte: ArchByte,
     opt: Ocamlopt,
-    rt: runtime.Artifacts,
     dynlink_dir: ?LazyPath,
     frontend: ?ArchNative,
 ) ArchNative {
@@ -425,15 +424,10 @@ pub fn buildArchNative(
     const optcomp = archiveNativeLib(opt, compiled, libs, "ocamloptcomp", cc.ocamloptcomp, &.{});
     const toplevel = if (libs != null) archiveNativeLib(opt, compiled, libs, "ocamltoplevel", cc.ocamltoplevel_native, &.{}) else null;
 
-    const ocamllex_opt: ?LazyPath = if (dynlink_dir != null) blk: {
-        const lex = opt.compilePlan(src.manifest.lex.plan, arch_byte.sources, shared.lex, .{ .flags = cc.compflags });
-        const runtime_dir = nativeRuntimeDir(b, rt);
-        break :blk opt.link("ocamllex.opt", lex.cmxs(b, src.manifest.lex.ocamllex), .{
-            .includes = &.{ arch_byte.compiled.cmis_dir, runtime_dir, lex.dir },
-            .flags = native_link_flags,
-            .strip_debug = true,
-        });
-    } else null;
+    const lex_compiled: ?Ocamlopt.Compiled = if (dynlink_dir != null)
+        opt.compilePlan(src.manifest.lex.plan, arch_byte.sources, shared.lex, .{ .flags = cc.compflags })
+    else
+        null;
 
     return .{
         .compiled = compiled,
@@ -443,8 +437,24 @@ pub fn buildArchNative(
         .toplevel_cmxa = toplevel,
         .base_libs_dir = if (libs) |l| l.getDirectory() else null,
         .profiling_dir = if (profiling) |p| p.getDirectory() else null,
-        .ocamllex_opt = ocamllex_opt,
+        .lex_compiled = lex_compiled,
     };
+}
+
+pub fn linkOcamllexOpt(
+    b: *std.Build,
+    manifest: Source.Manifest,
+    arch_byte: ArchByte,
+    lex: Ocamlopt.Compiled,
+    opt: Ocamlopt,
+    rt: runtime.Artifacts,
+) LazyPath {
+    const runtime_dir = nativeRuntimeDir(b, rt);
+    return opt.link("ocamllex.opt", lex.cmxs(b, manifest.lex.ocamllex), .{
+        .includes = &.{ arch_byte.compiled.cmis_dir, runtime_dir, lex.dir },
+        .flags = native_link_flags,
+        .strip_debug = true,
+    });
 }
 
 pub const NativeCommon = struct {

@@ -54,6 +54,7 @@ raw_emitters: SMap(Ocamlopt) = .empty,
 otherlibs_map: SMap(otherlibs.Artifacts) = .empty,
 native_compilers: SMap(compiler.ArchNative) = .empty,
 native_commons: SMap(compiler.NativeCommon) = .empty,
+ocamllex_opts: SMap(LazyPath) = .empty,
 ocamlnats: SMap(LazyPath) = .empty,
 debugger_byte: ?extras.DebuggerByte = null,
 odoc_byte: ?extras.OcamldocByte = null,
@@ -151,7 +152,7 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
 
     if (host.hasNativeCompiler()) {
         const ocamlopt_opt = self.getNativeCommon(host, host, target).ocamlopt_opt;
-        const ocamllex_opt = self.getNativeCompiler(host, host.arch).ocamllex_opt.?;
+        const ocamllex_opt = self.getOcamllexOpt(host);
         comp.native_programs = compiler.linkNativePrograms(
             b,
             target_arch_byte,
@@ -324,12 +325,26 @@ fn getNativeCompiler(self: *Ocaml, code: Platform, target_arch: ?Platform.Arch) 
         self.comp_shared,
         self.getArchByte(target_arch),
         self.getEmitter(code),
-        self.getRuntime(code),
         dynlink_dir,
         frontend,
     );
     self.native_compilers.put(b.allocator, key, an) catch @panic("OOM");
     return an;
+}
+
+fn getOcamllexOpt(self: *Ocaml, host: Platform) LazyPath {
+    if (self.ocamllex_opts.get(host.triplet)) |p| return p;
+    const arch_nat = self.getNativeCompiler(host, host.arch);
+    const p = compiler.linkOcamllexOpt(
+        self.src.b,
+        self.src.manifest,
+        self.getArchByte(host.arch),
+        arch_nat.lex_compiled.?,
+        self.getEmitter(host),
+        self.getRuntime(host),
+    );
+    self.ocamllex_opts.put(self.src.b.allocator, host.triplet, p) catch @panic("OOM");
+    return p;
 }
 
 fn getNativeCommon(self: *Ocaml, code: Platform, host: Platform, target: Platform) compiler.NativeCommon {
