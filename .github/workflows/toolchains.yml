@@ -318,7 +318,7 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           set -euo pipefail
-          powershell.exe -NoProfile -NonInteractive -Command "Add-MpPreference -ExclusionPath '$PWD', '$env:RUNNER_TEMP', '$env:TEMP' -ErrorAction SilentlyContinue" || true
+          powershell.exe -NoProfile -NonInteractive -Command 'Add-MpPreference -ExclusionPath $PWD.Path, $env:RUNNER_TEMP, $env:TEMP -ErrorAction SilentlyContinue' || true
           VER="${{ inputs.ocaml_version }}"
           ROOT="_windows-root/zig-out/${VER}"
           ARCHIVES="_windows-archives"
