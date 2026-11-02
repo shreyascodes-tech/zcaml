@@ -57,11 +57,11 @@ jobs:
           key: zcaml-sysroots-v2
 
       - name: Build full OCaml host -> target matrix
-        run: zig build -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
+        run: zig build --verbose --summary all -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
 
       - name: Verify all Linux-hosted toolchains (native + QEMU + Wine)
         run: |
-          zig build -Docaml verify \
+          zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Dverify-jobs=16 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-linux
@@ -228,13 +228,13 @@ jobs:
 
       - name: Execute Linux -> macOS cross-compiled test bundles
         run: |
-          zig build -Docaml verify \
+          zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Drun-deferred=${{ runner.temp }}/deferred-from-linux
 
       - name: Verify all macOS-hosted toolchains (aarch64-macos & x86_64-macos)
         run: |
-          zig build -Docaml verify \
+          zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Dverify-root=${{ runner.temp }}/macos-root/zig-out/${{ inputs.ocaml_version }} \
             -Dverify-jobs=8 \
@@ -294,7 +294,7 @@ jobs:
           wait
 
           rm -rf zig-pkg .zig-cache
-          zig build -Docaml verify \
+          zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Dverify-root="$ROOT" \
             -Dverify-jobs=4 \
@@ -356,7 +356,7 @@ jobs:
       - name: Execute Linux & Windows target binaries compiled on macOS & Windows
         run: |
           find "${{ runner.temp }}/deferred-bundles" -type f -exec chmod +x {} +
-          zig build -Docaml verify \
+          zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Drun-deferred=${{ runner.temp }}/deferred-bundles
 
