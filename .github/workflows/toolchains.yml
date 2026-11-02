@@ -111,7 +111,7 @@ jobs:
             const path = require('path');
             const { execFile } = require('child_process');
 
-            const uploadEntry = path.resolve(__dirname, '../../../upload-artifact/v4/dist/index.js');
+            const uploadEntry = path.resolve(path.dirname(process.argv[1]), '../../../upload-artifact/v4/dist/index.js');
             const dir = process.env.ARCHIVES_DIR;
             const files = fs.readdirSync(dir).filter(f => f.endsWith('.tar.zst')).sort();
 
