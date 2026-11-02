@@ -26,10 +26,30 @@ pub fn build(b: *std.Build) !void {
         const bytecode_tools_opt = b.option(bool, "bytecode-tools", "install internal bytecode tools (cmpbyt, dumpobj, primreq, stripdebug)");
         const runtime_variants_opt = b.option(bool, "runtime-variants", "build and install debug (d) and instrumented (i) runtimes");
 
+        const host_opt = b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)");
+        const target_opt = b.option([]const u8, "ocaml-target", "where compiled programs run (default: host)");
+        const jobs_opt = b.option(usize, "verify-jobs", "number of parallel verification workers") orelse 8;
+        const save_deferred_opt = b.option([]const u8, "save-deferred", "directory to save cross-OS target execution bundles");
+        const run_deferred_opt = b.option([]const u8, "run-deferred", "directory of deferred bundles to execute on this OS");
+
+        const verify_step = b.step("verify", "verify built OCaml toolchains in zig-out/");
+        const root_dir_str = b.option([]const u8, "verify-root", "path to zig-out/<version> directory") orelse
+            b.fmt("zig-out/{t}", .{version});
+        _, const run_verify = Tools.run(b, .verify_toolchains, .{
+            .root_dir = root_dir_str,
+            .fixtures_dir = .of(b.path("test/fixtures")),
+            .host = host_opt,
+            .target = target_opt,
+            .jobs = jobs_opt,
+            .save_deferred = save_deferred_opt,
+            .run_deferred = run_deferred_opt,
+        });
+        run_verify.stdio = .inherit;
+        verify_step.dependOn(&run_verify.step);
+
         const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
         const src = ocaml_versions.source(version) orelse return;
 
-        const host_opt = b.option([]const u8, "ocaml-host", "where the ocaml compiler runs (zig/autoconf triple or `native`)");
         const default_extra = host_opt == null;
         var ocaml: Ocaml = .init(src, .{
             .ocamldoc = ocamldoc_opt orelse default_extra,
@@ -41,7 +61,7 @@ pub fn build(b: *std.Build) !void {
 
         if (host_opt) |host_str| {
             const host = Ocaml.resolveTarget(b, host_str);
-            const target = if (b.option([]const u8, "ocaml-target", "where compiled programs run (default: host)")) |s|
+            const target = if (target_opt) |s|
                 Ocaml.resolveTarget(b, s)
             else
                 host;

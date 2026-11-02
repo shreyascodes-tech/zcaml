@@ -1,0 +1,325 @@
+name: Toolchains
+
+on:
+  workflow_dispatch:
+    inputs:
+      ocaml_version:
+        description: "OCaml version to build and verify"
+        required: false
+        default: "5.5.1"
+        type: choice
+        options:
+          - "5.5.1"
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  ZIG_VERSION: "0.17.0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build the entire 39-pair matrix on a 32-core Depot Ubuntu runner,
+  #    verify all 27 Linux-hosted pairs (including Linux -> Windows under Wine
+  #    and foreign Linux arches under QEMU), and stage artifacts for macOS,
+  #    Windows, and final per-pair publishing.
+  # ---------------------------------------------------------------------------
+  build-and-test-linux:
+    name: Build Matrix & Verify Linux + Wine
+    runs-on: depot-ubuntu-24.04-32
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: true
+
+      - name: Install QEMU user-mode emulators & Wine
+        run: |
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends \
+            qemu-user \
+            wine \
+            zstd \
+            binutils \
+            curl \
+            ca-certificates
+
+      - name: Restore Zig global cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            ~/.cache/zcaml
+          key: zcaml-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon', 'build/**') }}
+          restore-keys: |
+            zcaml-zig-${{ env.ZIG_VERSION }}-
+
+      - name: Build full OCaml host -> target matrix
+        run: zig build -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
+
+      - name: Verify all Linux-hosted toolchains (native + QEMU + Wine)
+        run: |
+          zig build -Docaml verify \
+            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Dverify-jobs=16 \
+            -Dsave-deferred=${{ runner.temp }}/deferred-from-linux
+
+      - name: Package each (host, target) toolchain archive
+        run: |
+          set -euo pipefail
+          VER="${{ inputs.ocaml_version }}"
+          OUT_DIR="${{ runner.temp }}/archives"
+          MACOS_DIR="${{ runner.temp }}/macos-handoff/zig-out/${VER}"
+          WIN_DIR="${{ runner.temp }}/windows-handoff/zig-out/${VER}"
+          mkdir -p "$OUT_DIR" "$MACOS_DIR" "$WIN_DIR"
+
+          for host_dir in "zig-out/${VER}"/host-*; do
+            [[ -d "$host_dir" ]] || continue
+            host_name="$(basename "$host_dir")"
+            host_triple="${host_name#host-}"
+
+            if [[ "$host_triple" == *-macos* ]]; then
+              cp -a "$host_dir" "$MACOS_DIR/"
+            elif [[ "$host_triple" == *-windows* ]]; then
+              cp -a "$host_dir" "$WIN_DIR/"
+            fi
+
+            for target_dir in "$host_dir"/target-*; do
+              [[ -d "$target_dir" ]] || continue
+              target_name="$(basename "$target_dir")"
+              target_triple="${target_name#target-}"
+              pair_id="ocaml-${VER}-host-${host_triple}-target-${target_triple}"
+
+              tar -C "$target_dir" --zstd -cf "${OUT_DIR}/${pair_id}.tar.zst" .
+            done
+          done
+
+          if [[ -d "${{ runner.temp }}/deferred-from-linux" ]]; then
+            cp -a "${{ runner.temp }}/deferred-from-linux" "${{ runner.temp }}/macos-handoff/deferred-from-linux"
+          fi
+
+      - name: Upload macOS test handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: _internal-macos-handoff
+          path: ${{ runner.temp }}/macos-handoff
+          retention-days: 1
+
+      - name: Upload Windows test handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: _internal-windows-handoff
+          path: ${{ runner.temp }}/windows-handoff
+          retention-days: 1
+
+      - name: Upload staged toolchain archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: _internal-staged-archives
+          path: ${{ runner.temp }}/archives/*.tar.zst
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 2. Verify all macOS-hosted toolchains (aarch64-macos natively + x86_64-macos
+  #    via Rosetta 2) AND execute the macOS binaries cross-compiled on Linux.
+  # ---------------------------------------------------------------------------
+  test-macos:
+    name: Verify macOS Toolchains
+    needs: build-and-test-linux
+    runs-on: depot-macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: true
+
+      - name: Ensure Rosetta 2 is available for x86_64-macos testing
+        run: |
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+          fi
+
+      - name: Download macOS test handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: _internal-macos-handoff
+          path: ${{ runner.temp }}/macos-handoff
+
+      - name: Restore executable permissions on downloaded toolchains
+        run: |
+          chmod -R +x "${{ runner.temp }}/macos-handoff/zig-out/${{ inputs.ocaml_version }}"/host-*/target-*/bin/* || true
+          if [[ -d "${{ runner.temp }}/macos-handoff/deferred-from-linux" ]]; then
+            find "${{ runner.temp }}/macos-handoff/deferred-from-linux" -type f -exec chmod +x {} +
+          fi
+
+      - name: Execute Linux -> macOS cross-compiled test bundles
+        run: |
+          if [[ -d "${{ runner.temp }}/macos-handoff/deferred-from-linux" ]]; then
+            zig build -Docaml verify \
+              -Docaml-version=${{ inputs.ocaml_version }} \
+              -Drun-deferred=${{ runner.temp }}/macos-handoff/deferred-from-linux
+          fi
+
+      - name: Verify all macOS-hosted toolchains (aarch64-macos & x86_64-macos)
+        run: |
+          zig build -Docaml verify \
+            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Dverify-root=${{ runner.temp }}/macos-handoff/zig-out/${{ inputs.ocaml_version }} \
+            -Dverify-jobs=8 \
+            -Dsave-deferred=${{ runner.temp }}/deferred-from-macos
+
+      - name: Upload macOS -> Linux/Windows cross-compiled test bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: _internal-deferred-from-macos
+          path: ${{ runner.temp }}/deferred-from-macos
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 3. Verify all Windows-hosted toolchains on a Depot Windows runner.
+  # ---------------------------------------------------------------------------
+  test-windows:
+    name: Verify Windows Toolchains
+    needs: build-and-test-linux
+    runs-on: depot-windows-2025-4
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: true
+
+      - name: Download Windows test handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: _internal-windows-handoff
+          path: ${{ runner.temp }}/windows-handoff
+
+      - name: Verify all Windows-hosted toolchains
+        shell: bash
+        run: |
+          zig build -Docaml verify \
+            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Dverify-root="${RUNNER_TEMP}/windows-handoff/zig-out/${{ inputs.ocaml_version }}" \
+            -Dverify-jobs=4 \
+            -Dsave-deferred="${RUNNER_TEMP}/deferred-from-windows"
+
+      - name: Upload Windows -> Linux cross-compiled test bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: _internal-deferred-from-windows
+          path: ${{ runner.temp }}/deferred-from-windows
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 4. Execute the Linux/Windows binaries cross-compiled by the macOS and
+  #    Windows hosts, then publish all 39 verified toolchains as individual
+  #    downloadable artifacts on the GitHub Actions run.
+  # ---------------------------------------------------------------------------
+  publish-toolchains:
+    name: Publish Verified Toolchains
+    needs:
+      - build-and-test-linux
+      - test-macos
+      - test-windows
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig, QEMU & Wine
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: true
+
+      - name: Install QEMU & Wine for deferred cross-target execution
+        run: |
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends \
+            qemu-user \
+            wine \
+            binutils \
+            curl \
+            ca-certificates
+
+      - name: Download deferred bundles from macOS & Windows hosts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: _internal-deferred-from-*
+          path: ${{ runner.temp }}/deferred-bundles
+          merge-multiple: true
+
+      - name: Execute Linux & Windows target binaries compiled on macOS & Windows
+        run: |
+          if [[ -d "${{ runner.temp }}/deferred-bundles" ]]; then
+            find "${{ runner.temp }}/deferred-bundles" -type f -exec chmod +x {} +
+            zig build -Docaml verify \
+              -Docaml-version=${{ inputs.ocaml_version }} \
+              -Drun-deferred=${{ runner.temp }}/deferred-bundles
+          fi
+
+      - name: Download staged toolchain archives
+        uses: actions/download-artifact@v4
+        with:
+          name: _internal-staged-archives
+          path: ${{ runner.temp }}/archives
+
+      - name: Publish each verified (host, target) toolchain artifact to the run
+        uses: actions/github-script@v7
+        env:
+          ARCHIVES_DIR: ${{ runner.temp }}/archives
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { DefaultArtifactClient } = require('@actions/artifact');
+
+            const artifactClient = new DefaultArtifactClient();
+            const dir = process.env.ARCHIVES_DIR;
+            const files = fs.readdirSync(dir).filter(f => f.endsWith('.tar.zst')).sort();
+
+            console.log(`Uploading ${files.length} verified toolchain artifacts...`);
+            for (const file of files) {
+              const fullPath = path.join(dir, file);
+              const artifactName = file.replace(/\.tar\.zst$/, '');
+              await artifactClient.uploadArtifact(artifactName, [fullPath], dir, {
+                retentionDays: 7,
+              });
+            }
+            console.log(`Successfully published all ${files.length} toolchain artifacts!`);
+
+      - name: Clean up internal handoff artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            for (const artifact of artifacts) {
+              if (artifact.name.startsWith('_internal-')) {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                });
+              }
+            }
