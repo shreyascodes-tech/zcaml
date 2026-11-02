@@ -1,6 +1,9 @@
 name: Toolchains
 
 on:
+  push:
+    tags:
+      - "ocaml-*"
   workflow_dispatch:
     inputs:
       ocaml_version:
@@ -12,11 +15,12 @@ on:
           - "5.5.1"
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 env:
   ZIG_VERSION: "0.17.0"
+  OCAML_VERSION: ${{ inputs.ocaml_version || (startsWith(github.ref, 'refs/tags/ocaml-v') && split(github.ref_name, 'ocaml-v')[1]) || (startsWith(github.ref, 'refs/tags/ocaml-') && split(github.ref_name, 'ocaml-')[1]) || '5.5.1' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -64,7 +68,7 @@ jobs:
         env:
           ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-        run: zig build --summary failures -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
+        run: zig build --summary failures -Docaml -Docaml-version=${{ env.OCAML_VERSION }} matrix
 
       - name: Verify all Linux-hosted toolchains (native + QEMU + Wine)
         env:
@@ -72,14 +76,14 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           zig build --verbose --summary all -Docaml verify \
-            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Docaml-version=${{ env.OCAML_VERSION }} \
             -Dverify-jobs=8 \
             -Dsave-deferred=${{ runner.temp }}/deferred-from-linux
 
       - name: Package all (host, target) toolchain archives in parallel
         run: |
           set -euo pipefail
-          VER="${{ inputs.ocaml_version }}"
+          VER="${{ env.OCAML_VERSION }}"
           OUT_DIR="${{ runner.temp }}/archives"
           mkdir -p "$OUT_DIR"
 
@@ -215,7 +219,7 @@ jobs:
       - name: Download macOS toolchain archives
         uses: actions/download-artifact@v4
         with:
-          pattern: ocaml-${{ inputs.ocaml_version }}-host-*-macos-none-target-*
+          pattern: ocaml-${{ env.OCAML_VERSION }}-host-*-macos-none-target-*
           path: ${{ runner.temp }}/macos-archives
           merge-multiple: true
 
@@ -231,7 +235,7 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
         run: |
           set -euo pipefail
-          VER="${{ inputs.ocaml_version }}"
+          VER="${{ env.OCAML_VERSION }}"
           ROOT="${{ runner.temp }}/macos-root/zig-out/${VER}"
           ARCHIVES="${{ runner.temp }}/macos-archives"
           mkdir -p "$ROOT"
@@ -269,7 +273,7 @@ jobs:
           find "${{ runner.temp }}/deferred-from-linux" -type f -exec chmod +x {} +
 
           zig build --verbose --summary all -Docaml verify \
-            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Docaml-version=${{ env.OCAML_VERSION }} \
             -Drun-deferred=${{ runner.temp }}/deferred-from-linux \
             -Dverify-root="$ROOT" \
             -Dverify-jobs=8 \
@@ -314,7 +318,7 @@ jobs:
       - name: Download Windows toolchain archives
         uses: actions/download-artifact@v4
         with:
-          pattern: ocaml-${{ inputs.ocaml_version }}-host-x86_64-windows-gnu-target-*
+          pattern: ocaml-${{ env.OCAML_VERSION }}-host-x86_64-windows-gnu-target-*
           path: _windows-archives
           merge-multiple: true
 
@@ -326,7 +330,7 @@ jobs:
         run: |
           set -euo pipefail
           powershell.exe -NoProfile -NonInteractive -Command 'Add-MpPreference -ExclusionPath $PWD.Path, $env:RUNNER_TEMP, $env:TEMP -ErrorAction SilentlyContinue' || true
-          VER="${{ inputs.ocaml_version }}"
+          VER="${{ env.OCAML_VERSION }}"
           ROOT="_windows-root/zig-out/${VER}"
           ARCHIVES="_windows-archives"
           mkdir -p "$ROOT"
@@ -356,7 +360,7 @@ jobs:
 
           rm -rf zig-pkg
           zig build --verbose --summary all -Docaml verify \
-            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Docaml-version=${{ env.OCAML_VERSION }} \
             -Dverify-root="$ROOT" \
             -Dverify-jobs=4 \
             -Dsave-deferred="_deferred-from-windows"
@@ -427,8 +431,39 @@ jobs:
         run: |
           find "${{ runner.temp }}/deferred-bundles" -type f -exec chmod +x {} +
           zig build --verbose --summary all -Docaml verify \
-            -Docaml-version=${{ inputs.ocaml_version }} \
+            -Docaml-version=${{ env.OCAML_VERSION }} \
             -Drun-deferred=${{ runner.temp }}/deferred-bundles
+
+      - name: Download all verified toolchain archives for release
+        if: startsWith(github.ref, 'refs/tags/ocaml-')
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ocaml-${{ env.OCAML_VERSION }}-host-*-target-*
+          path: ${{ runner.temp }}/release-archives
+          merge-multiple: true
+
+      - name: Create GitHub Release and attach toolchain archives
+        if: startsWith(github.ref, 'refs/tags/ocaml-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          ARCHIVES_DIR: ${{ runner.temp }}/release-archives
+        run: |
+          set -euo pipefail
+          RELEASE_NAME="${TAG_NAME#ocaml-}"
+          shopt -s nullglob
+          files=("$ARCHIVES_DIR"/*.tar.zst)
+          if (( ${#files[@]} == 0 )); then
+            echo "error: no .tar.zst archives found in $ARCHIVES_DIR" >&2
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${files[@]}" \
+              --title "$RELEASE_NAME" \
+              --generate-notes
+          fi
 
       - name: Clean up internal handoff artifacts
         if: always()
