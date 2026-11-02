@@ -11,6 +11,9 @@ jumptbl_h: OutputFile,
 primitives: OutputFile,
 prims_c: OutputFile,
 c_files: []const InputFile = &.{},
+opcodes_ml: OutputFile,
+opcodes_mli: OutputFile,
+opnames_ml: OutputFile,
 
 pub fn run(self: *Self, init: std.process.Init) !void {
     const io = init.io;
@@ -22,6 +25,7 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     try self.writeOpnamesH(io, instruct_src);
     try self.writeJumptblH(io, instruct_src);
     try self.writePrimitivesAndPrimsC(io, gpa);
+    try self.writeOpcodes(io, gpa, instruct_src);
 }
 
 fn writeOpnamesH(self: *Self, io: std.Io, instruct_src: []const u8) !void {
@@ -226,6 +230,102 @@ fn writePrimitivesAndPrimsC(self: *Self, io: std.Io, gpa: std.mem.Allocator) !vo
             \\
         );
 
+        try file_writer.flush();
+    }
+}
+
+fn parseOpcodes(arena: std.mem.Allocator, instruct_src: []const u8) ![]const []const u8 {
+    const enum_pos = std.mem.indexOf(u8, instruct_src, "enum instructions") orelse return error.InstructionsEnumNotFound;
+    const brace_pos = std.mem.indexOfScalarPos(u8, instruct_src, enum_pos, '{') orelse return error.InstructionsBraceNotFound;
+    var idx = brace_pos + 1;
+
+    var opcodes: std.ArrayList([]const u8) = .empty;
+
+    while (idx < instruct_src.len) {
+        while (idx < instruct_src.len and (std.ascii.isWhitespace(instruct_src[idx]) or instruct_src[idx] == '/')) {
+            if (instruct_src[idx] == '/' and idx + 1 < instruct_src.len and instruct_src[idx + 1] == '*') {
+                const close_comment = std.mem.indexOfPos(u8, instruct_src, idx + 2, "*/") orelse return error.UnterminatedComment;
+                idx = close_comment + 2;
+            } else {
+                idx += 1;
+            }
+        }
+        if (idx >= instruct_src.len or instruct_src[idx] == '}') break;
+
+        if (std.ascii.isUpper(instruct_src[idx])) {
+            const start = idx;
+            idx += 1;
+            while (idx < instruct_src.len and (std.ascii.isUpper(instruct_src[idx]) or std.ascii.isDigit(instruct_src[idx]) or instruct_src[idx] == '_')) : (idx += 1) {}
+            const name = instruct_src[start..idx];
+
+            while (idx < instruct_src.len and (std.ascii.isWhitespace(instruct_src[idx]) or instruct_src[idx] == '/')) {
+                if (instruct_src[idx] == '/' and idx + 1 < instruct_src.len and instruct_src[idx + 1] == '*') {
+                    const close_comment = std.mem.indexOfPos(u8, instruct_src, idx + 2, "*/") orelse return error.UnterminatedComment;
+                    idx = close_comment + 2;
+                } else {
+                    idx += 1;
+                }
+            }
+
+            if (idx < instruct_src.len and instruct_src[idx] == ',') {
+                idx += 1;
+                try opcodes.append(arena, name);
+            } else if (idx < instruct_src.len and instruct_src[idx] == '}') {
+                break;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+
+    return opcodes.items;
+}
+
+fn writeOpcodes(self: *Self, io: std.Io, gpa: std.mem.Allocator, instruct_src: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const opcodes = try parseOpcodes(arena, instruct_src);
+
+    // opnames.ml
+    {
+        var write_buf: [4096]u8 = undefined;
+        var file_writer = try self.opnames_ml.writer(io, &write_buf);
+        defer file_writer.file.close(io);
+        const writer = &file_writer.interface;
+
+        try writer.writeAll("let names_of_instructions = [|\n");
+        for (opcodes) |op| {
+            try writer.print("  \"{s}\";\n", .{op});
+        }
+        try writer.writeAll("|]\n");
+        try file_writer.flush();
+    }
+
+    // opcodes.ml
+    {
+        var write_buf: [4096]u8 = undefined;
+        var file_writer = try self.opcodes_ml.writer(io, &write_buf);
+        defer file_writer.file.close(io);
+        const writer = &file_writer.interface;
+
+        for (opcodes, 0..) |op, i| {
+            try writer.print("let op{s} = {d}\n", .{ op, i });
+        }
+        try file_writer.flush();
+    }
+
+    // opcodes.mli
+    {
+        var write_buf: [4096]u8 = undefined;
+        var file_writer = try self.opcodes_mli.writer(io, &write_buf);
+        defer file_writer.file.close(io);
+        const writer = &file_writer.interface;
+
+        for (opcodes) |op| {
+            try writer.print("val op{s} : int\n", .{op});
+        }
         try file_writer.flush();
     }
 }

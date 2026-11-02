@@ -3,8 +3,20 @@
 const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
-const config_headers = @import("config_headers.zig");
-const Tools = @import("tools/root.zig");
+const configure = @import("configure.zig");
+const Tools = @import("tools.zig");
+
+pub const Common = struct {
+    opnames_h: std.Build.LazyPath,
+    jumptbl_h: std.Build.LazyPath,
+    primitives: std.Build.LazyPath,
+    prims_c: std.Build.LazyPath,
+    opcodes_ml: std.Build.LazyPath,
+    opcodes_mli: std.Build.LazyPath,
+    opnames_ml: std.Build.LazyPath,
+    version_h: std.Build.LazyPath,
+    exec_h: std.Build.LazyPath,
+};
 
 pub const Artifacts = struct {
     platform: Platform,
@@ -44,7 +56,44 @@ pub const Options = struct {
     variants: bool = false,
 };
 
-pub fn build(src: Source, options: Options) Artifacts {
+pub fn buildCommon(src: Source) Common {
+    const b = src.b;
+    const rt = src.manifest.runtime;
+
+    const bytecode_c = runtimeSources(b, &.{ rt.common_c_sources, rt.unix_c_sources, rt.win32_c_sources, rt.bytecode_only_c_sources }, null);
+    const c_inputs = b.allocator.alloc(Tools.InputFile, bytecode_c.len) catch @panic("OOM");
+    for (c_inputs, bytecode_c) |*in, rel| in.* = .of(src.path(rel));
+
+    const gen, _ = Tools.run(b, .gen_runtime, .{
+        .instruct_h = .of(src.path("runtime/caml/instruct.h")),
+        .opnames_h = .of("opnames.h"),
+        .jumptbl_h = .of("jumptbl.h"),
+        .primitives = .of("primitives"),
+        .prims_c = .of("prims.c"),
+        .c_files = c_inputs,
+        .opcodes_ml = .of("opcodes.ml"),
+        .opcodes_mli = .of("opcodes.mli"),
+        .opnames_ml = .of("opnames.ml"),
+    });
+
+    const config = b.addWriteFiles();
+    const version_h = config.add("caml/version.h", configure.versionH(src));
+    const exec_h = config.add("caml/exec.h", configure.execH(src));
+
+    return .{
+        .opnames_h = gen.opnames_h.lazyPath(),
+        .jumptbl_h = gen.jumptbl_h.lazyPath(),
+        .primitives = gen.primitives.lazyPath(),
+        .prims_c = gen.prims_c.lazyPath(),
+        .opcodes_ml = gen.opcodes_ml.lazyPath(),
+        .opcodes_mli = gen.opcodes_mli.lazyPath(),
+        .opnames_ml = gen.opnames_ml.lazyPath(),
+        .version_h = version_h,
+        .exec_h = exec_h,
+    };
+}
+
+pub fn build(src: Source, common: Common, options: Options) Artifacts {
     const b = src.b;
     const m = src.manifest;
     const p = options.platform;
@@ -61,35 +110,23 @@ pub fn build(src: Source, options: Options) Artifacts {
     zstd_lib.root_module.sanitize_c = .off;
     zstd_lib.root_module.strip = true;
 
-    // 1. Bytecode runtime sources (also scanned for primitives)
+    // 1. Bytecode runtime sources
     const bytecode_c = runtimeSources(b, &.{ rt.common_c_sources, os_c_sources, rt.bytecode_only_c_sources }, null);
-    const c_inputs = b.allocator.alloc(Tools.InputFile, bytecode_c.len) catch @panic("OOM");
-    for (c_inputs, bytecode_c) |*in, rel| in.* = .of(src.path(rel));
 
-    // 2. opnames.h, jumptbl.h, primitives, prims.c
-    const gen, _ = Tools.run(b, .gen_runtime, .{
-        .instruct_h = .of(src.path("runtime/caml/instruct.h")),
-        .opnames_h = .of("opnames.h"),
-        .jumptbl_h = .of("jumptbl.h"),
-        .primitives = .of("primitives"),
-        .prims_c = .of("prims.c"),
-        .c_files = c_inputs,
-    });
-
-    // 3. Configuration headers
+    // 2. Configuration headers
     const headers = b.addWriteFiles();
-    _ = headers.add("caml/m.h", config_headers.machineH(src, p));
-    _ = headers.add("caml/s.h", config_headers.systemH(src, p));
-    _ = headers.add("caml/version.h", config_headers.versionH(src));
-    _ = headers.add("caml/exec.h", config_headers.execH(src));
-    _ = headers.add("build_config.h", config_headers.buildConfigH(b, p, options.stdlib_dir, p.runtimeId(b, m.version)));
-    _ = headers.addCopyFile(gen.opnames_h.lazyPath(), "caml/opnames.h");
-    _ = headers.addCopyFile(gen.jumptbl_h.lazyPath(), "caml/jumptbl.h");
+    _ = headers.add("caml/m.h", configure.machineH(src, p));
+    _ = headers.add("caml/s.h", configure.systemH(src, p));
+    _ = headers.addCopyFile(common.version_h, "caml/version.h");
+    _ = headers.addCopyFile(common.exec_h, "caml/exec.h");
+    _ = headers.add("build_config.h", configure.buildConfigH(b, p, options.stdlib_dir, p.runtimeId(b, m.version)));
+    _ = headers.addCopyFile(common.opnames_h, "caml/opnames.h");
+    _ = headers.addCopyFile(common.jumptbl_h, "caml/jumptbl.h");
 
     var self: Artifacts = .{
         .platform = p,
         .headers_dir = headers.getDirectory(),
-        .primitives = gen.primitives.lazyPath(),
+        .primitives = common.primitives,
         .ocamlyacc = undefined,
         .libcamlrun = undefined,
         .ocamlrun = undefined,
@@ -107,7 +144,7 @@ pub fn build(src: Source, options: Options) Artifacts {
     });
     const cflags = if (p.is_elf) ocamlcConcat(b, runtime_cflags, &.{"-ffunction-sections"}) else runtime_cflags;
 
-    // 4. ocamlyacc
+    // 3. ocamlyacc
     self.ocamlyacc = b.addExecutable(.{
         .name = "ocamlyacc",
         .root_module = cModule(b, p, .{}),
@@ -120,61 +157,24 @@ pub fn build(src: Source, options: Options) Artifacts {
     });
     if (p.is_windows) self.ocamlyacc.mingw_unicode_entry_point = true;
 
-    // 5. Bytecode runtime libraries and executables
-    const buildCamlrunLib = struct {
-        fn f(rt_self: Artifacts, s: Source, name: []const u8, linkage: std.builtin.LinkMode, pic: ?bool, files: []const []const u8, flags: []const []const u8) *std.Build.Step.Compile {
-            const lib = s.b.addLibrary(.{
-                .linkage = linkage,
-                .name = name,
-                .root_module = cModule(s.b, rt_self.platform, .{ .pic = pic }),
-            });
-            rt_self.addIncludes(s, lib.root_module);
-            lib.root_module.linkLibrary(rt_self.zstd_lib);
-            lib.root_module.addCSourceFiles(.{ .root = s.path(""), .files = files, .flags = flags });
-            if (linkage == .dynamic) {
-                lib.linker_allow_shlib_undefined = true;
-                rt_self.platform.c.linkLibs(lib.root_module);
-            }
-            return lib;
-        }
-    }.f;
-    const buildOcamlrunExe = struct {
-        fn f(rt_self: Artifacts, s: Source, name: []const u8, prims_c: std.Build.LazyPath, lib: *std.Build.Step.Compile, flags: []const []const u8) *std.Build.Step.Compile {
-            const exe = s.b.addExecutable(.{
-                .name = name,
-                // Static musl cannot dlopen bytecode stub libraries.
-                .linkage = if (rt_self.platform.resolved.result.abi.isMusl()) .dynamic else null,
-                .root_module = cModule(s.b, rt_self.platform, .{}),
-            });
-            rt_self.addIncludes(s, exe.root_module);
-            exe.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
-            exe.root_module.linkLibrary(lib);
-            exe.root_module.linkLibrary(rt_self.zstd_lib);
-            rt_self.platform.c.linkLibs(exe.root_module);
-            if (rt_self.platform.is_elf) exe.rdynamic = true;
-            if (rt_self.platform.is_windows) exe.mingw_unicode_entry_point = true;
-            return exe;
-        }
-    }.f;
-
-    const prims_c = gen.prims_c.lazyPath();
-    self.libcamlrun = buildCamlrunLib(self, src, "camlrun", .static, null, bytecode_c, cflags);
-    self.ocamlrun = buildOcamlrunExe(self, src, "ocamlrun", prims_c, self.libcamlrun, cflags);
+    // 4. Bytecode runtime libraries and executables
+    self.libcamlrun = buildRuntimeLib(self, src, "camlrun", .static, null, bytecode_c, cflags, true);
+    self.ocamlrun = buildOcamlrunExe(self, src, "ocamlrun", common.prims_c, self.libcamlrun, cflags);
     if (!p.is_windows) {
-        self.libcamlrun_pic = buildCamlrunLib(self, src, "camlrun_pic", .static, true, bytecode_c, cflags);
-        self.libcamlrun_shared = buildCamlrunLib(self, src, "camlrun_shared", .dynamic, true, bytecode_c, cflags);
+        self.libcamlrun_pic = buildRuntimeLib(self, src, "camlrun_pic", .static, true, bytecode_c, cflags, true);
+        self.libcamlrun_shared = buildRuntimeLib(self, src, "camlrun_shared", .dynamic, true, bytecode_c, cflags, true);
     }
     if (options.variants) {
         const d_flags = ocamlcConcat(b, cflags, &.{"-DDEBUG"});
         const i_flags = ocamlcConcat(b, cflags, &.{"-DCAML_INSTR"});
         const d_files = ocamlcConcat(b, bytecode_c, &.{"runtime/instrtrace.c"});
-        self.libcamlrund = buildCamlrunLib(self, src, "camlrund", .static, null, d_files, d_flags);
-        self.ocamlrund = buildOcamlrunExe(self, src, "ocamlrund", prims_c, self.libcamlrund.?, d_flags);
-        self.libcamlruni = buildCamlrunLib(self, src, "camlruni", .static, null, bytecode_c, i_flags);
-        self.ocamlruni = buildOcamlrunExe(self, src, "ocamlruni", prims_c, self.libcamlruni.?, i_flags);
+        self.libcamlrund = buildRuntimeLib(self, src, "camlrund", .static, null, d_files, d_flags, true);
+        self.ocamlrund = buildOcamlrunExe(self, src, "ocamlrund", common.prims_c, self.libcamlrund.?, d_flags);
+        self.libcamlruni = buildRuntimeLib(self, src, "camlruni", .static, null, bytecode_c, i_flags, true);
+        self.ocamlruni = buildOcamlrunExe(self, src, "ocamlruni", common.prims_c, self.libcamlruni.?, i_flags);
     }
 
-    // 6. Native runtime libraries (targets with a native-code backend)
+    // 5. Native runtime libraries (targets with a native-code backend)
     if (p.runtimeAsmFile()) |asm_file| {
         const native_files = runtimeSources(
             b,
@@ -182,34 +182,18 @@ pub fn build(src: Source, options: Options) Artifacts {
             if (std.mem.endsWith(u8, asm_file, ".S")) b.fmt("runtime/{s}", .{asm_file}) else null,
         );
         const nat_flags = ocamlcConcat(b, cflags, p.nativeDefines(b));
-        const buildAsmrunLib = struct {
-            fn f(rt_self: Artifacts, s: Source, name: []const u8, linkage: std.builtin.LinkMode, pic: ?bool, files: []const []const u8, flags: []const []const u8) *std.Build.Step.Compile {
-                const lib = s.b.addLibrary(.{
-                    .linkage = linkage,
-                    .name = name,
-                    .root_module = cModule(s.b, rt_self.platform, .{ .pic = pic }),
-                });
-                rt_self.addIncludes(s, lib.root_module);
-                lib.root_module.addCSourceFiles(.{ .root = s.path(""), .files = files, .flags = flags });
-                if (linkage == .dynamic) {
-                    lib.linker_allow_shlib_undefined = true;
-                    rt_self.platform.c.linkLibs(lib.root_module);
-                }
-                return lib;
-            }
-        }.f;
-        self.libasmrun = buildAsmrunLib(self, src, "asmrun", .static, null, native_files, nat_flags);
+        self.libasmrun = buildRuntimeLib(self, src, "asmrun", .static, null, native_files, nat_flags, false);
         if (!p.is_windows) {
-            self.libasmrun_pic = buildAsmrunLib(self, src, "asmrun_pic", .static, true, native_files, nat_flags);
-            self.libasmrun_shared = buildAsmrunLib(self, src, "asmrun_shared", .dynamic, true, native_files, nat_flags);
+            self.libasmrun_pic = buildRuntimeLib(self, src, "asmrun_pic", .static, true, native_files, nat_flags, false);
+            self.libasmrun_shared = buildRuntimeLib(self, src, "asmrun_shared", .dynamic, true, native_files, nat_flags, false);
         }
         if (options.variants) {
-            self.libasmrund = buildAsmrunLib(self, src, "asmrund", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DDEBUG"}));
-            self.libasmruni = buildAsmrunLib(self, src, "asmruni", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DCAML_INSTR"}));
+            self.libasmrund = buildRuntimeLib(self, src, "asmrund", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DDEBUG"}), false);
+            self.libasmruni = buildRuntimeLib(self, src, "asmruni", .static, null, native_files, ocamlcConcat(b, nat_flags, &.{"-DCAML_INSTR"}), false);
         }
     }
 
-    // 8. libcomprmarsh.a
+    // 6. libcomprmarsh.a
     self.libcomprmarsh = b.addLibrary(.{
         .linkage = .static,
         .name = "comprmarsh",
@@ -220,6 +204,55 @@ pub fn build(src: Source, options: Options) Artifacts {
     self.libcomprmarsh.root_module.addCSourceFile(.{ .file = src.path("runtime/zstd.c"), .flags = cflags });
 
     return self;
+}
+
+fn buildRuntimeLib(
+    rt_self: Artifacts,
+    s: Source,
+    name: []const u8,
+    linkage: std.builtin.LinkMode,
+    pic: ?bool,
+    files: []const []const u8,
+    flags: []const []const u8,
+    link_zstd: bool,
+) *std.Build.Step.Compile {
+    const lib = s.b.addLibrary(.{
+        .linkage = linkage,
+        .name = name,
+        .root_module = cModule(s.b, rt_self.platform, .{ .pic = pic }),
+    });
+    rt_self.addIncludes(s, lib.root_module);
+    if (link_zstd) lib.root_module.linkLibrary(rt_self.zstd_lib);
+    lib.root_module.addCSourceFiles(.{ .root = s.path(""), .files = files, .flags = flags });
+    if (linkage == .dynamic) {
+        lib.linker_allow_shlib_undefined = true;
+        rt_self.platform.c.linkLibs(lib.root_module);
+    }
+    return lib;
+}
+
+fn buildOcamlrunExe(
+    rt_self: Artifacts,
+    s: Source,
+    name: []const u8,
+    prims_c: std.Build.LazyPath,
+    lib: *std.Build.Step.Compile,
+    flags: []const []const u8,
+) *std.Build.Step.Compile {
+    const exe = s.b.addExecutable(.{
+        .name = name,
+        // Static musl cannot dlopen bytecode stub libraries.
+        .linkage = if (rt_self.platform.resolved.result.abi.isMusl()) .dynamic else null,
+        .root_module = cModule(s.b, rt_self.platform, .{}),
+    });
+    rt_self.addIncludes(s, exe.root_module);
+    exe.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
+    exe.root_module.linkLibrary(lib);
+    exe.root_module.linkLibrary(rt_self.zstd_lib);
+    rt_self.platform.c.linkLibs(exe.root_module);
+    if (rt_self.platform.is_elf) exe.rdynamic = true;
+    if (rt_self.platform.is_windows) exe.mingw_unicode_entry_point = true;
+    return exe;
 }
 
 pub const ModuleOptions = struct {
@@ -251,4 +284,4 @@ fn runtimeSources(b: *std.Build, lists: []const []const []const u8, extra: ?[]co
     return out.items;
 }
 
-const ocamlcConcat = @import("ocamlc.zig").concat;
+const ocamlcConcat = @import("driver.zig").concat;

@@ -26,15 +26,6 @@ pub const Version = struct {
     /// `major * 10000 + minor * 100 + patchlevel`
     number: u32,
     magic: Magic,
-
-    pub fn semVer(self: Version) std.SemanticVersion {
-        return .{
-            .major = self.major,
-            .minor = self.minor,
-            .patch = self.patchlevel,
-            .pre = if (self.extra.len > 0) self.extra else null,
-        };
-    }
 };
 
 pub const Magic = struct {
@@ -85,7 +76,6 @@ pub const Src = union(enum) {
 /// Files generated during the build that compilation units may refer to.
 pub const Gen = enum {
     config_main_ml,
-    config_boot_ml,
     domainstate_ml,
     domainstate_mli,
     runtimedef_ml,

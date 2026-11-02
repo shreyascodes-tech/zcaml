@@ -1,6 +1,6 @@
 const std = @import("std");
 const Ocaml = @import("build/ocaml.zig");
-const Tools = @import("build/tools/root.zig");
+const Tools = @import("build/tools.zig");
 
 pub fn build(b: *std.Build) !void {
     const ocaml_versions: Ocaml.Versions = .init(b);
@@ -41,25 +41,102 @@ pub fn build(b: *std.Build) !void {
                 .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
             );
 
-            const toolchain = Ocaml.build(src, .{
-                .host = host,
-                .target = target,
+            var ocaml: Ocaml = .init(src, .{
                 .ocamldoc = ocamldoc_opt orelse false,
                 .ocamldebug = ocamldebug_opt orelse false,
                 .ocamlnat = ocamlnat_opt orelse false,
                 .bytecode_tools = bytecode_tools_opt orelse false,
                 .runtime_variants = runtime_variants_opt orelse false,
             });
+            const toolchain = ocaml.build(host, target);
             toolchain.addInstall(b.getInstallStep(), sub_path);
         } else {
             b.getInstallStep().dependOn(&b.addFail("missing -Docaml-host (or run `zig build -Docaml matrix`)").step);
-            Ocaml.buildMatrix(src, matrix_step, version, .{
+            var ocaml: Ocaml = .init(src, .{
                 .ocamldoc = ocamldoc_opt orelse true,
                 .ocamldebug = ocamldebug_opt orelse true,
                 .ocamlnat = ocamlnat_opt orelse true,
                 .bytecode_tools = bytecode_tools_opt orelse true,
                 .runtime_variants = runtime_variants_opt orelse true,
             });
+            for (matrix_pairs) |pair| {
+                const host = Ocaml.resolveTarget(b, pair.host);
+                const target = Ocaml.resolveTarget(b, pair.target);
+                const tc = ocaml.build(host, target);
+                const sub_path = b.fmt(
+                    "{t}/host-{s}/target-{s}",
+                    .{ version, try host.result.linuxTriple(b.allocator), try target.result.linuxTriple(b.allocator) },
+                );
+                tc.addInstall(matrix_step, sub_path);
+            }
         }
     }
 }
+
+pub const Pair = struct {
+    host: []const u8,
+    target: []const u8,
+};
+
+pub const all_targets = [_][]const u8{
+    "x86_64-linux-gnu",
+    "aarch64-linux-gnu",
+    "riscv64-linux-gnu",
+    "powerpc64le-linux-gnu",
+    "s390x-linux-gnu",
+    "x86_64-linux-musl",
+    "aarch64-linux-musl",
+    "riscv64-linux-musl",
+    "powerpc64le-linux-musl",
+    "s390x-linux-musl",
+    "aarch64-macos",
+    "x86_64-macos",
+    "x86_64-windows-gnu",
+};
+
+/// Static list of `(host, target)` pairs built by `zig build -Docaml matrix`.
+pub const matrix_pairs = blk: {
+    var pairs: []const Pair = &.{};
+    // 1. All self-hosted toolchains (T -> T)
+    for (all_targets) |t| {
+        pairs = pairs ++ .{Pair{ .host = t, .target = t }};
+    }
+    // 2. x86_64-linux-gnu -> all other targets
+    for (all_targets) |t| {
+        if (!std.mem.eql(u8, t, "x86_64-linux-gnu")) {
+            pairs = pairs ++ .{Pair{ .host = "x86_64-linux-gnu", .target = t }};
+        }
+    }
+    // 3. Common cross-compilation pairs from other primary hosts
+    for ([_]Pair{
+        // aarch64-linux-gnu host
+        .{ .host = "aarch64-linux-gnu", .target = "x86_64-linux-gnu" },
+        .{ .host = "aarch64-linux-gnu", .target = "aarch64-linux-musl" },
+        .{ .host = "aarch64-linux-gnu", .target = "riscv64-linux-gnu" },
+        .{ .host = "aarch64-linux-gnu", .target = "aarch64-macos" },
+        .{ .host = "aarch64-linux-gnu", .target = "x86_64-windows-gnu" },
+        // aarch64-macos host
+        .{ .host = "aarch64-macos", .target = "x86_64-macos" },
+        .{ .host = "aarch64-macos", .target = "x86_64-linux-gnu" },
+        .{ .host = "aarch64-macos", .target = "aarch64-linux-gnu" },
+        .{ .host = "aarch64-macos", .target = "x86_64-linux-musl" },
+        .{ .host = "aarch64-macos", .target = "aarch64-linux-musl" },
+        .{ .host = "aarch64-macos", .target = "x86_64-windows-gnu" },
+        // x86_64-macos host
+        .{ .host = "x86_64-macos", .target = "aarch64-macos" },
+        .{ .host = "x86_64-macos", .target = "x86_64-linux-gnu" },
+        .{ .host = "x86_64-macos", .target = "aarch64-linux-gnu" },
+        // musl hosts
+        .{ .host = "x86_64-linux-musl", .target = "aarch64-linux-musl" },
+        .{ .host = "x86_64-linux-musl", .target = "riscv64-linux-musl" },
+        .{ .host = "x86_64-linux-musl", .target = "x86_64-linux-gnu" },
+        .{ .host = "aarch64-linux-musl", .target = "x86_64-linux-musl" },
+        .{ .host = "aarch64-linux-musl", .target = "aarch64-linux-gnu" },
+        // x86_64-windows-gnu host
+        .{ .host = "x86_64-windows-gnu", .target = "x86_64-linux-gnu" },
+        .{ .host = "x86_64-windows-gnu", .target = "aarch64-linux-gnu" },
+    }) |p| {
+        pairs = pairs ++ .{p};
+    }
+    break :blk pairs;
+};

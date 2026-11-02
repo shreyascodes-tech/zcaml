@@ -439,7 +439,7 @@ fn computeCompilerPlan(
 
     const cmo_slices = [_][]const []const u8{
         lists.ocamlcommon_cmos,
-        &.{ "utils/config_main", "utils/config_boot" },
+        &.{ "utils/config_main" },
         lists.ocamlbytecomp_cmos,
         lists.ocamlmiddleend_cmos,
         lists.ocamloptcomp_cmos,
@@ -753,7 +753,6 @@ fn resolveMliSource(
     inline for (&.{
         .{ "utils/config", Src{ .upstream = "utils/config.mli" } },
         .{ "utils/config_main", Src{ .upstream = "utils/config.mli" } },
-        .{ "utils/config_boot", Src{ .upstream = "utils/config.mli" } },
         .{ "utils/domainstate", Src{ .gen = .domainstate_mli } },
         .{ "parsing/camlinternalMenhirLib", Src{ .gen = .camlinternalMenhirLib_mli } },
         .{ "parsing/parser", Src{ .gen = .parser_mli } },
@@ -784,7 +783,6 @@ fn resolveMlSource(
     inline for (&.{
         .{ "utils/config", Src{ .gen = .config_main_ml } },
         .{ "utils/config_main", Src{ .gen = .config_main_ml } },
-        .{ "utils/config_boot", Src{ .gen = .config_boot_ml } },
         .{ "utils/domainstate", Src{ .gen = .domainstate_ml } },
         .{ "parsing/camlinternalMenhirLib", Src{ .upstream = "boot/menhir/menhirLib.ml" } },
         .{ "parsing/parser", Src{ .gen = .parser_ml } },

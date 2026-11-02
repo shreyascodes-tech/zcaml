@@ -7,9 +7,7 @@ const OutputDir = utils.OutputDir;
 
 pub const GenStdlibSources = struct {
     ocaml_src_dir: InputDir,
-    header_exe: InputFile,
     expanded_dir: OutputDir,
-    runtime_launch_info: OutputFile,
 
     /// Written to `expanded_dir/<same relative path>` (see `Manifest.Src.expanded`).
     const files_to_expand = [_][]const u8{
@@ -43,6 +41,17 @@ pub const GenStdlibSources = struct {
             if (std.fs.path.dirname(rel)) |dir| try exp_dir.createDirPath(io, dir);
             try exp_dir.writeFile(io, .{ .sub_path = rel, .data = expanded });
         }
+    }
+};
+
+pub const GenLaunchInfo = struct {
+    header_exe: InputFile,
+    runtime_launch_info: OutputFile,
+
+    pub fn run(self: *GenLaunchInfo, init: std.process.Init) !void {
+        const io = init.io;
+        const gpa = init.gpa;
+        const arena = init.arena.allocator();
 
         const exe_bytes = try self.header_exe.readAll(io, gpa);
         defer gpa.free(exe_bytes);

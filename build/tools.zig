@@ -1,16 +1,17 @@
 const std = @import("std");
-const utils = @import("utils.zig");
+const utils = @import("tools/utils.zig");
 pub const InputFile = utils.InputFile;
 pub const OutputFile = utils.OutputFile;
 pub const InputDir = utils.InputDir;
 pub const OutputDir = utils.OutputDir;
 
-const gen_ocaml_sources = @import("gen_ocaml_sources.zig");
+const gen_ocaml_sources = @import("tools/gen_ocaml_sources.zig");
 
 pub const Command = union(enum) {
-    gen_runtime: @import("gen_runtime.zig"),
-    gen_manifests: @import("gen_manifests.zig"),
+    gen_runtime: @import("tools/gen_runtime.zig"),
+    gen_manifests: @import("tools/gen_manifests.zig"),
     gen_stdlib_sources: gen_ocaml_sources.GenStdlibSources,
+    gen_launch_info: gen_ocaml_sources.GenLaunchInfo,
     gen_compiler_sources: gen_ocaml_sources.GenCompilerSources,
     prepend_emit_line: gen_ocaml_sources.PrependEmitLine,
 
@@ -32,7 +33,7 @@ pub const Command = union(enum) {
                 const exe = builder.addExecutable(.{
                     .name = "tools",
                     .root_module = builder.createModule(.{
-                        .root_source_file = builder.path("build/tools_main.zig"),
+                        .root_source_file = builder.path("build/tools.zig"),
                         .target = builder.graph.host,
                         .optimize = .Debug,
                     }),
