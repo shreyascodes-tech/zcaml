@@ -20,14 +20,14 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Build the entire 39-pair matrix on a 32-core Depot Ubuntu runner,
-  #    verify all 27 Linux-hosted pairs (including Linux -> Windows under Wine
-  #    and foreign Linux arches under QEMU), and upload each (host, target)
+  # 1. Build the entire 39-pair matrix on a 16-core Depot Ubuntu runner (8x
+  #    rate vs 16x on 32-core, since the OCaml bootstrap phase is sequential),
+  #    verify all 27 Linux-hosted pairs, and upload each (host, target)
   #    .tar.zst archive directly in parallel with compressionLevel: 0.
   # ---------------------------------------------------------------------------
   build-and-test-linux:
     name: Build Matrix & Verify Linux + Wine
-    runs-on: depot-ubuntu-24.04-32
+    runs-on: depot-ubuntu-24.04-16
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -37,7 +37,18 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-          use-cache: true
+          use-cache: false
+
+      - name: Restore Zig global cache, packages & QEMU sysroots
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            ~/.cache/zcaml
+            zig-pkg
+          key: zcaml-linux-global-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            zcaml-linux-global-${{ env.ZIG_VERSION }}-
 
       - name: Install QEMU user-mode emulators & Wine
         run: |
@@ -49,12 +60,6 @@ jobs:
             binutils \
             curl \
             ca-certificates
-
-      - name: Restore sysroot cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/zcaml
-          key: zcaml-sysroots-v2
 
       - name: Build full OCaml host -> target matrix
         run: zig build --verbose --summary all -Docaml -Docaml-version=${{ inputs.ocaml_version }} matrix
@@ -91,7 +96,7 @@ jobs:
           export -f pack_one
 
           find "zig-out/${VER}" -mindepth 2 -maxdepth 2 -type d -name 'target-*' -print0 \
-            | xargs -0 -P 32 -I {} bash -c 'pack_one "$1" "$2" "$3"' _ {} "$OUT_DIR" "$VER"
+            | xargs -0 -P 16 -I {} bash -c 'pack_one "$1" "$2" "$3"' _ {} "$OUT_DIR" "$VER"
 
       - name: Upload Linux -> macOS deferred test bundles
         uses: actions/upload-artifact@v4
@@ -168,7 +173,7 @@ jobs:
     name: Verify macOS Toolchains
     needs: build-and-test-linux
     runs-on: depot-macos-15
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -178,6 +183,16 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
+
+      - name: Restore macOS Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            .zig-cache
+          key: zcaml-macos-verify-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          restore-keys: |
+            zcaml-macos-verify-${{ env.ZIG_VERSION }}-
 
       - name: Ensure Rosetta 2 is available for x86_64-macos testing
         run: |
@@ -255,7 +270,7 @@ jobs:
     name: Verify Windows Toolchains
     needs: build-and-test-linux
     runs-on: depot-windows-2025-4
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -265,6 +280,16 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
+
+      - name: Restore Windows Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/zig
+            .zig-cache
+          key: zcaml-windows-verify-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          restore-keys: |
+            zcaml-windows-verify-${{ env.ZIG_VERSION }}-
 
       - name: Download Windows toolchain archives
         uses: actions/download-artifact@v4
@@ -293,7 +318,7 @@ jobs:
           done
           wait
 
-          rm -rf zig-pkg .zig-cache
+          rm -rf zig-pkg
           zig build --verbose --summary all -Docaml verify \
             -Docaml-version=${{ inputs.ocaml_version }} \
             -Dverify-root="$ROOT" \
@@ -310,7 +335,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 4. Execute the Linux/Windows binaries cross-compiled by the macOS and
-  #    Windows hosts, and clean up internal handoff artifacts.
+  #    Windows hosts on a lightweight 2-core (1x rate) runner, and clean up
+  #    internal handoff artifacts.
   # ---------------------------------------------------------------------------
   publish-toolchains:
     name: Publish Verified Toolchains
@@ -318,8 +344,8 @@ jobs:
       - build-and-test-linux
       - test-macos
       - test-windows
-    runs-on: depot-ubuntu-24.04-8
-    timeout-minutes: 15
+    runs-on: depot-ubuntu-24.04-2
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -330,6 +356,17 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
+      - name: Restore Linux verify Zig cache & QEMU sysroots
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            ~/.cache/zcaml
+            .zig-cache
+          key: zcaml-linux-verify-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          restore-keys: |
+            zcaml-linux-verify-${{ env.ZIG_VERSION }}-
+
       - name: Install QEMU & Wine for deferred cross-target execution
         run: |
           sudo apt-get update -yq
@@ -339,12 +376,6 @@ jobs:
             binutils \
             curl \
             ca-certificates
-
-      - name: Restore sysroot cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/zcaml
-          key: zcaml-sysroots-v2
 
       - name: Download deferred bundles from macOS & Windows hosts
         uses: actions/download-artifact@v4
