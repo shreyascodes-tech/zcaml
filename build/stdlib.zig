@@ -121,7 +121,7 @@ pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform
     };
 }
 
-/// Compile target-native `.cmx`, `.o`, `stdlib.cmxa`, and `stdlib.a` (depends only on `(arch, system)`).
+/// Compile target-native `.cmx`, `std_exit.o`, `stdlib.cmxa`, and `stdlib.a` (depends only on `(arch, system)`).
 pub fn buildNativeDir(src: *const Source, common: Common, compiler: Ocamlopt, p: Platform) LazyPath {
     const b = src.b;
     var opt = compiler;
@@ -136,8 +136,8 @@ pub fn buildNativeDir(src: *const Source, common: Common, compiler: Ocamlopt, p:
     const out = b.addWriteFiles();
     for (compiled.impls.values()) |u| {
         _ = out.addCopyFile(u.impl.cmx, b.fmt("{s}.cmx", .{u.unit.name}));
-        _ = out.addCopyFile(u.impl.obj, b.fmt("{s}.o", .{u.unit.name}));
     }
+    _ = out.addCopyFile(compiled.impls.get("std_exit").?.impl.obj, "std_exit.o");
     const archive = opt.archive("stdlib", compiled.cmxs(b, src.manifest.stdlib.cma), .{});
     _ = out.addCopyFile(archive.cmxa, "stdlib.cmxa");
     _ = out.addCopyFile(archive.lib, "stdlib.a");

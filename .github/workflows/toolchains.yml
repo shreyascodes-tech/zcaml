@@ -96,6 +96,13 @@ jobs:
             local host_triple="${host_name#host-}"
             local target_triple="${target_name#target-}"
             local pair_id="ocaml-${ver}-host-${host_triple}-target-${target_triple}"
+            if [[ "$host_triple" != *-windows-* ]]; then
+              for tool in ocamlc ocamlopt ocamldep ocamlobjinfo ocamllex ocamldoc; do
+                if [[ -f "${target_dir}/bin/${tool}.opt" ]]; then
+                  ln -sf "${tool}.opt" "${target_dir}/bin/${tool}"
+                fi
+              done
+            fi
             tar --sort=name -I 'zstd -3 --long=27' -cf "${out_dir}/${pair_id}.tar.zst" -C "$target_dir" .
           }
           export -f pack_one

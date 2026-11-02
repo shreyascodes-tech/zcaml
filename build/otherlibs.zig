@@ -325,7 +325,6 @@ const LibBuilder = struct {
                     .rel_src = self.relSrc(n_ml),
                 });
                 _ = self.wf.addCopyFile(n.cmx, b.fmt("{s}.cmx", .{name}));
-                _ = self.wf.addCopyFile(n.obj, b.fmt("{s}.o", .{name}));
                 self.cmxs.append(b.allocator, n.cmx) catch @panic("OOM");
                 if (!is_cfg) self.nat_includes.append(b.allocator, n.cmx.dirname()) catch @panic("OOM");
             }

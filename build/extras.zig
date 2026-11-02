@@ -50,10 +50,11 @@ pub fn compileDebugger(
     const b = src.b;
     const m = src.manifest;
 
+    const compflags = compiler.withoutByteDebugFlags(b, m.compiler.compflags);
     const includes: []const LazyPath = &.{ cmis_dir, libs.unix_dir, libs.dynlink_dir };
     const dbg = ocamlc.compilePlan(m.debugger.plan, sources, .{
         .includes = includes,
-        .flags = m.compiler.compflags,
+        .flags = compflags,
     });
     const pack_wf = b.addWriteFiles();
     for (dbg.intfs.values()) |u| _ = pack_wf.addCopyFile(u.cmi, b.fmt("{s}.cmi", .{u.unit.name}));
@@ -71,11 +72,11 @@ pub fn compileDebugger(
     const entry_includes: []const LazyPath = &.{ cmis_dir, libs.unix_dir, libs.dynlink_dir, dbg.cmis_dir, packed_cmo.dirname() };
     const entry_intf = ocamlc.intf(src.path("debugger/ocamldebug_entry.mli"), "ocamldebug_entry", .{
         .includes = entry_includes,
-        .flags = m.compiler.compflags,
+        .flags = compflags,
     });
     const entry_impl = ocamlc.impl(src.path("debugger/ocamldebug_entry.ml"), "ocamldebug_entry", entry_intf.cmi, .{
         .includes = entry_includes,
-        .flags = m.compiler.compflags,
+        .flags = compflags,
     });
 
     return .{
@@ -153,10 +154,11 @@ pub fn compileOcamldocByte(
     const b = src.b;
     const m = src.manifest;
 
+    const compflags = compiler.withoutByteDebugFlags(b, m.compiler.compflags);
     const byte_includes: []const LazyPath = &.{ cmis_dir, libs.unix_dir, libs.str_dir, libs.dynlink_dir };
     const odoc_byte = ocamlc.compilePlan(m.ocamldoc.plan, sources, .{
         .includes = byte_includes,
-        .flags = m.compiler.compflags,
+        .flags = compflags,
     });
     const odoc_info_cma = ocamlc.archive("odoc_info.cma", odoc_byte.cmos(b, m.ocamldoc.odoc_info), .{});
 
@@ -169,13 +171,7 @@ pub fn compileOcamldocByte(
         if (std.mem.eql(u8, u.unit.name, "odoc_test")) continue;
         _ = lib_wf.addCopyFile(u.cmi, b.fmt("{s}.cmi", .{u.unit.name}));
         if (u.unit.dest == .lib) {
-            if (u.cmti) |cmti| _ = lib_wf.addCopyFile(cmti, b.fmt("{s}.cmti", .{u.unit.name}));
             _ = lib_wf.addCopyFile(u.src, b.fmt("{s}.mli", .{u.unit.name}));
-        }
-    }
-    for (odoc_byte.impls.values()) |u| {
-        if (u.unit.dest == .lib) {
-            _ = lib_wf.addCopyFile(u.impl.cmt, b.fmt("{s}.cmt", .{u.unit.name}));
         }
     }
 
