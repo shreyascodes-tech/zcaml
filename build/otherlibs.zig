@@ -42,8 +42,10 @@ pub const Stubs = struct {
     byt_name: []const u8,
     static_byt: *std.Build.Step.Compile,
     static_nat: *std.Build.Step.Compile,
+    /// Contains `static_nat` as `lib<name>.a`.
+    static_nat_dir: LazyPath,
     /// For `ocamlrun` to load at runtime; `null` where unsupported.
-    shared_byt: ?*std.Build.Step.Compile,
+    shared_byt: ?LazyPath,
 
     pub fn dllName(self: Stubs, p: Platform) []const u8 {
         return self.static_byt.step.owner.fmt("dll{s}.{s}", .{ self.byt_name, p.dllExt() });
@@ -64,10 +66,10 @@ pub fn build(src: *const Source, options: Options) Artifacts {
 
     // C stubs
     const unix_c = prefixed(b, "otherlibs/unix", &.{ ol.unix_common_c_sources, if (p.is_windows) ol.unix_win32_c_sources else ol.unix_unix_c_sources });
-    const unix_stubs = ctx.buildStubs("unix", "otherlibs/unix", unix_c, &.{"-DCAML_BUILDING_UNIX"}, &.{"m"});
+    const unix_stubs = ctx.buildStubs("unix", "otherlibs/unix", unix_c, &.{"-DCAML_BUILDING_UNIX"}, if (p.is_windows) p.c.libs else &.{"m"});
     const str_stubs = ctx.buildStubs("camlstr", "otherlibs/str", prefixed(b, "otherlibs/str", &.{ol.str_c_sources}), &.{}, &.{});
     const re_stubs = ctx.buildStubs("camlruntime_events", "otherlibs/runtime_events", prefixed(b, "otherlibs/runtime_events", &.{ol.runtime_events_c_sources}), &.{}, &.{});
-    const threads_stubs = ctx.buildStubs("threads", "otherlibs/systhreads", &.{"otherlibs/systhreads/st_stubs.c"}, &.{}, &.{"pthread"});
+    const threads_stubs = ctx.buildStubs("threads", "otherlibs/systhreads", &.{"otherlibs/systhreads/st_stubs.c"}, &.{}, if (p.is_windows) p.c.libs else &.{"pthread"});
 
     // Public headers
     var headers: std.ArrayList(Header) = .empty;
@@ -168,6 +170,17 @@ const Ctx = struct {
         return lib.finish("dynlink", null, &.{}, false);
     }
 
+    fn stubModule(self: Ctx, sub: []const u8) *std.Build.Module {
+        const bb = self.src.b;
+        const mod = runtime.cModule(bb, self.platform(), .{ .pic = true });
+        self.options.target_rt.addIncludes(self.src.*, mod);
+        mod.addIncludePath(self.src.path("otherlibs/unix"));
+        mod.addIncludePath(self.src.path("otherlibs/unix/caml"));
+        mod.addIncludePath(self.src.path(sub));
+        mod.addIncludePath(self.src.path(bb.fmt("{s}/caml", .{sub})));
+        return mod;
+    }
+
     fn buildStubLib(
         self: Ctx,
         name: []const u8,
@@ -176,20 +189,40 @@ const Ctx = struct {
         files: []const []const u8,
         cflags: []const []const u8,
     ) *std.Build.Step.Compile {
-        const bb = self.src.b;
-        const l = bb.addLibrary(.{
+        const l = self.src.b.addLibrary(.{
             .linkage = linkage,
             .name = name,
-            .root_module = runtime.cModule(bb, self.platform(), .{ .pic = true }),
+            .root_module = self.stubModule(sub),
         });
-        const mod = l.root_module;
-        self.options.target_rt.addIncludes(self.src.*, mod);
-        mod.addIncludePath(self.src.path("otherlibs/unix"));
-        mod.addIncludePath(self.src.path("otherlibs/unix/caml"));
-        mod.addIncludePath(self.src.path(sub));
-        mod.addIncludePath(self.src.path(bb.fmt("{s}/caml", .{sub})));
-        mod.addCSourceFiles(.{ .root = self.src.path(""), .files = files, .flags = cflags });
+        l.root_module.addCSourceFiles(.{ .root = self.src.path(""), .files = files, .flags = cflags });
         return l;
+    }
+
+    fn flexlinkStubDll(
+        self: Ctx,
+        fl: driver.Flexlink,
+        name: []const u8,
+        sub: []const u8,
+        files: []const []const u8,
+        cflags: []const []const u8,
+        libs: []const []const u8,
+    ) LazyPath {
+        const bb = self.src.b;
+        const run = fl.run(bb);
+        run.addArg("-o");
+        const out = run.addOutputFileArg(bb.fmt("dll{s}.dll", .{name}));
+        // flexlink rewrites individual COFF objects, which `lld` cannot partially link.
+        for (files) |rel| {
+            const obj = bb.addObject(.{
+                .name = bb.fmt("{s}_{s}", .{ name, std.fs.path.stem(rel) }),
+                .root_module = self.stubModule(sub),
+            });
+            obj.root_module.addCSourceFile(.{ .file = self.src.path(rel), .flags = cflags });
+            run.addFileArg(obj.getEmittedBin());
+        }
+        for (libs) |l| run.addArg(bb.fmt("-l{s}", .{l}));
+        run.addArgs(&.{ "-link", "-s" });
+        return out;
     }
 
     /// Build a static + shared stub library pair from C sources under `dir`.
@@ -215,17 +248,25 @@ const Ctx = struct {
         }, extra_cflags));
         const nat_cflags = driver.concat(b, byt_cflags, p.nativeDefines(b));
 
-        const shared: ?*std.Build.Step.Compile = if (!p.is_windows) blk: {
+        const shared: ?LazyPath = if (!p.is_windows) blk: {
             const dll = self.buildStubLib(byt_name, .dynamic, dir, c_files, byt_cflags);
             dll.linker_allow_shlib_undefined = true;
             for (shared_libs) |l| dll.root_module.linkSystemLibrary(l, .{});
-            break :blk dll;
-        } else null;
+            break :blk dll.getEmittedBin();
+        } else if (self.options.target_rt.flexlink) |fl|
+            self.flexlinkStubDll(fl, byt_name, dir, c_files, byt_cflags, shared_libs)
+        else
+            null;
+
+        const static_nat = self.buildStubLib(nat_name, .static, dir, c_files, nat_cflags);
+        const static_nat_wf = b.addWriteFiles();
+        _ = static_nat_wf.addCopyFile(static_nat.getEmittedBin(), b.fmt("lib{s}.a", .{nat_name}));
 
         return .{
             .byt_name = byt_name,
             .static_byt = self.buildStubLib(byt_name, .static, dir, c_files, byt_cflags),
-            .static_nat = self.buildStubLib(nat_name, .static, dir, c_files, nat_cflags),
+            .static_nat = static_nat,
+            .static_nat_dir = static_nat_wf.getDirectory(),
             .shared_byt = shared,
         };
     }
@@ -358,7 +399,7 @@ const LibBuilder = struct {
             var plugin_includes: std.ArrayList(LazyPath) = .empty;
             if (stubs) |s| {
                 nat_flags.appendSlice(b.allocator, &.{ "-cclib", b.fmt("-l{s}", .{s.static_nat.name}) }) catch @panic("OOM");
-                plugin_includes.append(b.allocator, s.static_nat.getEmittedBin().dirname()) catch @panic("OOM");
+                plugin_includes.append(b.allocator, s.static_nat_dir) catch @panic("OOM");
                 for (self.ctx.platform().c.libs) |lib| {
                     nat_flags.appendSlice(b.allocator, &.{ "-cclib", b.fmt("-l{s}", .{lib}) }) catch @panic("OOM");
                 }
@@ -366,7 +407,7 @@ const LibBuilder = struct {
             const archive = opt.archive(name, self.cmxs.items, .{ .flags = nat_flags.items });
             _ = self.wf.addCopyFile(archive.cmxa, b.fmt("{s}.cmxa", .{name}));
             _ = self.wf.addCopyFile(archive.lib, b.fmt("{s}.a", .{name}));
-            if (shared and !self.ctx.platform().is_windows) {
+            if (shared and (!self.ctx.platform().is_windows or opt.flexlink != null)) {
                 _ = self.wf.addCopyFile(opt.shared(name, archive.cmxa, .{ .includes = plugin_includes.items, .strip_debug = true }), b.fmt("{s}.cmxs", .{name}));
             }
         }

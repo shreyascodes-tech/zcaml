@@ -40,7 +40,7 @@ pub fn buildCommon(src: *const Source, primitives: LazyPath, build_rt: runtime.A
 
     const boot: Ocamlc = .{
         .b = b,
-        .ocamlrun = build_rt.ocamlrun,
+        .ocamlrun = build_rt.ocamlrun_step.?,
         .exe = src.path("boot/ocamlc"),
         .stdlib_dir = null,
         .primitives = primitives,

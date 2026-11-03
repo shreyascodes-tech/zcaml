@@ -500,7 +500,20 @@ fn verifySinglePair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
     var host_wrap = try buildExecWrapper(ctx, arena, job.host, &.{stublibs_dir});
     const path_sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
     const parent_path = ctx.init.environ_map.get("PATH") orelse "/usr/bin:/bin";
-    const new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ bin_dir, path_sep, parent_path });
+    var new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ bin_dir, path_sep, parent_path });
+    // Emulated hosts: compilers run `flexlink` by name, so wrap it too.
+    const flexlink_bin = try std.fs.path.join(arena, &.{ bin_dir, "flexlink" });
+    if (host_wrap.prefix_argv.len > 0 and !job.host.isWindows() and pathExists(io, flexlink_bin)) {
+        const shim_dir = try std.fs.path.join(arena, &.{ work_dir_path, "host-shims" });
+        try Dir.cwd().createDirPath(io, shim_dir);
+        var script: std.ArrayList(u8) = .empty;
+        try script.appendSlice(arena, "#!/bin/sh\nexec");
+        for (host_wrap.prefix_argv) |a| try script.print(arena, " '{s}'", .{a});
+        try script.print(arena, " '{s}' \"$@\"\n", .{flexlink_bin});
+        const shim_path = try std.fs.path.join(arena, &.{ shim_dir, "flexlink" });
+        try Dir.cwd().writeFile(io, .{ .sub_path = shim_path, .data = script.items, .flags = .{ .permissions = .executable_file } });
+        new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ shim_dir, path_sep, new_path });
+    }
     try host_wrap.env.put("PATH", new_path);
 
     const h_ext = job.host.exeExt();

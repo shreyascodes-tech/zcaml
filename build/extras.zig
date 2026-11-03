@@ -106,7 +106,7 @@ pub fn linkDebugger(
 ) DebuggerArtifacts {
     const b = src.b;
     const stublibs = b.addWriteFiles();
-    if (libs.unix_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll.getEmittedBin(), libs.unix_stubs.dllName(host));
+    if (libs.unix_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll, libs.unix_stubs.dllName(host));
     const dbg_flags: []const []const u8 = if (host.is_windows or libs.unix_stubs.shared_byt == null) &.{ "-linkall", "-no-check-prims" } else &.{"-linkall"};
     const includes: []const LazyPath = &.{
         host_launch_info_dir,
@@ -272,8 +272,8 @@ pub fn linkOcamldoc(
     byte_objs.appendSlice(b.allocator, odoc_byte.prog_cmos) catch @panic("OOM");
 
     const stublibs = b.addWriteFiles();
-    if (libs.unix_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll.getEmittedBin(), libs.unix_stubs.dllName(target));
-    if (libs.str_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll.getEmittedBin(), libs.str_stubs.dllName(target));
+    if (libs.unix_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll, libs.unix_stubs.dllName(target));
+    if (libs.str_stubs.shared_byt) |dll| _ = stublibs.addCopyFile(dll, libs.str_stubs.dllName(target));
     const odoc_flags = if (host.is_windows or libs.unix_stubs.shared_byt == null)
         driver.concat(b, compiler.launchFlags(b, host), &.{"-no-check-prims"})
     else

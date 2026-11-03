@@ -270,11 +270,53 @@ pub const Ocamlc = struct {
     }
 };
 
+/// Links Windows executables and DLLs at build time.
+pub const Flexlink = struct {
+    exe: LazyPath,
+    support_dir: LazyPath,
+    flags: []const []const u8,
+
+    pub fn run(self: Flexlink, b: *std.Build) *std.Build.Step.Run {
+        const run_step = std.Build.Step.Run.create(b, "run flexlink");
+        run_step.addFileArg(self.exe);
+        addZigToPath(b, run_step);
+        run_step.addArgs(self.flags);
+        run_step.addArg("-I");
+        run_step.addDirectoryArg(self.support_dir);
+        return run_step;
+    }
+
+    /// `-cc` replaces `Config.mkexe`/`mkdll`.
+    fn addOcamloptArgs(self: Flexlink, b: *std.Build, run_step: *std.Build.Step.Run, mode: enum { exe, dll }, strip: bool) void {
+        run_step.addArg("-cc");
+        run_step.addFileArg(self.exe);
+        var opts: std.ArrayList(u8) = .empty;
+        if (mode == .exe) opts.appendSlice(b.allocator, "-exe ") catch @panic("OOM");
+        for (self.flags) |f| opts.print(b.allocator, "{s} ", .{f}) catch @panic("OOM");
+        if (mode == .exe) opts.appendSlice(b.allocator, "-link -municode ") catch @panic("OOM");
+        if (strip) opts.appendSlice(b.allocator, "-link -s ") catch @panic("OOM");
+        run_step.addArgs(&.{ "-ccopt", std.mem.trimEnd(u8, opts.items, " ") });
+        run_step.addArg("-I");
+        run_step.addDirectoryArg(self.support_dir);
+    }
+};
+
+/// Build steps must find the Zig used by this build, even when it was invoked
+/// by absolute path and is not otherwise on PATH.
+pub fn addZigToPath(b: *std.Build, run: *std.Build.Step.Run) void {
+    run.setEnvironmentVariable("PATH", b.fmt("{s}{s}{s}", .{
+        std.fs.path.dirname(b.graph.zig_exe).?,
+        if (b.graph.host.result.os.tag == .windows) ";" else ":",
+        run.getEnvMap().get("PATH") orelse "",
+    }));
+}
+
 pub const Ocamlopt = struct {
     b: *std.Build,
     ocamlrun: ?*std.Build.Step.Compile = null,
     exe: LazyPath,
     stdlib_dir: ?LazyPath,
+    flexlink: ?Flexlink = null,
     prefix_map: ?[]const u8 = null,
     cwd: ?LazyPath = null,
     strip_dir: ?[]const u8 = null,
@@ -296,13 +338,7 @@ pub const Ocamlopt = struct {
         run.addFileArg(self.exe);
         if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
         if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
-        // Build steps must find the Zig used by this build, even when it was invoked
-        // by absolute path and is not otherwise on PATH.
-        run.setEnvironmentVariable("PATH", self.b.fmt("{s}{s}{s}", .{
-            std.fs.path.dirname(self.b.graph.zig_exe).?,
-            if (self.b.graph.host.result.os.tag == .windows) ";" else ":",
-            run.getEnvMap().get("PATH") orelse "",
-        }));
+        addZigToPath(self.b, run);
         run.addArg("-nostdlib");
         if (self.stdlib_dir) |dir| {
             run.addArg("-I");
@@ -349,7 +385,9 @@ pub const Ocamlopt = struct {
 
     pub fn shared(self: Ocamlopt, name: []const u8, archive_file: LazyPath, opts: Options) LazyPath {
         const run = self.cmd(opts);
-        if (opts.strip_debug) run.addArgs(&.{ "-ccopt", "-Wl,-S" });
+        if (self.flexlink) |fl| {
+            fl.addOcamloptArgs(self.b, run, .dll, opts.strip_debug);
+        } else if (opts.strip_debug) run.addArgs(&.{ "-ccopt", "-Wl,-S" });
         run.addArgs(&.{ "-shared", "-linkall", "-o" });
         const out = run.addOutputFileArg(self.b.fmt("{s}.cmxs", .{name}));
         run.addFileArg(archive_file);
@@ -358,7 +396,9 @@ pub const Ocamlopt = struct {
 
     pub fn link(self: Ocamlopt, name: []const u8, objs: []const LazyPath, opts: Options) LazyPath {
         const run = self.cmd(opts);
-        if (opts.strip_debug) run.addArgs(&.{ "-ccopt", "-Wl,-S" });
+        if (self.flexlink) |fl| {
+            fl.addOcamloptArgs(self.b, run, .exe, opts.strip_debug);
+        } else if (opts.strip_debug) run.addArgs(&.{ "-ccopt", "-Wl,-S" });
         run.addArg("-o");
         const out = run.addOutputFileArg(name);
         for (objs) |obj| run.addFileArg(obj);

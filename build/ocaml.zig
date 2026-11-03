@@ -22,6 +22,7 @@ const stdlib = @import("stdlib.zig");
 const compiler = @import("compiler.zig");
 const extras = @import("extras.zig");
 const otherlibs = @import("otherlibs.zig");
+const flexdll = @import("flexdll.zig");
 const driver = @import("driver.zig");
 const Ocamlc = driver.Ocamlc;
 const Ocamlopt = driver.Ocamlopt;
@@ -60,6 +61,8 @@ ocamlnats: SMap(LazyPath) = .empty,
 debugger_byte: ?extras.DebuggerByte = null,
 odoc_byte: ?extras.OcamldocByte = null,
 odoc_nats: SMap(extras.OcamldocNative) = .empty,
+flexlink_byte: ?flexdll.Byte = null,
+flexlink_opts: SMap(LazyPath) = .empty,
 toolchains: SMap(Toolchain) = .empty,
 
 pub const Options = struct {
@@ -79,7 +82,7 @@ pub fn init(src: *const Source, opts: Options) Ocaml {
         .variants = opts.runtime_variants,
     });
     const stdlib_common = stdlib.buildCommon(src, rt_common.primitives, build_rt);
-    const comp_shared = compiler.buildShared(src, stdlib_common.base_dir, stdlib_common.build_launch_info_dir, rt_common, build_rt.ocamlrun, build_rt.ocamlyacc);
+    const comp_shared = compiler.buildShared(src, stdlib_common.base_dir, stdlib_common.build_launch_info_dir, rt_common, build_rt.ocamlrun_step.?, build_rt.ocamlyacc);
     var self: Ocaml = .{
         .src = src,
         .opts = opts,
@@ -107,6 +110,7 @@ pub const Toolchain = struct {
     ocamlnat: ?LazyPath = null,
     ocamldebug: ?extras.DebuggerArtifacts = null,
     ocamldoc: ?extras.OcamldocArtifacts = null,
+    flexlink: ?struct { byte: LazyPath, opt: ?LazyPath } = null,
 
     /// Install the layout directly to `<install prefix>/<sub_path>`.
     pub fn addInstall(self: Toolchain, step: *std.Build.Step, sub_path: []const u8) void {
@@ -134,14 +138,19 @@ pub const Toolchain = struct {
         const lib = "lib/ocaml";
 
         // bin/: host runtime and tools (.opt defaults, with .byte always retained)
-        l.artifact(tc.host_rt.ocamlrun, bin);
-        if (tc.host_rt.ocamlrund) |a| l.artifact(a, bin);
-        if (tc.host_rt.ocamlruni) |a| l.artifact(a, bin);
+        l.file(tc.host_rt.ocamlrun, b.fmt("{s}/ocamlrun{s}", .{ bin, host_exe }));
+        if (tc.host_rt.ocamlrund) |a| l.file(a, b.fmt("{s}/ocamlrund{s}", .{ bin, host_exe }));
+        if (tc.host_rt.ocamlruni) |a| l.file(a, b.fmt("{s}/ocamlruni{s}", .{ bin, host_exe }));
         l.artifact(tc.host_rt.ocamlyacc, bin);
         if (!tc.host_rt.platform.eql(target)) {
-            l.file(tc.target_rt.ocamlrun.getEmittedBin(), b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
-            if (tc.target_rt.ocamlrund) |a| l.file(a.getEmittedBin(), b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));
-            if (tc.target_rt.ocamlruni) |a| l.file(a.getEmittedBin(), b.fmt("{s}/ocamlruni-target{s}", .{ bin, target_exe }));
+            l.file(tc.target_rt.ocamlrun, b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
+            if (tc.target_rt.ocamlrund) |a| l.file(a, b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));
+            if (tc.target_rt.ocamlruni) |a| l.file(a, b.fmt("{s}/ocamlruni-target{s}", .{ bin, target_exe }));
+        }
+        if (tc.flexlink) |fl| {
+            l.file(fl.opt orelse fl.byte, b.fmt("{s}/flexlink{s}", .{ bin, host_exe }));
+            if (fl.opt) |exe| l.file(exe, b.fmt("{s}/flexlink.opt{s}", .{ bin, host_exe }));
+            l.file(fl.byte, b.fmt("{s}/flexlink.byte{s}", .{ bin, host_exe }));
         }
 
         const progs = tc.compiler.programs;
@@ -215,6 +224,7 @@ pub const Toolchain = struct {
         l.file(tc.ld_conf, lib ++ "/ld.conf");
         l.dir(src.path("runtime/caml"), lib ++ "/caml", &.{ ".in", "dune" });
         l.dir(tc.target_rt.headers_dir.path(b, "caml"), lib ++ "/caml", &.{});
+        if (tc.target_rt.flexlink) |fl| l.dir(fl.support_dir, lib ++ "/flexdll", &.{});
 
         // stdlib (flat in lib/ocaml/, as upstream)
         l.dir(tc.stdlib.dir, lib, &.{});
@@ -242,7 +252,7 @@ pub const Toolchain = struct {
             const stubs = ol.stubs orelse continue;
             l.artifact(stubs.static_byt, lib);
             l.artifact(stubs.static_nat, lib);
-            if (stubs.shared_byt) |dll| l.file(dll.getEmittedBin(), b.fmt("{s}/stublibs/{s}", .{ lib, stubs.dllName(target) }));
+            if (stubs.shared_byt) |dll| l.file(dll, b.fmt("{s}/stublibs/{s}", .{ lib, stubs.dllName(target) }));
         }
         for (tc.otherlibs.headers) |h| l.file(h.source, b.fmt("{s}/caml/{s}", .{ lib, h.dest_name }));
     }
@@ -306,8 +316,14 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     else
         null;
 
+    const flexlink: @FieldType(Toolchain, "flexlink") = if (target.is_windows) .{
+        .byte = flexdll.linkByte(self.comp_shared.boot, self.getFlexlinkByte(), self.launchInfo(host), compiler.launchFlags(b, host)),
+        .opt = if (host.hasNativeCompiler()) self.getFlexlinkOpt(host) else null,
+    } else null;
+
     const tc: Toolchain = .{
         .b = b,
+        .flexlink = flexlink,
         .ocaml_src = self.src.*,
         .ld_conf = self.ld_conf,
         .host_rt = host_rt,
@@ -328,6 +344,7 @@ fn getRuntime(self: *Ocaml, p: Platform) runtime.Artifacts {
     const rt = runtime.build(self.src.*, self.rt_common, .{
         .platform = p,
         .variants = self.opts.runtime_variants,
+        .flexlink_exe = if (p.is_windows) self.buildFlexlink() else null,
     });
     self.runtimes.put(self.src.b.allocator, p.triplet, rt) catch @panic("OOM");
     return rt;
@@ -367,28 +384,29 @@ fn getRawEmitter(self: *Ocaml, target: Platform) Ocamlopt {
     if (self.raw_emitters.get(target.triplet)) |opt| return opt;
     const b = self.src.b;
     if (!self.build_platform.hasNativeCompiler()) {
-        const opt = self.rawOcamlopt(self.comp_shared.build_ocamlrun, self.getByteCommon(self.build_platform, target).ocamlopt_byte);
+        const opt = self.rawOcamlopt(self.comp_shared.build_ocamlrun, self.getByteCommon(self.build_platform, target).ocamlopt_byte, target);
         self.raw_emitters.put(b.allocator, target.triplet, opt) catch @panic("OOM");
         return opt;
     }
 
     if (target.eql(self.build_platform)) {
-        const boot_opt = self.rawOcamlopt(self.comp_shared.build_ocamlrun, self.getByteCommon(self.build_platform, self.build_platform).ocamlopt_byte);
+        const boot_opt = self.rawOcamlopt(self.comp_shared.build_ocamlrun, self.getByteCommon(self.build_platform, self.build_platform).ocamlopt_byte, self.build_platform);
         // Seed the bootstrap bytecode emitter to break the cycle when getNativeCommon compiles the native stdlib for build_platform.
         self.raw_emitters.put(b.allocator, self.build_platform.triplet, boot_opt) catch @panic("OOM");
     }
     const ocamlopt_opt = self.linkOcamloptOpt(self.build_platform, self.build_platform, target);
-    const fast_opt = self.rawOcamlopt(null, ocamlopt_opt);
+    const fast_opt = self.rawOcamlopt(null, ocamlopt_opt, target);
     self.raw_emitters.put(b.allocator, target.triplet, fast_opt) catch @panic("OOM");
     return fast_opt;
 }
 
-fn rawOcamlopt(self: *const Ocaml, ocamlrun: ?*std.Build.Step.Compile, exe: LazyPath) Ocamlopt {
+fn rawOcamlopt(self: *Ocaml, ocamlrun: ?*std.Build.Step.Compile, exe: LazyPath, target: Platform) Ocamlopt {
     return .{
         .b = self.src.b,
         .ocamlrun = ocamlrun,
         .exe = exe,
         .stdlib_dir = null,
+        .flexlink = if (target.is_windows) self.getRuntime(target).flexlink orelse self.unsupportedFlexlinkBuild() else null,
         .prefix_map = self.src.prefixMap(),
         .cwd = self.src.path(""),
     };
@@ -596,6 +614,31 @@ fn getOcamldocNative(self: *Ocaml, target: Platform) extras.OcamldocNative {
     );
     self.odoc_nats.put(self.src.b.allocator, target.triplet, on) catch @panic("OOM");
     return on;
+}
+
+fn getFlexlinkByte(self: *Ocaml) flexdll.Byte {
+    if (self.flexlink_byte) |fb| return fb;
+    const fb = flexdll.compileByte(self.comp_shared.boot);
+    self.flexlink_byte = fb;
+    return fb;
+}
+
+fn getFlexlinkOpt(self: *Ocaml, host: Platform) LazyPath {
+    if (self.flexlink_opts.get(host.triplet)) |p| return p;
+    const p = flexdll.linkNative(self.getEmitter(host), self.getFlexlinkByte(), self.getRuntime(host));
+    self.flexlink_opts.put(self.src.b.allocator, host.triplet, p) catch @panic("OOM");
+    return p;
+}
+
+fn buildFlexlink(self: *Ocaml) LazyPath {
+    if (self.build_platform.is_windows or !self.build_platform.hasNativeCompiler()) self.unsupportedFlexlinkBuild();
+    return self.getFlexlinkOpt(self.build_platform);
+}
+
+fn unsupportedFlexlinkBuild(self: *Ocaml) noreturn {
+    // On Windows, flexlink itself would have to be linked by flexlink (upstream
+    // bootstraps it with a runtime built without dynamic linking support).
+    std.debug.panic("building OCaml for Windows targets on a {s} build machine is not supported", .{self.build_platform.triplet});
 }
 
 fn codeKey(self: *Ocaml, p: Platform) []const u8 {

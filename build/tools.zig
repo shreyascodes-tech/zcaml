@@ -14,6 +14,7 @@ pub const Command = union(enum) {
     gen_launch_info: gen_ocaml_sources.GenLaunchInfo,
     gen_compiler_sources: gen_ocaml_sources.GenCompilerSources,
     prepend_emit_line: gen_ocaml_sources.PrependEmitLine,
+    gen_flexlink_sources: @import("tools/gen_flexlink_sources.zig"),
     verify_toolchains: @import("tools/verify_toolchains.zig"),
 
     /// Add a step running this command. Returns the command with its output

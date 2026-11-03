@@ -6,6 +6,7 @@ const Platform = @import("platform.zig");
 const driver = @import("driver.zig");
 const configure = @import("configure.zig");
 const Tools = @import("tools.zig");
+const flexdll = @import("flexdll.zig");
 
 pub const Common = struct {
     opnames_h: std.Build.LazyPath,
@@ -62,6 +63,8 @@ pub const Options = struct {
     stdlib_dir: []const u8 = "../lib/ocaml",
     /// Also build debug (`d`) and instrumented (`i`) runtime variants.
     variants: bool = false,
+    /// Windows: without it the runtime has no dynamic linking support.
+    flexlink_exe: ?std.Build.LazyPath = null,
 };
 
 pub const Artifacts = struct {
@@ -75,9 +78,11 @@ pub const Artifacts = struct {
     libcamlrun_shared: ?*std.Build.Step.Compile = null,
     libcamlrund: ?*std.Build.Step.Compile = null,
     libcamlruni: ?*std.Build.Step.Compile = null,
-    ocamlrun: *std.Build.Step.Compile,
-    ocamlrund: ?*std.Build.Step.Compile = null,
-    ocamlruni: ?*std.Build.Step.Compile = null,
+    ocamlrun: std.Build.LazyPath,
+    ocamlrund: ?std.Build.LazyPath = null,
+    ocamlruni: ?std.Build.LazyPath = null,
+    /// `null` when linked with `flexlink`.
+    ocamlrun_step: ?*std.Build.Step.Compile = null,
     libasmrun: ?*std.Build.Step.Compile = null,
     libasmrun_pic: ?*std.Build.Step.Compile = null,
     libasmrun_shared: ?*std.Build.Step.Compile = null,
@@ -86,12 +91,14 @@ pub const Artifacts = struct {
     libcomprmarsh: *std.Build.Step.Compile,
     zstd_lib: *std.Build.Step.Compile,
     native_runtime_dir: ?std.Build.LazyPath = null,
+    flexlink: ?driver.Flexlink = null,
 
     /// Include paths for C code built against the runtime (runtime, stubs, ...).
     pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
         mod.addIncludePath(self.headers_dir);
         mod.addIncludePath(self.headers_dir.path(src.b, "caml"));
         mod.addIncludePath(src.path("runtime"));
+        if (self.platform.is_windows) mod.addIncludePath(flexdll.includeDir(src.b));
     }
 };
 
@@ -142,7 +149,16 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
         "-Wno-unused-parameter",
         "-Wno-sign-compare",
     });
-    const cflags = if (p.is_elf) driver.concat(b, runtime_cflags, &.{"-ffunction-sections"}) else runtime_cflags;
+    const cflags = if (p.is_elf)
+        driver.concat(b, runtime_cflags, &.{"-ffunction-sections"})
+    else if (p.is_windows and options.flexlink_exe == null)
+        driver.concat(b, runtime_cflags, &.{"-DBUILDING_LIBCAMLRUNS"})
+    else
+        runtime_cflags;
+
+    if (p.is_windows) if (options.flexlink_exe) |exe| {
+        self.flexlink = .{ .exe = exe, .support_dir = flexdll.supportDir(b, p), .flags = flexdll.flags(b, p) };
+    };
 
     self.ocamlyacc = b.addExecutable(.{
         .name = "ocamlyacc",
@@ -157,7 +173,9 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     if (p.is_windows) self.ocamlyacc.mingw_unicode_entry_point = true;
 
     self.libcamlrun = buildRuntimeLib(self, src, "camlrun", .static, null, bytecode_c, cflags, true);
-    self.ocamlrun = buildOcamlrunExe(self, src, "ocamlrun", common.prims_c, self.libcamlrun, cflags);
+    const ocamlrun = linkOcamlrun(self, src, "ocamlrun", common.prims_c, self.libcamlrun, cflags);
+    self.ocamlrun = ocamlrun.bin;
+    self.ocamlrun_step = ocamlrun.step;
     if (!p.is_windows) {
         self.libcamlrun_pic = buildRuntimeLib(self, src, "camlrun_pic", .static, true, bytecode_c, cflags, true);
         self.libcamlrun_shared = buildRuntimeLib(self, src, "camlrun_shared", .dynamic, true, bytecode_c, cflags, true);
@@ -167,9 +185,9 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
         const i_flags = driver.concat(b, cflags, &.{"-DCAML_INSTR"});
         const d_files = driver.concat(b, bytecode_c, &.{"runtime/instrtrace.c"});
         self.libcamlrund = buildRuntimeLib(self, src, "camlrund", .static, null, d_files, d_flags, true);
-        self.ocamlrund = buildOcamlrunExe(self, src, "ocamlrund", common.prims_c, self.libcamlrund.?, d_flags);
+        self.ocamlrund = linkOcamlrun(self, src, "ocamlrund", common.prims_c, self.libcamlrund.?, d_flags).bin;
         self.libcamlruni = buildRuntimeLib(self, src, "camlruni", .static, null, bytecode_c, i_flags, true);
-        self.ocamlruni = buildOcamlrunExe(self, src, "ocamlruni", common.prims_c, self.libcamlruni.?, i_flags);
+        self.ocamlruni = linkOcamlrun(self, src, "ocamlruni", common.prims_c, self.libcamlruni.?, i_flags).bin;
     }
 
     if (p.runtimeAsmFile()) |asm_file| {
@@ -252,6 +270,35 @@ fn buildRuntimeLib(
         rt_self.platform.c.linkLibs(lib.root_module);
     }
     return lib;
+}
+
+fn linkOcamlrun(
+    rt_self: Artifacts,
+    s: Source,
+    name: []const u8,
+    prims_c: std.Build.LazyPath,
+    lib: *std.Build.Step.Compile,
+    flags: []const []const u8,
+) struct { bin: std.Build.LazyPath, step: ?*std.Build.Step.Compile } {
+    const fl = rt_self.flexlink orelse {
+        const exe = buildOcamlrunExe(rt_self, s, name, prims_c, lib, flags);
+        return .{ .bin = exe.getEmittedBin(), .step = exe };
+    };
+    const b = s.b;
+    const prims = b.addObject(.{ .name = b.fmt("{s}_prims", .{name}), .root_module = cModule(b, rt_self.platform, .{}) });
+    rt_self.addIncludes(s, prims.root_module);
+    prims.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
+
+    const run = fl.run(b);
+    run.addArg("-exe");
+    run.addArg("-o");
+    const out = run.addOutputFileArg(b.fmt("{s}.exe", .{name}));
+    run.addFileArg(prims.getEmittedBin());
+    run.addFileArg(lib.getEmittedBin());
+    run.addFileArg(rt_self.zstd_lib.getEmittedBin());
+    for (rt_self.platform.c.libs) |l| run.addArg(b.fmt("-l{s}", .{l}));
+    run.addArgs(&.{ "-link", "-municode", "-link", "-s" });
+    return .{ .bin = out, .step = null };
 }
 
 fn buildOcamlrunExe(

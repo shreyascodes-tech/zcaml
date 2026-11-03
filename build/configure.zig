@@ -3,6 +3,7 @@
 const std = @import("std");
 const Source = @import("source.zig");
 const Platform = @import("platform.zig");
+const flexdll = @import("flexdll.zig");
 const Var = Source.Var;
 
 /// `runtime/caml/m.h`: machine description.
@@ -48,7 +49,7 @@ pub fn systemH(src: Source, p: Platform) []const u8 {
         .{ .name = "OCAML_OS_TYPE", .value = b.fmt("\"{s}\"", .{p.osType()}) },
         .{ .name = "POSIX_SIGNALS", .value = if (is_unix) "1" else null },
         .{ .name = "BSD_SIGNALS", .value = if (is_unix) "1" else null },
-        .{ .name = "SUPPORT_DYNAMIC_LINKING", .value = if (is_unix) "1" else null },
+        .{ .name = "SUPPORT_DYNAMIC_LINKING", .value = "1" },
         .{ .name = "HAS_FULL_THREAD_VARIABLES", .value = if (p.is_linux or p.is_bsd) "1" else null },
         .{ .name = "HAS_C99_FLOAT_OPS", .value = "1" },
         .{ .name = "HAS_WORKING_FMA", .value = "1" },
@@ -239,8 +240,16 @@ fn compilerConfigGenerated(src: Source, host: Platform, target: Platform) []cons
     const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined{s}", .{ triple, if (target.resolved.result.abi.isMusl()) " -dynamic" else "" });
     const asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
     const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
-    const mkdll = b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
-    const mkexe = b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else if (target.is_windows) " -municode" else "" });
+    const flexlink_flags = if (target.is_windows) std.mem.join(b.allocator, " ", flexdll.flags(b, target)) catch @panic("OOM") else "";
+    const mkdll = if (target.is_windows)
+        b.fmt("flexlink {s}", .{flexlink_flags})
+    else
+        b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
+    const mkmaindll = if (target.is_windows) b.fmt("flexlink -maindll {s}", .{flexlink_flags}) else mkdll;
+    const mkexe = if (target.is_windows)
+        b.fmt("flexlink -exe {s} -link -municode", .{flexlink_flags})
+    else
+        b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else "" });
 
     const runtime_id = target.runtimeId(b, src.manifest.version);
     return src.renderAt("utils/config.generated.ml.in", &.{
@@ -269,11 +278,11 @@ fn compilerConfigGenerated(src: Source, host: Platform, target: Platform) []cons
         .{ .name = "rpath", .value = rpath },
         .{ .name = "mksharedlibrpath", .value = rpath },
         .{ .name = "AR", .value = "zig ar" },
-        .{ .name = "supports_shared_libraries", .value = boolStr(!target.is_windows) },
-        .{ .name = "natdynlink", .value = boolStr(!target.is_windows and target.hasNativeCompiler()) },
+        .{ .name = "supports_shared_libraries", .value = "true" },
+        .{ .name = "natdynlink", .value = boolStr(target.hasNativeCompiler()) },
         .{ .name = "mkdll_exp", .value = mkdll },
         .{ .name = "mkexe_exp", .value = mkexe },
-        .{ .name = "mkmaindll_exp", .value = mkdll },
+        .{ .name = "mkmaindll_exp", .value = mkmaindll },
         .{ .name = "flambda", .value = "false" },
         .{ .name = "flambda_invariants", .value = "false" },
         .{ .name = "cmm_invariants", .value = "false" },
@@ -305,7 +314,7 @@ fn compilerConfigGenerated(src: Source, host: Platform, target: Platform) []cons
         .{ .name = "host", .value = host.triplet },
         .{ .name = "target", .value = target.triplet },
         .{ .name = "systhread_support", .value = "true" },
-        .{ .name = "flexdll_dir", .value = "" },
+        .{ .name = "flexdll_dir", .value = if (target.is_windows) "\"+flexdll\"" else "" },
         .{ .name = "ar_supports_response_files", .value = "true" },
         .{ .name = "tsan", .value = "false" },
         .{ .name = "shebangscripts", .value = boolStr(!host.is_windows) },
