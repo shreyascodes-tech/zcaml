@@ -93,7 +93,9 @@ pub fn init(src: *const Source, opts: Options) Ocaml {
         .comp_shared = comp_shared,
         .ld_conf = b.addWriteFiles().add("ld.conf", "./stublibs\n.\n"),
     };
-    self.runtimes.put(b.allocator, build_platform.triplet, build_rt) catch @panic("OOM");
+    // On Windows, `build_rt` has no dynamic linking support (upstream's `ocamlruns`):
+    // it runs `flexlink.byte`, which links the toolchain's runtime.
+    if (!build_platform.is_windows) self.runtimes.put(b.allocator, build_platform.triplet, build_rt) catch @panic("OOM");
     self.launch_infos.put(b.allocator, build_platform.triplet, stdlib_common.build_launch_info_dir) catch @panic("OOM");
     return self;
 }
@@ -406,7 +408,7 @@ fn rawOcamlopt(self: *Ocaml, ocamlrun: ?*std.Build.Step.Compile, exe: LazyPath, 
         .ocamlrun = ocamlrun,
         .exe = exe,
         .stdlib_dir = null,
-        .flexlink = if (target.is_windows) self.getRuntime(target).flexlink orelse self.unsupportedFlexlinkBuild() else null,
+        .flexlink = if (target.is_windows) self.getRuntime(target).flexlink.? else null,
         .prefix_map = self.src.prefixMap(),
         .cwd = self.src.path(""),
     };
@@ -631,14 +633,15 @@ fn getFlexlinkOpt(self: *Ocaml, host: Platform) LazyPath {
 }
 
 fn buildFlexlink(self: *Ocaml) LazyPath {
-    if (self.build_platform.is_windows or !self.build_platform.hasNativeCompiler()) self.unsupportedFlexlinkBuild();
-    return self.getFlexlinkOpt(self.build_platform);
-}
-
-fn unsupportedFlexlinkBuild(self: *Ocaml) noreturn {
-    // On Windows, flexlink itself would have to be linked by flexlink (upstream
-    // bootstraps it with a runtime built without dynamic linking support).
-    std.debug.panic("building OCaml for Windows targets on a {s} build machine is not supported", .{self.build_platform.triplet});
+    const bp = self.build_platform;
+    if (!bp.is_windows and bp.hasNativeCompiler()) return self.getFlexlinkOpt(bp);
+    // A native flexlink would have to be linked by flexlink on Windows: use the
+    // bytecode one, next to the `ocamlrun` its launcher finds.
+    const b = self.src.b;
+    const byte = flexdll.linkByte(self.comp_shared.boot, self.getFlexlinkByte(), self.stdlib_common.build_launch_info_dir, compiler.launchFlags(b, bp));
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(self.build_rt.ocamlrun, b.fmt("ocamlrun{s}", .{bp.exeExt()}));
+    return wf.addCopyFile(byte, b.fmt("flexlink{s}", .{bp.exeExt()}));
 }
 
 fn codeKey(self: *Ocaml, p: Platform) []const u8 {
