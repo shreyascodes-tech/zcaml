@@ -134,40 +134,19 @@ pub const matrix_pairs = blk: {
     for (all_targets) |t| {
         pairs = pairs ++ .{Pair{ .host = t, .target = t }};
     }
-    for (all_targets) |t| {
-        if (!std.mem.eql(u8, t, "x86_64-linux-gnu")) {
-            pairs = pairs ++ .{Pair{ .host = "x86_64-linux-gnu", .target = t }};
+    // Common hosts target everything; the others are self-hosted only.
+    for ([_][]const u8{
+        "x86_64-linux-gnu",
+        "aarch64-linux-gnu",
+        "x86_64-linux-musl",
+        "aarch64-linux-musl",
+        "aarch64-macos",
+        "x86_64-macos",
+        "x86_64-windows-gnu",
+    }) |h| {
+        for (all_targets) |t| {
+            if (!std.mem.eql(u8, t, h)) pairs = pairs ++ .{Pair{ .host = h, .target = t }};
         }
-    }
-    for ([_]Pair{
-        // aarch64-linux-gnu host
-        .{ .host = "aarch64-linux-gnu", .target = "x86_64-linux-gnu" },
-        .{ .host = "aarch64-linux-gnu", .target = "aarch64-linux-musl" },
-        .{ .host = "aarch64-linux-gnu", .target = "riscv64-linux-gnu" },
-        .{ .host = "aarch64-linux-gnu", .target = "aarch64-macos" },
-        .{ .host = "aarch64-linux-gnu", .target = "x86_64-windows-gnu" },
-        // aarch64-macos host
-        .{ .host = "aarch64-macos", .target = "x86_64-macos" },
-        .{ .host = "aarch64-macos", .target = "x86_64-linux-gnu" },
-        .{ .host = "aarch64-macos", .target = "aarch64-linux-gnu" },
-        .{ .host = "aarch64-macos", .target = "x86_64-linux-musl" },
-        .{ .host = "aarch64-macos", .target = "aarch64-linux-musl" },
-        .{ .host = "aarch64-macos", .target = "x86_64-windows-gnu" },
-        // x86_64-macos host
-        .{ .host = "x86_64-macos", .target = "aarch64-macos" },
-        .{ .host = "x86_64-macos", .target = "x86_64-linux-gnu" },
-        .{ .host = "x86_64-macos", .target = "aarch64-linux-gnu" },
-        // musl hosts
-        .{ .host = "x86_64-linux-musl", .target = "aarch64-linux-musl" },
-        .{ .host = "x86_64-linux-musl", .target = "riscv64-linux-musl" },
-        .{ .host = "x86_64-linux-musl", .target = "x86_64-linux-gnu" },
-        .{ .host = "aarch64-linux-musl", .target = "x86_64-linux-musl" },
-        .{ .host = "aarch64-linux-musl", .target = "aarch64-linux-gnu" },
-        // x86_64-windows-gnu host
-        .{ .host = "x86_64-windows-gnu", .target = "x86_64-linux-gnu" },
-        .{ .host = "x86_64-windows-gnu", .target = "aarch64-linux-gnu" },
-    }) |p| {
-        pairs = pairs ++ .{p};
     }
     break :blk pairs;
 };
