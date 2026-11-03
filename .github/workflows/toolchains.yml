@@ -1,9 +1,15 @@
 name: Toolchains
 
+# Release tags: ocaml-v<upstream-version>[-<zcaml-revision>]
+#   ocaml-v5.5.1     -> OCaml 5.5.1, zcaml revision 1 (implicit)
+#   ocaml-v5.5.1-2   -> OCaml 5.5.1, zcaml revision 2 (same upstream, new build)
+# The upstream version is parsed from the tag; the revision is only used to
+# distinguish releases. Never move an existing tag -- bump the revision.
+
 on:
   push:
     tags:
-      - "ocaml-*"
+      - "ocaml-v*"
   workflow_dispatch:
     inputs:
       ocaml_version:
@@ -20,9 +26,42 @@ permissions:
 
 env:
   ZIG_VERSION: "0.17.0"
-  OCAML_VERSION: ${{ inputs.ocaml_version || '5.5.1' }}
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # 0. Resolve which OCaml version to build: from the tag on tag pushes
+  #    (ocaml-v5.5.1-2 -> 5.5.1, revision 2), else from the dispatch input.
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve OCaml version
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      ocaml_version: ${{ steps.parse.outputs.ocaml_version }}
+      revision: ${{ steps.parse.outputs.revision }}
+    steps:
+      - id: parse
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.ocaml_version }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ "$REF_NAME" =~ ^ocaml-v([0-9]+\.[0-9]+\.[0-9]+)(-([0-9]+))?$ ]]; then
+              version="${BASH_REMATCH[1]}"
+              revision="${BASH_REMATCH[3]:-1}"
+            else
+              echo "error: tag '$REF_NAME' does not match ocaml-vX.Y.Z[-N]" >&2
+              exit 1
+            fi
+          else
+            version="${INPUT_VERSION:-5.5.1}"
+            revision="0"
+          fi
+          echo "ocaml_version=$version" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "OCaml $version, zcaml revision $revision"
   # ---------------------------------------------------------------------------
   # 1. Build the entire matrix on an 8-core Depot Ubuntu runner (4x
   #    rate vs 16x on 32-core), verify all 27 Linux-hosted pairs, and upload
@@ -30,8 +69,11 @@ jobs:
   # ---------------------------------------------------------------------------
   build-and-test-linux:
     name: Build Matrix & Verify Linux + Wine
+    needs: resolve
     runs-on: depot-ubuntu-24.04-8
     timeout-minutes: 30
+    env:
+      OCAML_VERSION: ${{ needs.resolve.outputs.ocaml_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -187,9 +229,11 @@ jobs:
   # ---------------------------------------------------------------------------
   test-macos:
     name: Verify macOS Toolchains
-    needs: build-and-test-linux
+    needs: [resolve, build-and-test-linux]
     runs-on: depot-macos-15
     timeout-minutes: 15
+    env:
+      OCAML_VERSION: ${{ needs.resolve.outputs.ocaml_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -292,9 +336,11 @@ jobs:
   # ---------------------------------------------------------------------------
   test-windows:
     name: Verify Windows Toolchains
-    needs: build-and-test-linux
+    needs: [resolve, build-and-test-linux]
     runs-on: depot-windows-2025-4
     timeout-minutes: 15
+    env:
+      OCAML_VERSION: ${{ needs.resolve.outputs.ocaml_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -381,11 +427,15 @@ jobs:
   publish-toolchains:
     name: Publish Verified Toolchains
     needs:
+      - resolve
       - build-and-test-linux
       - test-macos
       - test-windows
     runs-on: depot-ubuntu-24.04-2
     timeout-minutes: 10
+    env:
+      OCAML_VERSION: ${{ needs.resolve.outputs.ocaml_version }}
+      ZCAML_REVISION: ${{ needs.resolve.outputs.revision }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -450,7 +500,7 @@ jobs:
           ARCHIVES_DIR: ${{ runner.temp }}/release-archives
         run: |
           set -euo pipefail
-          RELEASE_NAME="${TAG_NAME#ocaml-}"
+          RELEASE_NAME="OCaml ${OCAML_VERSION} (zcaml build ${ZCAML_REVISION})"
           shopt -s nullglob
           files=("$ARCHIVES_DIR"/*.tar.zst)
           if (( ${#files[@]} == 0 )); then
