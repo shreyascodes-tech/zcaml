@@ -43,7 +43,11 @@ pub fn build(b: *std.Build) !void {
 
         const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
         const src = ocaml_versions.source(version) orelse return;
-        if (b.lazyDependency("zstd", .{}) == null) return;
+        // Request every lazy dependency up front so zig fetches them all in one
+        // pass and re-runs the build script; deeper code may then assume they exist.
+        const zstd_fetched = b.lazyDependency("zstd", .{}) != null;
+        const flexdll_fetched = b.lazyDependency("flexdll", .{}) != null;
+        if (!zstd_fetched or !flexdll_fetched) return;
 
         const default_extra = host_opt == null;
         var ocaml: Ocaml = .init(src, .{
