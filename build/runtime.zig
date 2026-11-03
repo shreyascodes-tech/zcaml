@@ -90,6 +90,7 @@ pub const Artifacts = struct {
     libasmruni: ?*std.Build.Step.Compile = null,
     libcomprmarsh: *std.Build.Step.Compile,
     zstd_lib: *std.Build.Step.Compile,
+    zstd_license: std.Build.LazyPath,
     native_runtime_dir: ?std.Build.LazyPath = null,
     flexlink: ?driver.Flexlink = null,
 
@@ -109,11 +110,12 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     const rt = m.runtime;
     const os_c_sources = if (p.is_windows) rt.win32_c_sources else rt.unix_c_sources;
 
-    const zstd_lib = b.lazyDependency("zstd", .{
+    const zstd_dep = b.lazyDependency("zstd", .{
         .target = p.resolved,
         .optimize = .ReleaseFast,
         .pie = true,
-    }).?.artifact("zstd");
+    }).?;
+    const zstd_lib = zstd_dep.artifact("zstd");
     // OCaml links this archive through `zig cc`, not Zig's build linker.
     // Match the runtime's C flags and avoid a dependency on Zig's UBSan runtime.
     zstd_lib.root_module.sanitize_c = .off;
@@ -140,6 +142,7 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
         .libasmrun = null,
         .libcomprmarsh = undefined,
         .zstd_lib = zstd_lib,
+        .zstd_license = zstd_dep.path("LICENSE-ZSTD"),
     };
 
     const runtime_cflags = p.c.flags(b, &.{

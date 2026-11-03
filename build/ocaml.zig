@@ -228,6 +228,11 @@ pub const Toolchain = struct {
         l.dir(tc.target_rt.headers_dir.path(b, "caml"), lib ++ "/caml", &.{});
         if (tc.target_rt.flexlink) |fl| l.dir(fl.support_dir, lib ++ "/flexdll", &.{});
 
+        // Licenses of the code in the shipped binaries.
+        l.file(src.path("LICENSE"), "share/doc/ocaml/LICENSE");
+        l.file(tc.target_rt.zstd_license, "share/doc/zstd/LICENSE");
+        if (tc.flexlink != null) l.file(flexdll.includeDir(b).path(b, "LICENSE"), "share/doc/flexdll/LICENSE");
+
         // stdlib (flat in lib/ocaml/, as upstream)
         l.dir(tc.stdlib.dir, lib, &.{});
         l.file(tc.stdlib.meta, lib ++ "/stdlib/META");
