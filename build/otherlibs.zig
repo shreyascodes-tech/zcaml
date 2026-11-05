@@ -64,14 +64,12 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     const p = options.target_rt.platform;
     const ctx: Ctx = .{ .src = src, .options = options };
 
-    // C stubs
     const unix_c = prefixed(b, "otherlibs/unix", &.{ ol.unix_common_c_sources, if (p.is_windows) ol.unix_win32_c_sources else ol.unix_unix_c_sources });
     const unix_stubs = ctx.buildStubs("unix", "otherlibs/unix", unix_c, &.{"-DCAML_BUILDING_UNIX"}, if (p.is_windows) p.c.libs else &.{"m"});
     const str_stubs = ctx.buildStubs("camlstr", "otherlibs/str", prefixed(b, "otherlibs/str", &.{ol.str_c_sources}), &.{}, &.{});
     const re_stubs = ctx.buildStubs("camlruntime_events", "otherlibs/runtime_events", prefixed(b, "otherlibs/runtime_events", &.{ol.runtime_events_c_sources}), &.{}, &.{});
     const threads_stubs = ctx.buildStubs("threads", "otherlibs/systhreads", &.{"otherlibs/systhreads/st_stubs.c"}, &.{}, if (p.is_windows) p.c.libs else &.{"pthread"});
 
-    // Public headers
     var headers: std.ArrayList(Header) = .empty;
     for (ol.unix_headers) |h| headers.append(b.allocator, .{
         .source = src.path(b.fmt("otherlibs/unix/{s}", .{h})),
@@ -83,7 +81,6 @@ pub fn build(src: *const Source, options: Options) Artifacts {
     }) catch @panic("OOM");
     headers.append(b.allocator, .{ .source = src.path(ol.threads_header), .dest_name = "threads.h" }) catch @panic("OOM");
 
-    // OCaml libraries
     const unix = ctx.unixLib(unix_stubs);
     const str = ctx.singleModuleLib("str", "otherlibs/str", "str", str_stubs);
     const dynlink = ctx.dynlinkLib();
@@ -126,7 +123,7 @@ const Ctx = struct {
         const p = self.platform();
         const compflags = driver.concat(b, self.src.manifest.otherlibs.compflags, &.{"-nolabels"});
         var lib = LibBuilder.init(self, "otherlibs/unix", "otherlibs/unix/META.in", &.{}, compflags);
-        lib.pubModule("unix", self.src.path("otherlibs/unix/unix.mli"), self.src.path(b.fmt("otherlibs/unix/unix_{s}.ml", .{p.unixOrWin32()})));
+        lib.pubModule("unix", self.src.path("otherlibs/unix/unix.mli"), self.src.path(if (p.is_windows) "otherlibs/unix/unix_win32.ml" else "otherlibs/unix/unix_unix.ml"));
         const labels_ml = self.src.path("otherlibs/unix/unixLabels.ml");
         lib.add(
             "unixLabels",
@@ -151,16 +148,17 @@ const Ctx = struct {
         const b = self.src.b;
         const m = self.src.manifest;
         const p = self.platform();
-        const cfg_ml = b.addWriteFiles().add("dynlink_config.ml", configure.dynlinkConfigMl(self.src.*, p));
+        const cfg_ml = b.addWriteFiles().add("dynlink_config.ml", configure.dynlinkConfigMl(self.src, p));
 
         var lib = LibBuilder.init(self, "", "otherlibs/dynlink/META.in", &.{
             .{ .name = "natdynlink_archive", .value = if (p.hasNativeCompiler()) "dynlink.cmxa" else "" },
         }, driver.concat(b, m.otherlibs.compflags, &.{ "-w", "-40" }));
 
-        _ = lib.intfOnly("dynlink_cmo_format", "file_formats/cmo_format.mli");
-        _ = lib.intfOnly("dynlink_cmxs_format", "file_formats/cmxs_format.mli");
+        lib.intfOnly("dynlink_cmo_format", "file_formats/cmo_format.mli");
+        lib.intfOnly("dynlink_cmxs_format", "file_formats/cmxs_format.mli");
         const dir = "otherlibs/dynlink/";
-        lib.privModule("dynlink_config", self.src.path(dir ++ "dynlink_config.mli"), cfg_ml);
+        // Generated per target: other modules must not inline it.
+        lib.addOpaque("dynlink_config", self.src.path(dir ++ "dynlink_config.mli"), cfg_ml);
         lib.privModule("dynlink_types", self.src.path(dir ++ "dynlink_types.mli"), self.src.path(dir ++ "dynlink_types.ml"));
         lib.privModule("dynlink_platform_intf", self.src.path(dir ++ "dynlink_platform_intf.ml"), self.src.path(dir ++ "dynlink_platform_intf.ml"));
         lib.privModule("dynlink_common", self.src.path(dir ++ "dynlink_common.mli"), self.src.path(dir ++ "dynlink_common.ml"));
@@ -172,8 +170,8 @@ const Ctx = struct {
 
     fn stubModule(self: Ctx, sub: []const u8) *std.Build.Module {
         const bb = self.src.b;
-        const mod = runtime.cModule(bb, self.platform(), .{ .pic = true });
-        self.options.target_rt.addIncludes(self.src.*, mod);
+        const mod = self.platform().cModule(bb, .{ .pic = true });
+        self.options.target_rt.addIncludes(self.src, mod);
         mod.addIncludePath(self.src.path("otherlibs/unix"));
         mod.addIncludePath(self.src.path("otherlibs/unix/caml"));
         mod.addIncludePath(self.src.path(sub));
@@ -315,7 +313,7 @@ const LibBuilder = struct {
         self.nat_includes.append(gpa, dir) catch @panic("OOM");
     }
 
-    fn intfOnly(self: *LibBuilder, name: []const u8, mli_rel: []const u8) Ocamlc.Intf {
+    fn intfOnly(self: *LibBuilder, name: []const u8, mli_rel: []const u8) void {
         const lp = self.ctx.src.path(mli_rel);
         const i = self.ocamlc().intf(lp, name, .{
             .includes = self.byte_includes.items,
@@ -323,7 +321,6 @@ const LibBuilder = struct {
             .rel_src = self.relSrc(lp),
         });
         self.addInclude(i.cmi.dirname());
-        return i;
     }
 
     fn pubModule(self: *LibBuilder, name: []const u8, mli: LazyPath, ml: LazyPath) void {
@@ -334,6 +331,11 @@ const LibBuilder = struct {
         self.add(name, mli, null, ml, ml);
     }
 
+    /// A private module compiled with `-opaque`, its `.cmx` hidden from later modules.
+    fn addOpaque(self: *LibBuilder, name: []const u8, mli: LazyPath, ml: LazyPath) void {
+        self.addModule(name, mli, null, ml, ml, true);
+    }
+
     fn add(
         self: *LibBuilder,
         name: []const u8,
@@ -342,10 +344,21 @@ const LibBuilder = struct {
         byte_ml: LazyPath,
         native_ml: ?LazyPath,
     ) void {
+        self.addModule(name, mli, installed_mli, byte_ml, native_ml, false);
+    }
+
+    fn addModule(
+        self: *LibBuilder,
+        name: []const u8,
+        mli: LazyPath,
+        installed_mli: ?LazyPath,
+        byte_ml: LazyPath,
+        native_ml: ?LazyPath,
+        opaque_: bool,
+    ) void {
         const b = self.ctx.src.b;
         const c = self.ocamlc();
-        const is_cfg = std.mem.eql(u8, name, "dynlink_config");
-        const intf_flags = if (is_cfg) driver.concat(b, self.flags, &.{"-opaque"}) else self.flags;
+        const intf_flags = if (opaque_) driver.concat(b, self.flags, &.{"-opaque"}) else self.flags;
         const i = c.intf(mli, name, .{ .includes = self.byte_includes.items, .flags = intf_flags, .rel_src = self.relSrc(mli) });
         self.addInclude(i.cmi.dirname());
         const o = c.impl(byte_ml, name, i.cmi, .{ .includes = self.byte_includes.items, .flags = self.flags, .rel_src = self.relSrc(byte_ml) });
@@ -367,7 +380,7 @@ const LibBuilder = struct {
                 });
                 _ = self.wf.addCopyFile(n.cmx, b.fmt("{s}.cmx", .{name}));
                 self.cmxs.append(b.allocator, n.cmx) catch @panic("OOM");
-                if (!is_cfg) self.nat_includes.append(b.allocator, n.cmx.dirname()) catch @panic("OOM");
+                if (!opaque_) self.nat_includes.append(b.allocator, n.cmx.dirname()) catch @panic("OOM");
             }
         }
     }
@@ -376,8 +389,8 @@ const LibBuilder = struct {
         const b = self.ctx.src.b;
         var byte_flags: std.ArrayList([]const u8) = .empty;
         byte_flags.append(b.allocator, "-g") catch @panic("OOM");
-        if (stubs != null) byte_flags.append(b.allocator, "-linkall") catch @panic("OOM");
         if (stubs) |s| {
+            byte_flags.append(b.allocator, "-linkall") catch @panic("OOM");
             const clib = b.fmt("-l{s}", .{s.byt_name});
             if (s.shared_byt != null) byte_flags.appendSlice(b.allocator, &.{ "-dllib", clib }) catch @panic("OOM");
             byte_flags.appendSlice(b.allocator, &.{ "-cclib", clib }) catch @panic("OOM");
@@ -395,9 +408,9 @@ const LibBuilder = struct {
             const opt = self.ctx.options.ocamlopt;
             var nat_flags: std.ArrayList([]const u8) = .empty;
             nat_flags.append(b.allocator, "-g") catch @panic("OOM");
-            if (stubs != null) nat_flags.append(b.allocator, "-linkall") catch @panic("OOM");
             var plugin_includes: std.ArrayList(LazyPath) = .empty;
             if (stubs) |s| {
+                nat_flags.append(b.allocator, "-linkall") catch @panic("OOM");
                 nat_flags.appendSlice(b.allocator, &.{ "-cclib", b.fmt("-l{s}", .{s.static_nat.name}) }) catch @panic("OOM");
                 plugin_includes.append(b.allocator, s.static_nat_dir) catch @panic("OOM");
                 for (self.ctx.platform().c.libs) |lib| {

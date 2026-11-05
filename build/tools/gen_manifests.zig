@@ -1,39 +1,23 @@
+//! `zig build generate`: derive a `Manifest` (`build/manifests/vX_Y_Z.zon`) from an
+//! upstream source tree by querying its Makefiles and parsing its `.depend` files.
 const std = @import("std");
 const Manifest = @import("../manifests/manifest.zig");
 const utils = @import("utils.zig");
 const InputDir = utils.InputDir;
 const OutputFile = utils.OutputFile;
 
-const Self = @This();
-
 const Unit = Manifest.Unit;
 const WaveUnit = Manifest.WaveUnit;
 const Src = Manifest.Src;
-
-/// x86-only backend modules (`asmcomp/x86_*`)
-const intel_archs: []const Manifest.Arch = &.{ .amd64, .i386 };
-
-const core_include_dirs = [_][]const u8{
-    "utils",
-    "parsing",
-    "typing",
-    "bytecomp",
-    "file_formats",
-    "lambda",
-    "middle_end",
-    "middle_end/closure",
-    "middle_end/flambda",
-    "middle_end/flambda/base_types",
-    "asmcomp",
-    "driver",
-    "toplevel",
-    "tools",
-};
+const DepMap = std.StringHashMapUnmanaged([]const []const u8);
+const MakeVars = std.StringHashMapUnmanaged([]const []const u8);
 
 ocaml_src_dir: InputDir,
 out_file: OutputFile,
 
-pub fn run(self: *Self, init: std.process.Init) !void {
+const GenManifests = @This();
+
+pub fn run(self: *GenManifests, init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
     const arena = init.arena.allocator();
@@ -61,8 +45,6 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "EXE=",
     }, &.{
         "runtime_COMMON_C_SOURCES",
-        "runtime_UNIX_C_SOURCES",
-        "runtime_WIN32_C_SOURCES",
         "runtime_BYTECODE_ONLY_C_SOURCES",
         "runtime_NATIVE_ONLY_C_SOURCES",
         "ocamlyacc_OTHER_MODULES",
@@ -116,12 +98,6 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         "EXTRACAMLFLAGS=", "O=o", "A=a", "S=s", "SO=so", "EXE=",
     }, &.{"COMPFLAGS"});
 
-    const rt_common = root_vars.get("runtime_COMMON_C_SOURCES").?;
-    const rt_unix = if (root_vars.get("runtime_UNIX_C_SOURCES")) |s| (if (s.len > 0) s else &[_][]const u8{"unix"}) else &[_][]const u8{"unix"};
-    const rt_win32 = if (root_vars.get("runtime_WIN32_C_SOURCES")) |s| (if (s.len > 0) s else &[_][]const u8{"win32"}) else &[_][]const u8{"win32"};
-    const rt_byt = root_vars.get("runtime_BYTECODE_ONLY_C_SOURCES").?;
-    const rt_nat = root_vars.get("runtime_NATIVE_ONLY_C_SOURCES").?;
-
     const yacc_raw = root_vars.get("ocamlyacc_OTHER_MODULES").?;
     var ocamlyacc_c_sources: std.ArrayList([]const u8) = .empty;
     for (yacc_raw) |item| {
@@ -156,11 +132,14 @@ pub fn run(self: *Self, init: std.process.Init) !void {
         .ocamlmktop_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamlmktop_CMO_FILES").?, ".cmo"),
     };
 
-    const compiler_plan = try computeCompilerPlan(io, arena, root_dir, arch_specific, &comp_lists);
-    const lex_plan = try computeSubdirPlan(io, arena, root_dir, comp_lists.ocamllex_cmos, &.{}, &.{}, &.{}, true);
+    var root_deps: DepMap = .empty;
+    try parseDepend(arena, try root_dir.readFileAlloc(io, ".depend", arena, .unlimited), &root_deps);
+
+    const compiler_plan = try computeCompilerPlan(io, arena, root_dir, &root_deps, arch_specific, &comp_lists);
+    const lex_plan = try computeSubdirPlan(io, arena, root_dir, &root_deps, comp_lists.ocamllex_cmos, &.{}, &.{}, &.{}, true);
 
     const debugger_packed = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamldebug_DEBUGGER_OBJECTS").?, ".cmo");
-    const debugger_plan = try computeSubdirPlan(io, arena, root_dir, debugger_packed, &.{"debugger/parser_aux"}, &.{ "-for-pack", "ocamldebug" }, &.{}, false);
+    const debugger_plan = try computeSubdirPlan(io, arena, root_dir, &root_deps, debugger_packed, &.{"debugger/parser_aux"}, &.{ "-for-pack", "ocamldebug" }, &.{}, false);
 
     const odoc_info_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("odoc_info_CMO_FILES").?, ".cmo");
     const ocamldoc_cmos = try normalizeKeys(io, arena, root_dir, root_vars.get("ocamldoc_CMO_FILES").?, ".cmo");
@@ -169,16 +148,17 @@ pub fn run(self: *Self, init: std.process.Init) !void {
     try all_odoc_cmos.appendSlice(arena, odoc_info_cmos);
     try all_odoc_cmos.appendSlice(arena, ocamldoc_cmos);
     try all_odoc_cmos.append(arena, "ocamldoc/odoc_test");
-    const ocamldoc_plan = try computeSubdirPlan(io, arena, root_dir, all_odoc_cmos.items, &.{}, &.{}, ocamldoc_lib_keys, true);
+    const ocamldoc_plan = try computeSubdirPlan(io, arena, root_dir, &root_deps, all_odoc_cmos.items, &.{}, &.{}, ocamldoc_lib_keys, true);
 
     const manifest: Manifest = .{
         .version = ver,
         .runtime = .{
-            .common_c_sources = rt_common,
-            .unix_c_sources = rt_unix,
-            .win32_c_sources = rt_win32,
-            .bytecode_only_c_sources = rt_byt,
-            .native_only_c_sources = rt_nat,
+            .common_c_sources = root_vars.get("runtime_COMMON_C_SOURCES").?,
+            // `$(UNIX_OR_WIN32)` in `runtime_COMMON_C_SOURCES`, emptied by the override above.
+            .unix_c_sources = &.{"unix"},
+            .win32_c_sources = &.{"win32"},
+            .bytecode_only_c_sources = root_vars.get("runtime_BYTECODE_ONLY_C_SOURCES").?,
+            .native_only_c_sources = root_vars.get("runtime_NATIVE_ONLY_C_SOURCES").?,
             .ocamlyacc_c_sources = ocamlyacc_c_sources.items,
         },
         .stdlib = .{
@@ -356,7 +336,7 @@ fn queryMakeVars(
     makefile_rel: []const u8,
     make_overrides: []const []const u8,
     var_names: []const []const u8,
-) !std.StringHashMapUnmanaged([]const []const u8) {
+) !MakeVars {
     var stdin_buf: std.ArrayList(u8) = .empty;
     for (var_names) |vname| {
         try stdin_buf.print(arena, "$(info ZCAML:{s}=$({s}))\n", .{ vname, vname });
@@ -372,7 +352,7 @@ fn queryMakeRaw(
     makefile_rel: []const u8,
     make_overrides: []const []const u8,
     stdin_lines: []const u8,
-) !std.StringHashMapUnmanaged([]const []const u8) {
+) !MakeVars {
     const dir_rel = std.fs.path.dirname(makefile_rel) orelse "";
     const work_dir = if (dir_rel.len > 0)
         try std.fmt.allocPrint(arena, "{s}/{s}", .{ src_root, dir_rel })
@@ -405,9 +385,11 @@ fn queryMakeRaw(
     const stderr_data = try stderr_reader.interface.allocRemaining(gpa, .unlimited);
     defer gpa.free(stderr_data);
 
+    // Without `configure` there is no `Makefile.config` to include, so make fails
+    // after parsing; the `$(info)` lines are printed by then.
     _ = try child.wait(io);
 
-    var map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
+    var map: MakeVars = .empty;
     var lines = std.mem.splitScalar(u8, stdout_data, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trimEnd(u8, raw_line, "\r");
@@ -463,9 +445,8 @@ fn computeStdlibPlan(
         "O=o", "A=a", "S=s", "SO=so", "EXE=",
     }, make_stdin.items);
 
-    const stdlib_depend = try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited);
-    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    try parseDependUnionInto(arena, stdlib_depend, "", &dep_map);
+    var dep_map: DepMap = .empty;
+    try parseDepend(arena, try root_dir.readFileAlloc(io, "stdlib/.depend", arena, .unlimited), &dep_map);
 
     var wave_units: std.ArrayList(WaveUnit) = .empty;
     var cmo_units: std.ArrayList(Unit) = .empty;
@@ -602,6 +583,24 @@ fn normalizeKeys(
     return out.items;
 }
 
+/// Upstream's `VPATH`: where bare module names in the Makefile variables live.
+const core_include_dirs = [_][]const u8{
+    "utils",
+    "parsing",
+    "typing",
+    "bytecomp",
+    "file_formats",
+    "lambda",
+    "middle_end",
+    "middle_end/closure",
+    "middle_end/flambda",
+    "middle_end/flambda/base_types",
+    "asmcomp",
+    "driver",
+    "toplevel",
+    "tools",
+};
+
 fn resolveVpathKey(
     io: std.Io,
     arena: std.mem.Allocator,
@@ -644,13 +643,10 @@ fn computeCompilerPlan(
     io: std.Io,
     arena: std.mem.Allocator,
     root_dir: std.Io.Dir,
+    dep_map: *const DepMap,
     arch_specific: []const []const u8,
     lists: *const CompilerLists,
 ) !Manifest.Plan {
-    const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
-    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    try parseDependUnionInto(arena, root_dep_src, "", &dep_map);
-
     var arch_spec_set: std.StringHashMapUnmanaged(void) = .empty;
     for (arch_specific) |f| {
         try arch_spec_set.put(arena, f, {});
@@ -663,7 +659,7 @@ fn computeCompilerPlan(
 
     const cmo_slices = [_][]const []const u8{
         lists.ocamlcommon_cmos,
-        &.{ "utils/config_main" },
+        &.{"utils/config_main"},
         lists.ocamlbytecomp_cmos,
         lists.ocamlmiddleend_cmos,
         lists.ocamloptcomp_cmos,
@@ -717,10 +713,7 @@ fn computeCompilerPlan(
     var worklist: std.ArrayList([]const u8) = .empty;
     for (cmo_keys.items) |k| {
         try worklist.append(arena, try std.fmt.allocPrint(arena, "{s}.cmo", .{k}));
-        const cmi_key = if (std.mem.startsWith(u8, k, "toplevel/byte/"))
-            try std.fmt.allocPrint(arena, "toplevel/{s}", .{std.fs.path.basename(k)})
-        else
-            k;
+        const cmi_key = try intfKey(arena, k);
         try worklist.append(arena, try std.fmt.allocPrint(arena, "{s}.cmi", .{cmi_key}));
     }
     for (cmi_only_keys.items) |k| {
@@ -760,10 +753,7 @@ fn computeCompilerPlan(
 
     var cmo_units: std.ArrayList(Unit) = .empty;
     for (cmo_keys.items) |k| {
-        const cmi_key = if (std.mem.startsWith(u8, k, "toplevel/byte/"))
-            try std.fmt.allocPrint(arena, "toplevel/{s}", .{std.fs.path.basename(k)})
-        else
-            k;
+        const cmi_key = try intfKey(arena, k);
         const cmi_name = try cmiName(arena, k);
         const ml_src = try resolveMlSource(arena, &arch_spec_set, k);
 
@@ -780,11 +770,20 @@ fn computeCompilerPlan(
     }
 
     return .{
-        .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
+        .cmi_waves = try sortCmiWaves(arena, cmi_units.items, dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
-        .cmx_waves = try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, true),
+        .cmx_waves = try nativeWaves(arena, cmi_units.items, cmo_units.items, dep_map, true),
     };
 }
+
+/// `toplevel/byte/<m>` implements the shared `toplevel/<m>.mli`.
+fn intfKey(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, key, "toplevel/byte/")) return key;
+    return std.fmt.allocPrint(arena, "toplevel/{s}", .{std.fs.path.basename(key)});
+}
+
+/// x86-only backend modules (`asmcomp/x86_*`)
+const intel_archs: []const Manifest.Arch = &.{ .amd64, .i386 };
 
 fn compilerUnit(key: []const u8, src: Src) Unit {
     return .{
@@ -805,16 +804,13 @@ fn computeSubdirPlan(
     io: std.Io,
     arena: std.mem.Allocator,
     root_dir: std.Io.Dir,
+    dep_map: *const DepMap,
     cmo_keys: []const []const u8,
     extra_cmi_keys: []const []const u8,
     cmo_flags: []const []const u8,
     lib_keys: []const []const u8,
     with_native: bool,
 ) !Manifest.Plan {
-    var dep_map: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    const root_dep_src = try root_dir.readFileAlloc(io, ".depend", arena, .unlimited);
-    try parseDependUnionInto(arena, root_dep_src, "", &dep_map);
-
     var empty_arch: std.StringHashMapUnmanaged(void) = .empty;
     var cmi_units: std.ArrayList(WaveUnit) = .empty;
     var cmo_units: std.ArrayList(Unit) = .empty;
@@ -842,9 +838,9 @@ fn computeSubdirPlan(
     }
 
     return .{
-        .cmi_waves = try sortCmiWaves(arena, cmi_units.items, &dep_map, &cmi_by_basename),
+        .cmi_waves = try sortCmiWaves(arena, cmi_units.items, dep_map, &cmi_by_basename),
         .cmo_units = cmo_units.items,
-        .cmx_waves = if (with_native) try nativeWaves(arena, cmi_units.items, cmo_units.items, &dep_map, false) else &.{},
+        .cmx_waves = if (with_native) try nativeWaves(arena, cmi_units.items, cmo_units.items, dep_map, false) else &.{},
     };
 }
 
@@ -862,7 +858,7 @@ fn nativeToplevelKeys(arena: std.mem.Allocator, keys: []const []const u8) ![]con
 fn sortCmiWaves(
     arena: std.mem.Allocator,
     units: []const WaveUnit,
-    dep_map: *const std.StringHashMapUnmanaged([]const []const u8),
+    dep_map: *const DepMap,
     cmi_by_basename: *const std.StringHashMapUnmanaged([]const u8),
 ) ![]const []const WaveUnit {
     const total = units.len;
@@ -924,7 +920,7 @@ fn sortCmiWaves(
     return waves.items;
 }
 
-fn nativeWaves(arena: std.mem.Allocator, cmis: []const WaveUnit, cmos: []const Unit, deps: *const std.StringHashMapUnmanaged([]const []const u8), compiler_plan: bool) ![]const []const Unit {
+fn nativeWaves(arena: std.mem.Allocator, cmis: []const WaveUnit, cmos: []const Unit, deps: *const DepMap, compiler_plan: bool) ![]const []const Unit {
     var units: std.ArrayList(Unit) = .empty;
     for (cmis) |wu| if (wu.kind == .impl) {
         try units.append(arena, wu.unit);
@@ -1042,12 +1038,8 @@ fn resolveMlSource(
     return .{ .upstream = ml_rel };
 }
 
-fn parseDependUnionInto(
-    arena: std.mem.Allocator,
-    depend_src: []const u8,
-    subdir_prefix: []const u8,
-    map: *std.StringHashMapUnmanaged([]const []const u8),
-) !void {
+/// Merge the `.cmi`/`.cmo`/`.cmx` rules of a `.depend` file into `map`.
+fn parseDepend(arena: std.mem.Allocator, depend_src: []const u8, map: *DepMap) !void {
     var joined_line: std.ArrayList(u8) = .empty;
     var lines = std.mem.splitScalar(u8, depend_src, '\n');
     while (lines.next()) |raw_line| {
@@ -1077,15 +1069,14 @@ fn parseDependUnionInto(
         var rhs_it = std.mem.tokenizeAny(u8, rhs, " \t");
         while (rhs_it.next()) |dep_tok| {
             if (std.mem.endsWith(u8, dep_tok, ".cmi") or std.mem.endsWith(u8, dep_tok, ".cmo") or std.mem.endsWith(u8, dep_tok, ".cmx")) {
-                try deps.append(arena, try normalizeDepTok(arena, subdir_prefix, dep_tok));
+                try deps.append(arena, dep_tok);
             }
         }
 
         var lhs_it = std.mem.tokenizeAny(u8, lhs, " \t");
         while (lhs_it.next()) |target_tok| {
             if (std.mem.endsWith(u8, target_tok, ".cmi") or std.mem.endsWith(u8, target_tok, ".cmo") or std.mem.endsWith(u8, target_tok, ".cmx")) {
-                const norm_t = try normalizeDepTok(arena, subdir_prefix, target_tok);
-                try addDepsToMap(arena, map, norm_t, deps.items);
+                try addDepsToMap(arena, map, target_tok, deps.items);
             }
         }
     }
@@ -1093,7 +1084,7 @@ fn parseDependUnionInto(
 
 fn addDepsToMap(
     arena: std.mem.Allocator,
-    map: *std.StringHashMapUnmanaged([]const []const u8),
+    map: *DepMap,
     target: []const u8,
     new_deps: []const []const u8,
 ) !void {
@@ -1107,15 +1098,6 @@ fn addDepsToMap(
     } else {
         try map.put(arena, target, new_deps);
     }
-}
-
-fn normalizeDepTok(arena: std.mem.Allocator, subdir_prefix: []const u8, tok: []const u8) ![]const u8 {
-    if (subdir_prefix.len == 0) return tok;
-    if (std.mem.startsWith(u8, tok, "../")) return tok["../".len..];
-    if (std.mem.indexOfScalar(u8, tok, '/') == null) {
-        return std.fmt.allocPrint(arena, "{s}{s}", .{ subdir_prefix, tok });
-    }
-    return tok;
 }
 
 fn containsStr(haystack: []const []const u8, needle: []const u8) bool {

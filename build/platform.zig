@@ -109,10 +109,6 @@ pub fn archName(self: Platform) []const u8 {
     return if (self.arch) |a| @tagName(a) else "none";
 }
 
-pub fn unixOrWin32(self: Platform) []const u8 {
-    return if (self.is_windows) "win32" else "unix";
-}
-
 pub fn osType(self: Platform) []const u8 {
     return if (self.is_windows) "Win32" else "Unix";
 }
@@ -168,6 +164,36 @@ pub fn runtimeId(self: Platform, b: *std.Build, version: Manifest.Version) []con
     });
 }
 
+pub const CModuleOptions = struct {
+    optimize: std.builtin.OptimizeMode = .ReleaseFast,
+    pic: ?bool = null,
+    strip: ?bool = null,
+};
+
+/// A C-only module for this platform.
+pub fn cModule(self: Platform, b: *std.Build, opts: CModuleOptions) *std.Build.Module {
+    return b.createModule(.{
+        .target = self.resolved,
+        .optimize = opts.optimize,
+        .link_libc = true,
+        .pic = opts.pic,
+        // Cached CRT/compiler-rt objects can contain absolute Zig-install paths.
+        // Keep runtime assertions/variants, but omit C DWARF from shipped files.
+        .strip = opts.strip orelse true,
+    });
+}
+
+/// FlexDLL toolchain (`flexlink -chain`), Windows only.
+pub fn flexlinkChain(self: Platform) []const u8 {
+    std.debug.assert(self.is_windows);
+    return if (self.arch64) "mingw64" else "mingw";
+}
+
+/// `flexlink` flags, as upstream's `configure`.
+pub fn flexlinkFlags(self: Platform, b: *std.Build) []const []const u8 {
+    return b.allocator.dupe([]const u8, &.{ "-chain", self.flexlinkChain(), "-stack", if (self.arch64) "33554432" else "16777216" }) catch @panic("OOM");
+}
+
 /// How C code is compiled and linked for this platform. Used both to build the
 /// runtime / stubs with Zig and to fill in `Config` (`ocamlc -config`), so the C
 /// code users compile through `ocamlc`/`ocamlopt` sees the same configuration.
@@ -218,24 +244,6 @@ pub const CConfig = struct {
 
     pub fn linkLibs(self: CConfig, mod: *std.Build.Module) void {
         for (self.libs) |l| mod.linkSystemLibrary(l, .{});
-    }
-
-    /// `-lm -ldl -lpthread`
-    pub fn libsString(self: CConfig, b: *std.Build) []const u8 {
-        var out: std.ArrayList(u8) = .empty;
-        for (self.libs, 0..) |l, i| {
-            if (i > 0) out.append(b.allocator, ' ') catch @panic("OOM");
-            out.print(b.allocator, "-l{s}", .{l}) catch @panic("OOM");
-        }
-        return out.items;
-    }
-
-    pub fn cflagsString(self: CConfig, b: *std.Build) []const u8 {
-        return std.mem.join(b.allocator, " ", self.cflags) catch @panic("OOM");
-    }
-
-    pub fn cppflagsString(self: CConfig, b: *std.Build) []const u8 {
-        return std.mem.join(b.allocator, " ", self.cppflags) catch @panic("OOM");
     }
 };
 

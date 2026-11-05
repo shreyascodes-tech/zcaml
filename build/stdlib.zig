@@ -26,7 +26,7 @@ pub fn buildCommon(src: *const Source, primitives: LazyPath, build_rt: runtime.A
     const m = src.manifest;
 
     const config = b.addWriteFiles();
-    const sys_ml = config.add("sys.ml", configure.stdlibSysMl(src.*));
+    const sys_ml = config.add("sys.ml", configure.stdlibSysMl(src));
     const meta = config.add("META", src.renderMeta("stdlib/META.in", &.{}));
 
     const gen, _ = Tools.run(b, .gen_stdlib_sources, .{
@@ -65,7 +65,7 @@ pub fn buildCommon(src: *const Source, primitives: LazyPath, build_rt: runtime.A
     _ = out.addCopyFile(compiled.cmo("std_exit").?, "std_exit.cmo");
     _ = out.addCopyFile(boot.archive("stdlib.cma", compiled.cmos(b, m.stdlib.cma), .{}), "stdlib.cma");
 
-    const build_launch_info_dir = buildLaunchInfoDir(src.*, build_rt);
+    const build_launch_info_dir = buildLaunchInfoDir(src, build_rt);
 
     return .{
         .base_dir = out.getDirectory(),
@@ -77,47 +77,41 @@ pub fn buildCommon(src: *const Source, primitives: LazyPath, build_rt: runtime.A
     };
 }
 
-pub fn buildLaunchInfoDir(src: Source, rt: runtime.Artifacts) LazyPath {
+pub fn buildLaunchInfoDir(src: *const Source, rt: runtime.Artifacts) LazyPath {
     const b = src.b;
     const header_exe = buildHeaderExe(src, rt);
-    const gen, _ = Tools.run(b, .gen_launch_info, .{
-        .header_exe = .of(header_exe.getEmittedBin()),
-        .runtime_launch_info = .of("runtime-launch-info"),
+    // As `stdlib/Makefile`: `\0` (no runtime ID: suffixing is off), then the launcher.
+    const cat, _ = Tools.run(b, .cat, .{
+        .inputs = b.allocator.dupe(Tools.InputFile, &.{
+            .of(b.addWriteFiles().add("nul", "\x00")),
+            .of(header_exe.getEmittedBin()),
+        }) catch @panic("OOM"),
+        .output = .of("runtime-launch-info"),
     });
     const launch_wf = b.addWriteFiles();
-    _ = launch_wf.addCopyFile(gen.runtime_launch_info.lazyPath(), "runtime-launch-info");
+    _ = launch_wf.addCopyFile(cat.output.lazyPath(), "runtime-launch-info");
     return launch_wf.getDirectory();
 }
 
 pub const Artifacts = struct {
     /// Contents of `lib/ocaml/` contributed by the stdlib (flat, as upstream installs it).
     dir: LazyPath,
-    /// Directory containing only `runtime-launch-info` for this platform.
-    launch_info_dir: LazyPath,
     meta: LazyPath,
     /// Module-alias-expanded sources (`Manifest.Src.expanded`), also used by otherlibs.
     expanded_dir: LazyPath,
-    sources: Source.Resolver,
-    /// Bootstrap interfaces and sources reused by the native compiler.
-    compiled: Ocamlc.Compiled,
 };
 
-pub fn buildForTarget(src: *const Source, common: Common, target_arch: ?Platform.Arch, launch_info_dir: LazyPath, nat_dir: ?LazyPath) Artifacts {
+/// `nat_dir`: from `buildNativeDir`, `null` for bytecode-only targets.
+pub fn buildForTarget(src: *const Source, common: Common, launch_info_dir: LazyPath, nat_dir: ?LazyPath) Artifacts {
     const b = src.b;
     const out = b.addWriteFiles();
     _ = out.addCopyDirectory(common.base_dir, "", .{});
     _ = out.addCopyFile(launch_info_dir.path(b, "runtime-launch-info"), "runtime-launch-info");
     if (nat_dir) |nd| _ = out.addCopyDirectory(nd, "", .{});
-
-    var sources = common.sources;
-    sources.arch = target_arch;
     return .{
         .dir = out.getDirectory(),
-        .launch_info_dir = launch_info_dir,
         .meta = common.meta,
         .expanded_dir = common.expanded_dir,
-        .sources = sources,
-        .compiled = common.compiled,
     };
 }
 
@@ -158,13 +152,13 @@ fn installSource(out: *std.Build.Step.WriteFile, sources: Source.Resolver, src: 
 }
 
 /// The executable embedded into bytecode programs that launches `ocamlrun`.
-fn buildHeaderExe(src: Source, target_rt: runtime.Artifacts) *std.Build.Step.Compile {
+fn buildHeaderExe(src: *const Source, target_rt: runtime.Artifacts) *std.Build.Step.Compile {
     const b = src.b;
     const p = target_rt.platform;
 
     const exe = b.addExecutable(.{
         .name = "tmpheader",
-        .root_module = runtime.cModule(b, p, .{ .optimize = .ReleaseSmall, .strip = true }),
+        .root_module = p.cModule(b, .{ .optimize = .ReleaseSmall, .strip = true }),
     });
     target_rt.addIncludes(src, exe.root_module);
 

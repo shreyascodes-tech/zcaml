@@ -11,7 +11,6 @@ const Ocamlopt = driver.Ocamlopt;
 const LazyPath = std.Build.LazyPath;
 
 pub fn linkOcamlnat(
-    b: *std.Build,
     arch_byte: compiler.ArchByte,
     arch_nat: compiler.ArchNative,
     nat_common: compiler.NativeCommon,
@@ -19,13 +18,12 @@ pub fn linkOcamlnat(
     rt: runtime.Artifacts,
     dynlink_dir: LazyPath,
 ) LazyPath {
-    const runtime_dir = compiler.nativeRuntimeDir(b, rt);
-
+    const b = opt.b;
     return opt.link(
         "ocamlnat",
-        &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.bytecomp_cmxa, dynlink_dir.path(b, "dynlink.cmxa"), arch_nat.toplevel_cmxa.?, arch_nat.compiled.impls.get("toplevel/topstart").?.impl.cmx },
+        &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.bytecomp_cmxa, dynlink_dir.path(b, "dynlink.cmxa"), arch_nat.toplevel_cmxa.?, arch_nat.compiled.cmx("toplevel/topstart").? },
         .{
-            .includes = &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, runtime_dir, dynlink_dir },
+            .includes = &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, rt.native_runtime_dir.?, dynlink_dir },
             .flags = driver.concat(b, compiler.native_link_flags, &.{"-linkall"}),
             .strip_debug = true,
         },
@@ -43,6 +41,7 @@ pub const DebuggerByte = struct {
 pub fn compileDebugger(
     src: *const Source,
     ocamlc: Ocamlc,
+    compflags: []const []const u8,
     sources: Source.Resolver,
     cmis_dir: LazyPath,
     libs: otherlibs.Artifacts,
@@ -50,7 +49,6 @@ pub fn compileDebugger(
     const b = src.b;
     const m = src.manifest;
 
-    const compflags = compiler.withoutByteDebugFlags(b, m.compiler.compflags);
     const includes: []const LazyPath = &.{ cmis_dir, libs.unix_dir, libs.dynlink_dir };
     const dbg = ocamlc.compilePlan(m.debugger.plan, sources, .{
         .includes = includes,
@@ -147,6 +145,7 @@ pub const OcamldocByte = struct {
 pub fn compileOcamldocByte(
     src: *const Source,
     ocamlc: Ocamlc,
+    compflags: []const []const u8,
     sources: Source.Resolver,
     cmis_dir: LazyPath,
     libs: otherlibs.Artifacts,
@@ -154,7 +153,6 @@ pub fn compileOcamldocByte(
     const b = src.b;
     const m = src.manifest;
 
-    const compflags = compiler.withoutByteDebugFlags(b, m.compiler.compflags);
     const byte_includes: []const LazyPath = &.{ cmis_dir, libs.unix_dir, libs.str_dir, libs.dynlink_dir };
     const odoc_byte = ocamlc.compilePlan(m.ocamldoc.plan, sources, .{
         .includes = byte_includes,
@@ -217,7 +215,7 @@ pub fn compileOcamldocNative(
     }
 
     const runtime_dir = b.addWriteFiles();
-    _ = runtime_dir.addCopyDirectory(compiler.nativeRuntimeDir(b, target_rt), "", .{});
+    _ = runtime_dir.addCopyDirectory(target_rt.native_runtime_dir.?, "", .{});
     _ = runtime_dir.addCopyFile(libs.unix_stubs.static_nat.getEmittedBin(), "libunixnat.a");
     _ = runtime_dir.addCopyFile(libs.str_stubs.static_nat.getEmittedBin(), "libcamlstrnat.a");
 

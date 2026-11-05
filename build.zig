@@ -3,8 +3,6 @@ const Ocaml = @import("build/ocaml.zig");
 const Tools = @import("build/tools.zig");
 
 pub fn build(b: *std.Build) !void {
-    const ocaml_versions: Ocaml.Versions = .init(b);
-
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const version = b.option(Ocaml.Version, "ocaml-version", "ocaml version to build") orelse Ocaml.Versions.latest;
         const ocamldoc_opt = b.option(bool, "ocamldoc", "build and install ocamldoc");
@@ -42,12 +40,12 @@ pub fn build(b: *std.Build) !void {
         }
 
         const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
-        const src = ocaml_versions.source(version) orelse return;
-        // Request every lazy dependency up front so zig fetches them all in one
-        // pass and re-runs the build script; deeper code may then assume they exist.
+        // Request every lazy dependency before bailing out, so zig fetches them all in one pass.
+        const ocaml_dep = Ocaml.Versions.dependency(b, version);
+        const flexdll = b.lazyDependency("flexdll", .{});
         const zstd_fetched = b.lazyDependency("zstd", .{}) != null;
-        const flexdll_fetched = b.lazyDependency("flexdll", .{}) != null;
-        if (!zstd_fetched or !flexdll_fetched) return;
+        if (ocaml_dep == null or flexdll == null or !zstd_fetched) return;
+        const src = Ocaml.Versions.source(b, version, .{ .flexdll = flexdll.?, .zstd = zstdDependency }).?;
 
         const default_extra = host_opt == null;
         var ocaml: Ocaml = .init(src, .{
@@ -82,11 +80,10 @@ pub fn build(b: *std.Build) !void {
         return;
     }
 
-    // zig build generate: (re)generate build/manifests/*.zon from the upstream sources
     const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
     const update_src = b.addUpdateSourceFiles();
     for (Ocaml.Versions.all) |ver| {
-        const dep = ocaml_versions.dependency(ver) orelse continue;
+        const dep = Ocaml.Versions.dependency(b, ver) orelse continue;
         const gen, _ = Tools.run(b, .gen_manifests, .{
             .ocaml_src_dir = .of(dep.path("")),
             .out_file = .of(std.fs.path.basename(Ocaml.Versions.manifestPath(ver))),
@@ -94,6 +91,11 @@ pub fn build(b: *std.Build) !void {
         update_src.addCopyFileToSource(gen.out_file.lazyPath(), Ocaml.Versions.manifestPath(ver));
     }
     gen_step.dependOn(&update_src.step);
+}
+
+/// `zstd` is configured per target, so the OCaml build gets it as a function.
+fn zstdDependency(b: *std.Build, options: Ocaml.Deps.ZstdOptions) *std.Build.Dependency {
+    return b.dependency("zstd", .{ .target = options.target, .optimize = options.optimize, .pie = options.pie });
 }
 
 fn defaultSubPath(b: *std.Build, version: Ocaml.Version, host: std.Build.ResolvedTarget, target: std.Build.ResolvedTarget) []const u8 {
@@ -107,12 +109,12 @@ fn defaultSubPath(b: *std.Build, version: Ocaml.Version, host: std.Build.Resolve
     );
 }
 
-pub const Pair = struct {
+const Pair = struct {
     host: []const u8,
     target: []const u8,
 };
 
-pub const all_targets = [_][]const u8{
+const all_targets = [_][]const u8{
     "x86_64-linux-gnu",
     "aarch64-linux-gnu",
     "riscv64-linux-gnu",
@@ -129,7 +131,7 @@ pub const all_targets = [_][]const u8{
 };
 
 /// Static list of `(host, target)` pairs built by `zig build -Docaml matrix`.
-pub const matrix_pairs = blk: {
+const matrix_pairs = blk: {
     var pairs: []const Pair = &.{};
     for (all_targets) |t| {
         pairs = pairs ++ .{Pair{ .host = t, .target = t }};

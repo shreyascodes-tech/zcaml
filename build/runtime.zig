@@ -20,7 +20,7 @@ pub const Common = struct {
     exec_h: std.Build.LazyPath,
 };
 
-pub fn buildCommon(src: Source) Common {
+pub fn buildCommon(src: *const Source) Common {
     const b = src.b;
     const rt = src.manifest.runtime;
 
@@ -59,8 +59,6 @@ pub fn buildCommon(src: Source) Common {
 
 pub const Options = struct {
     platform: Platform,
-    /// Default stdlib location baked into `ocamlrun` (relative to its directory).
-    stdlib_dir: []const u8 = "../lib/ocaml",
     /// Also build debug (`d`) and instrumented (`i`) runtime variants.
     variants: bool = false,
     /// Windows: without it the runtime has no dynamic linking support.
@@ -91,30 +89,27 @@ pub const Artifacts = struct {
     libcomprmarsh: *std.Build.Step.Compile,
     zstd_lib: *std.Build.Step.Compile,
     zstd_license: std.Build.LazyPath,
+    /// `libasmrun.a`, `libcomprmarsh.a` and `libzstd.a`, for linking native programs.
     native_runtime_dir: ?std.Build.LazyPath = null,
     flexlink: ?driver.Flexlink = null,
 
     /// Include paths for C code built against the runtime (runtime, stubs, ...).
-    pub fn addIncludes(self: Artifacts, src: Source, mod: *std.Build.Module) void {
+    pub fn addIncludes(self: Artifacts, src: *const Source, mod: *std.Build.Module) void {
         mod.addIncludePath(self.headers_dir);
         mod.addIncludePath(self.headers_dir.path(src.b, "caml"));
         mod.addIncludePath(src.path("runtime"));
-        if (self.platform.is_windows) mod.addIncludePath(flexdll.includeDir(src.b));
+        if (self.platform.is_windows) mod.addIncludePath(src.deps.flexdll.path(""));
     }
 };
 
-pub fn build(src: Source, common: Common, options: Options) Artifacts {
+pub fn build(src: *const Source, common: Common, options: Options) Artifacts {
     const b = src.b;
     const m = src.manifest;
     const p = options.platform;
     const rt = m.runtime;
     const os_c_sources = if (p.is_windows) rt.win32_c_sources else rt.unix_c_sources;
 
-    const zstd_dep = b.lazyDependency("zstd", .{
-        .target = p.resolved,
-        .optimize = .ReleaseFast,
-        .pie = true,
-    }).?;
+    const zstd_dep = src.deps.zstd(b, .{ .target = p.resolved, .optimize = .ReleaseFast, .pie = true });
     const zstd_lib = zstd_dep.artifact("zstd");
     // OCaml links this archive through `zig cc`, not Zig's build linker.
     // Match the runtime's C flags and avoid a dependency on Zig's UBSan runtime.
@@ -128,7 +123,7 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     _ = headers.add("caml/s.h", configure.systemH(src, p));
     _ = headers.addCopyFile(common.version_h, "caml/version.h");
     _ = headers.addCopyFile(common.exec_h, "caml/exec.h");
-    _ = headers.add("build_config.h", configure.buildConfigH(b, p, options.stdlib_dir, p.runtimeId(b, m.version)));
+    _ = headers.add("build_config.h", configure.buildConfigH(src, p));
     _ = headers.addCopyFile(common.opnames_h, "caml/opnames.h");
     _ = headers.addCopyFile(common.jumptbl_h, "caml/jumptbl.h");
 
@@ -160,12 +155,12 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
         runtime_cflags;
 
     if (p.is_windows) if (options.flexlink_exe) |exe| {
-        self.flexlink = .{ .exe = exe, .support_dir = flexdll.supportDir(b, p), .flags = flexdll.flags(b, p) };
+        self.flexlink = .{ .exe = exe, .support_dir = flexdll.supportDir(b, src.deps.flexdll, p), .flags = p.flexlinkFlags(b) };
     };
 
     self.ocamlyacc = b.addExecutable(.{
         .name = "ocamlyacc",
-        .root_module = cModule(b, p, .{}),
+        .root_module = p.cModule(b, .{}),
     });
     self.addIncludes(src, self.ocamlyacc.root_module);
     self.ocamlyacc.root_module.addCSourceFiles(.{
@@ -214,7 +209,7 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     self.libcomprmarsh = b.addLibrary(.{
         .linkage = .static,
         .name = "comprmarsh",
-        .root_module = cModule(b, p, .{ .pic = true }),
+        .root_module = p.cModule(b, .{ .pic = true }),
     });
     self.addIncludes(src, self.libcomprmarsh.root_module);
     self.libcomprmarsh.root_module.linkLibrary(zstd_lib);
@@ -231,28 +226,9 @@ pub fn build(src: Source, common: Common, options: Options) Artifacts {
     return self;
 }
 
-pub const ModuleOptions = struct {
-    optimize: std.builtin.OptimizeMode = .ReleaseFast,
-    pic: ?bool = null,
-    strip: ?bool = null,
-};
-
-/// A C-only module for `p`.
-pub fn cModule(b: *std.Build, p: Platform, opts: ModuleOptions) *std.Build.Module {
-    return b.createModule(.{
-        .target = p.resolved,
-        .optimize = opts.optimize,
-        .link_libc = true,
-        .pic = opts.pic,
-        // Cached CRT/compiler-rt objects can contain absolute Zig-install paths.
-        // Keep runtime assertions/variants, but omit C DWARF from shipped files.
-        .strip = opts.strip orelse true,
-    });
-}
-
 fn buildRuntimeLib(
-    rt_self: Artifacts,
-    s: Source,
+    rt: Artifacts,
+    src: *const Source,
     name: []const u8,
     linkage: std.builtin.LinkMode,
     pic: ?bool,
@@ -260,77 +236,67 @@ fn buildRuntimeLib(
     flags: []const []const u8,
     link_zstd: bool,
 ) *std.Build.Step.Compile {
-    const lib = s.b.addLibrary(.{
+    const lib = src.b.addLibrary(.{
         .linkage = linkage,
         .name = name,
-        .root_module = cModule(s.b, rt_self.platform, .{ .pic = pic }),
+        .root_module = rt.platform.cModule(src.b, .{ .pic = pic }),
     });
-    rt_self.addIncludes(s, lib.root_module);
-    if (link_zstd) lib.root_module.linkLibrary(rt_self.zstd_lib);
-    lib.root_module.addCSourceFiles(.{ .root = s.path(""), .files = files, .flags = flags });
+    rt.addIncludes(src, lib.root_module);
+    if (link_zstd) lib.root_module.linkLibrary(rt.zstd_lib);
+    lib.root_module.addCSourceFiles(.{ .root = src.path(""), .files = files, .flags = flags });
     if (linkage == .dynamic) {
         lib.linker_allow_shlib_undefined = true;
-        rt_self.platform.c.linkLibs(lib.root_module);
+        rt.platform.c.linkLibs(lib.root_module);
     }
     return lib;
 }
 
+/// `step` is `null` when linked with `flexlink`.
 fn linkOcamlrun(
-    rt_self: Artifacts,
-    s: Source,
+    rt: Artifacts,
+    src: *const Source,
     name: []const u8,
     prims_c: std.Build.LazyPath,
     lib: *std.Build.Step.Compile,
     flags: []const []const u8,
 ) struct { bin: std.Build.LazyPath, step: ?*std.Build.Step.Compile } {
-    const fl = rt_self.flexlink orelse {
-        const exe = buildOcamlrunExe(rt_self, s, name, prims_c, lib, flags);
-        return .{ .bin = exe.getEmittedBin(), .step = exe };
-    };
-    const b = s.b;
-    const prims = b.addObject(.{ .name = b.fmt("{s}_prims", .{name}), .root_module = cModule(b, rt_self.platform, .{}) });
-    rt_self.addIncludes(s, prims.root_module);
-    prims.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
+    const b = src.b;
+    const p = rt.platform;
+    if (rt.flexlink) |fl| {
+        const prims = b.addObject(.{ .name = b.fmt("{s}_prims", .{name}), .root_module = p.cModule(b, .{}) });
+        rt.addIncludes(src, prims.root_module);
+        prims.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
 
-    const run = fl.run(b);
-    run.addArg("-exe");
-    run.addArg("-o");
-    const out = run.addOutputFileArg(b.fmt("{s}.exe", .{name}));
-    run.addFileArg(prims.getEmittedBin());
-    run.addFileArg(lib.getEmittedBin());
-    run.addFileArg(rt_self.zstd_lib.getEmittedBin());
-    for (rt_self.platform.c.libs) |l| run.addArg(b.fmt("-l{s}", .{l}));
-    run.addArgs(&.{ "-link", "-municode", "-link", "-s" });
-    return .{ .bin = out, .step = null };
-}
+        const run = fl.run(b);
+        run.addArgs(&.{ "-exe", "-o" });
+        const out = run.addOutputFileArg(b.fmt("{s}.exe", .{name}));
+        run.addFileArg(prims.getEmittedBin());
+        run.addFileArg(lib.getEmittedBin());
+        run.addFileArg(rt.zstd_lib.getEmittedBin());
+        for (p.c.libs) |l| run.addArg(b.fmt("-l{s}", .{l}));
+        run.addArgs(&.{ "-link", "-municode", "-link", "-s" });
+        return .{ .bin = out, .step = null };
+    }
 
-fn buildOcamlrunExe(
-    rt_self: Artifacts,
-    s: Source,
-    name: []const u8,
-    prims_c: std.Build.LazyPath,
-    lib: *std.Build.Step.Compile,
-    flags: []const []const u8,
-) *std.Build.Step.Compile {
-    const exe = s.b.addExecutable(.{
+    const exe = b.addExecutable(.{
         .name = name,
         // Static musl cannot dlopen bytecode stub libraries.
-        .linkage = if (rt_self.platform.resolved.result.abi.isMusl()) .dynamic else null,
-        .root_module = cModule(s.b, rt_self.platform, .{ .strip = !rt_self.platform.is_macos }),
+        .linkage = if (p.resolved.result.abi.isMusl()) .dynamic else null,
+        .root_module = p.cModule(b, .{ .strip = !p.is_macos }),
     });
-    rt_self.addIncludes(s, exe.root_module);
+    rt.addIncludes(src, exe.root_module);
     exe.root_module.addCSourceFile(.{ .file = prims_c, .flags = flags });
     exe.root_module.linkLibrary(lib);
-    exe.root_module.linkLibrary(rt_self.zstd_lib);
-    rt_self.platform.c.linkLibs(exe.root_module);
-    if (!rt_self.platform.is_windows) {
+    exe.root_module.linkLibrary(rt.zstd_lib);
+    p.c.linkLibs(exe.root_module);
+    if (p.is_windows) {
+        exe.mingw_unicode_entry_point = true;
+    } else {
         exe.rdynamic = true;
-        // Disable dead-stripping on `ocamlrun` so symbols referenced only by
-        // dlopen'd stublibs (`dllunixbyt.so`, `dllthreads.so`, etc.) remain exported.
+        // Keep symbols referenced only by dlopen'd stublibs (`dllunixbyt.so`, ...) exported.
         exe.link_gc_sections = false;
     }
-    if (rt_self.platform.is_windows) exe.mingw_unicode_entry_point = true;
-    return exe;
+    return .{ .bin = exe.getEmittedBin(), .step = exe };
 }
 
 /// `runtime/<name>.c` for every name in `lists`, plus an optional extra file.

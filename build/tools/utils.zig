@@ -22,21 +22,8 @@ pub const InputFile = union(enum) {
         return self.cli;
     }
 
-    pub fn open(self: InputFile, io: std.Io, options: std.Io.Dir.OpenFileOptions) !std.Io.File {
-        return std.Io.Dir.cwd().openFile(io, self.path(), options);
-    }
-
-    pub fn reader(self: InputFile, io: std.Io, buffer: []u8) !std.Io.File.Reader {
-        const file = try self.open(io, .{});
-        return file.reader(io, buffer);
-    }
-
     pub fn readAll(self: InputFile, io: std.Io, gpa: std.mem.Allocator) ![]u8 {
         return std.Io.Dir.cwd().readFileAlloc(io, self.path(), gpa, .unlimited);
-    }
-
-    pub fn readAllZ(self: InputFile, io: std.Io, gpa: std.mem.Allocator) ![:0]u8 {
-        return std.Io.Dir.cwd().readFileAllocOptions(io, self.path(), gpa, .unlimited, .of(u8), 0);
     }
 };
 
@@ -67,12 +54,8 @@ pub const OutputFile = union(enum) {
         return self.cli;
     }
 
-    pub fn create(self: OutputFile, io: std.Io, flags: std.Io.Dir.CreateFileOptions) !std.Io.File {
-        return std.Io.Dir.cwd().createFile(io, self.path(), flags);
-    }
-
     pub fn writer(self: OutputFile, io: std.Io, buffer: []u8) !std.Io.File.Writer {
-        const file = try self.create(io, .{});
+        const file = try std.Io.Dir.cwd().createFile(io, self.path(), .{});
         return file.writer(io, buffer);
     }
 

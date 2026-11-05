@@ -1,6 +1,5 @@
 const std = @import("std");
 const utils = @import("tools/utils.zig");
-const gen_ocaml_sources = @import("tools/gen_ocaml_sources.zig");
 
 pub const InputFile = utils.InputFile;
 pub const OutputFile = utils.OutputFile;
@@ -10,60 +9,11 @@ pub const OutputDir = utils.OutputDir;
 pub const Command = union(enum) {
     gen_runtime: @import("tools/gen_runtime.zig"),
     gen_manifests: @import("tools/gen_manifests.zig"),
-    gen_stdlib_sources: gen_ocaml_sources.GenStdlibSources,
-    gen_launch_info: gen_ocaml_sources.GenLaunchInfo,
-    gen_compiler_sources: gen_ocaml_sources.GenCompilerSources,
-    prepend_emit_line: gen_ocaml_sources.PrependEmitLine,
+    gen_stdlib_sources: @import("tools/gen_stdlib_sources.zig"),
+    gen_compiler_sources: @import("tools/gen_compiler_sources.zig"),
+    cat: @import("tools/cat.zig"),
     gen_flexlink_sources: @import("tools/gen_flexlink_sources.zig"),
     verify_toolchains: @import("tools/verify_toolchains.zig"),
-
-    /// Add a step running this command. Returns the command with its output
-    /// fields (`OutputFile` / `OutputDir`) resolved to lazy paths, and the step.
-    pub fn run(cmd: Command, b: *std.Build) struct { Command, *std.Build.Step.Run } {
-        var filled = cmd;
-        const run_tool = filled.addRun(b);
-        return .{ filled, run_tool };
-    }
-
-    fn addRun(self: *Command, b: *std.Build) *std.Build.Step.Run {
-        const tool_exe = (struct {
-            var tool_exe: ?*std.Build.Step.Compile = null;
-
-            fn get(builder: *std.Build) *std.Build.Step.Compile {
-                if (tool_exe) |exe| return exe;
-
-                const exe = builder.addExecutable(.{
-                    .name = "tools",
-                    .root_module = builder.createModule(.{
-                        .root_source_file = builder.path("build/tools.zig"),
-                        .target = builder.graph.host,
-                        .optimize = .Debug,
-                    }),
-                });
-
-                tool_exe = exe;
-                return exe;
-            }
-        }).get(b);
-        const run_tool = b.addRunArtifact(tool_exe);
-
-        const selected_tool_tag = @as(std.meta.Tag(Command), self.*);
-        switch (selected_tool_tag) {
-            inline else => |tag| {
-                const command_name = @tagName(tag);
-                run_tool.addArg(command_name);
-
-                const tool_args = &@field(self, command_name);
-                const T = @FieldType(Command, command_name);
-
-                inline for (comptime std.meta.fieldNames(T)) |field| {
-                    addNamedFieldArg(b, run_tool, field, &@field(tool_args, field));
-                }
-            },
-        }
-
-        return run_tool;
-    }
 };
 
 pub const Tag = std.meta.Tag(Command);
@@ -72,11 +22,94 @@ pub fn Args(comptime tag: Tag) type {
     return @FieldType(Command, @tagName(tag));
 }
 
-/// `Command.run` for a statically known command:
+/// Add a step running a tool. Returns `args` with its output fields
+/// (`OutputFile` / `OutputDir`) resolved to lazy paths, and the step:
 /// `const gen, _ = Tools.run(b, .gen_runtime, .{ ... });`
 pub fn run(b: *std.Build, comptime tag: Tag, args: Args(tag)) struct { Args(tag), *std.Build.Step.Run } {
-    const cmd, const step = @unionInit(Command, @tagName(tag), args).run(b);
-    return .{ @field(cmd, @tagName(tag)), step };
+    var filled = args;
+    const step = b.addRunArtifact(toolsExe(b));
+    step.addArg(@tagName(tag));
+    inline for (comptime std.meta.fieldNames(Args(tag))) |field| {
+        addNamedFieldArg(b, step, field, &@field(filled, field));
+    }
+    return .{ filled, step };
+}
+
+var tools_exe: ?*std.Build.Step.Compile = null;
+
+fn toolsExe(b: *std.Build) *std.Build.Step.Compile {
+    if (tools_exe) |exe| return exe;
+    const exe = b.addExecutable(.{
+        .name = "tools",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/tools.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    tools_exe = exe;
+    return exe;
+}
+
+fn addNamedFieldArg(
+    b: *std.Build,
+    run_tool: *std.Build.Step.Run,
+    comptime field_name: []const u8,
+    field_ptr: anytype,
+) void {
+    const FieldType = @typeInfo(@TypeOf(field_ptr)).pointer.child;
+
+    if (@typeInfo(FieldType) == .optional) {
+        if (field_ptr.*) |*inner| {
+            addNamedFieldArg(b, run_tool, field_name, inner);
+        }
+        return;
+    }
+
+    if (comptime isListSlice(FieldType)) {
+        for (field_ptr.*) |*elem| {
+            addSingleNamedArg(b, run_tool, field_name, elem);
+        }
+        return;
+    }
+
+    addSingleNamedArg(b, run_tool, field_name, field_ptr);
+}
+
+fn addSingleNamedArg(
+    b: *std.Build,
+    run_tool: *std.Build.Step.Run,
+    comptime field_name: []const u8,
+    val_ptr: anytype,
+) void {
+    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
+    const flag = "--" ++ field_name;
+
+    if (ValType == InputFile) {
+        run_tool.addArg(flag);
+        run_tool.addFileArg(val_ptr.lazy);
+    } else if (ValType == OutputFile) {
+        run_tool.addArg(flag);
+        val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
+    } else if (ValType == InputDir) {
+        run_tool.addArg(flag);
+        run_tool.addDirectoryArg(val_ptr.lazy);
+    } else if (ValType == OutputDir) {
+        run_tool.addArg(flag);
+        val_ptr.lazy.path = run_tool.addOutputDirectoryArg(val_ptr.lazy.basename);
+    } else if (ValType == []const u8 or ValType == []u8) {
+        run_tool.addArgs(&.{ flag, val_ptr.* });
+    } else if (ValType == bool) {
+        if (val_ptr.*) {
+            run_tool.addArg(flag);
+        }
+    } else if (@typeInfo(ValType) == .int) {
+        run_tool.addArgs(&.{ flag, b.fmt("{d}", .{val_ptr.*}) });
+    } else if (@typeInfo(ValType) == .@"enum") {
+        run_tool.addArgs(&.{ flag, @tagName(val_ptr.*) });
+    } else {
+        @compileError("Unsupported tool field type: " ++ @typeName(ValType) ++ " for field '" ++ field_name ++ "'");
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -147,67 +180,6 @@ pub fn main(init: std.process.Init) !void {
             if (missing_required) std.process.exit(1);
             try result.run(init);
         },
-    }
-}
-
-fn addNamedFieldArg(
-    b: *std.Build,
-    run_tool: *std.Build.Step.Run,
-    comptime field_name: []const u8,
-    field_ptr: anytype,
-) void {
-    const FieldType = @typeInfo(@TypeOf(field_ptr)).pointer.child;
-
-    if (@typeInfo(FieldType) == .optional) {
-        if (field_ptr.*) |*inner| {
-            addNamedFieldArg(b, run_tool, field_name, inner);
-        }
-        return;
-    }
-
-    if (comptime isListSlice(FieldType)) {
-        for (field_ptr.*) |*elem| {
-            addSingleNamedArg(b, run_tool, field_name, elem);
-        }
-        return;
-    }
-
-    addSingleNamedArg(b, run_tool, field_name, field_ptr);
-}
-
-fn addSingleNamedArg(
-    b: *std.Build,
-    run_tool: *std.Build.Step.Run,
-    comptime field_name: []const u8,
-    val_ptr: anytype,
-) void {
-    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
-    const flag = "--" ++ field_name;
-
-    if (ValType == InputFile) {
-        run_tool.addArg(flag);
-        run_tool.addFileArg(val_ptr.lazy);
-    } else if (ValType == OutputFile) {
-        run_tool.addArg(flag);
-        val_ptr.lazy.path = run_tool.addOutputFileArg(val_ptr.lazy.basename);
-    } else if (ValType == InputDir) {
-        run_tool.addArg(flag);
-        run_tool.addDirectoryArg(val_ptr.lazy);
-    } else if (ValType == OutputDir) {
-        run_tool.addArg(flag);
-        val_ptr.lazy.path = run_tool.addOutputDirectoryArg(val_ptr.lazy.basename);
-    } else if (ValType == []const u8 or ValType == []u8) {
-        run_tool.addArgs(&.{ flag, val_ptr.* });
-    } else if (ValType == bool) {
-        if (val_ptr.*) {
-            run_tool.addArg(flag);
-        }
-    } else if (@typeInfo(ValType) == .int) {
-        run_tool.addArgs(&.{ flag, b.fmt("{d}", .{val_ptr.*}) });
-    } else if (@typeInfo(ValType) == .@"enum") {
-        run_tool.addArgs(&.{ flag, @tagName(val_ptr.*) });
-    } else {
-        @compileError("Unsupported tool field type: " ++ @typeName(ValType) ++ " for field '" ++ field_name ++ "'");
     }
 }
 

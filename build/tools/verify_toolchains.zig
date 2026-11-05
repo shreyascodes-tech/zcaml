@@ -1,248 +1,84 @@
+//! `zig build -Docaml verify`: smoke-test installed toolchains (`<root_dir>/host-*/target-*`)
+//! by compiling `test/fixtures` with every compiler, and running the results on the
+//! target (natively, under QEMU / Wine, or later from a deferred bundle on another OS).
 const builtin = @import("builtin");
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
-const File = Io.File;
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
 const InputDir = utils.InputDir;
 
 root_dir: []const u8,
 fixtures_dir: InputDir,
-cache_dir: ?[]const u8 = null,
 host: ?[]const u8 = null,
 target: ?[]const u8 = null,
 jobs: usize = 8,
+/// Save the target executables of pairs this machine can't run, for `run_deferred`.
 save_deferred: ?[]const u8 = null,
+/// Run the bundles saved by `save_deferred` on another machine.
 run_deferred: ?[]const u8 = null,
 
 const VerifyToolchains = @This();
-
-const MuslInfo = struct {
-    arch: []const u8,
-    apk_arch: []const u8,
-    sha256: []const u8,
-};
-
-const musl_infos = [_]MuslInfo{
-    .{ .arch = "x86_64", .apk_arch = "x86_64", .sha256 = "359890bc7c4dc5fee7a85192de60a471c987e4664767288578beca60a44db2c8" },
-    .{ .arch = "aarch64", .apk_arch = "aarch64", .sha256 = "d616c430bcbe0bf452b7f6ea2669f2cad14e85644a7599f4f495115d021742ef" },
-    .{ .arch = "riscv64", .apk_arch = "riscv64", .sha256 = "27760752b676b78f1edca22b7d933515ea9ed3596bb7378da8d2bb81c873a3e6" },
-    .{ .arch = "powerpc64le", .apk_arch = "ppc64le", .sha256 = "cbc140f849bee3036efc89735c4d312ae0f23f1abe6c42d7f23d557c85ed3e01" },
-    .{ .arch = "s390x", .apk_arch = "s390x", .sha256 = "a7bd3c2aacd4e75d642eb5e40f65ca7925efaac98134fa52f4c9b070cdf6c366" },
-};
-
-const Triple = struct {
-    raw: []const u8,
-    arch: []const u8,
-    os: []const u8,
-    abi: []const u8,
-
-    fn parse(raw: []const u8) Triple {
-        var it = std.mem.splitScalar(u8, raw, '-');
-        const arch = it.next() orelse raw;
-        const os = it.next() orelse "unknown";
-        const abi = it.next() orelse "none";
-        return .{ .raw = raw, .arch = arch, .os = os, .abi = abi };
-    }
-
-    fn isWindows(self: Triple) bool {
-        return std.mem.eql(u8, self.os, "windows");
-    }
-
-    fn isMacos(self: Triple) bool {
-        return std.mem.eql(u8, self.os, "macos");
-    }
-
-    fn isLinux(self: Triple) bool {
-        return std.mem.eql(u8, self.os, "linux");
-    }
-
-    fn isMusl(self: Triple) bool {
-        return std.mem.eql(u8, self.abi, "musl");
-    }
-
-    fn exeExt(self: Triple) []const u8 {
-        return if (self.isWindows()) ".exe" else "";
-    }
-
-    fn shortName(self: Triple, arena: Allocator) []const u8 {
-        if (self.isMacos() and std.mem.eql(u8, self.abi, "none")) {
-            return std.fmt.allocPrint(arena, "{s}-macos", .{self.arch}) catch @panic("OOM");
-        }
-        return self.raw;
-    }
-
-    fn eql(a: Triple, b: Triple) bool {
-        return std.mem.eql(u8, a.raw, b.raw);
-    }
-
-    fn matchesFilter(self: Triple, arena: Allocator, filter: ?[]const u8) bool {
-        const f = filter orelse return true;
-        return std.mem.eql(u8, self.raw, f) or std.mem.eql(u8, self.shortName(arena), f);
-    }
-};
-
-fn currentMachineTriple() Triple {
-    const arch = @tagName(builtin.cpu.arch);
-    return switch (builtin.os.tag) {
-        .macos => .{ .raw = arch ++ "-macos-none", .arch = arch, .os = "macos", .abi = "none" },
-        .linux => .{ .raw = arch ++ "-linux-gnu", .arch = arch, .os = "linux", .abi = "gnu" },
-        .windows => .{ .raw = arch ++ "-windows-gnu", .arch = arch, .os = "windows", .abi = "gnu" },
-        else => @compileError("Unsupported host OS"),
-    };
-}
-
-fn canExecuteHostOnCurrentMachine(h: Triple, cur: Triple) bool {
-    if (cur.isLinux()) {
-        return h.isLinux();
-    }
-    if (cur.isMacos()) {
-        if (!h.isMacos()) return false;
-        if (std.mem.eql(u8, cur.arch, "aarch64")) {
-            return std.mem.eql(u8, h.arch, "aarch64") or std.mem.eql(u8, h.arch, "x86_64");
-        }
-        return std.mem.eql(u8, h.arch, cur.arch);
-    }
-    if (cur.isWindows()) {
-        return h.isWindows() and std.mem.eql(u8, h.arch, cur.arch);
-    }
-    return h.eql(cur);
-}
-
-fn canExecuteTargetOnCurrentMachine(t: Triple, cur: Triple) bool {
-    if (cur.isLinux()) {
-        return t.isLinux() or t.isWindows();
-    }
-    if (cur.isMacos()) {
-        if (!t.isMacos()) return false;
-        if (std.mem.eql(u8, cur.arch, "aarch64")) {
-            return std.mem.eql(u8, t.arch, "aarch64") or std.mem.eql(u8, t.arch, "x86_64");
-        }
-        return std.mem.eql(u8, t.arch, cur.arch);
-    }
-    if (cur.isWindows()) {
-        return t.isWindows() and std.mem.eql(u8, t.arch, cur.arch);
-    }
-    return t.eql(cur);
-}
-
-fn qemuBinForArch(arch: []const u8) []const u8 {
-    if (std.mem.eql(u8, arch, "aarch64")) return "qemu-aarch64";
-    if (std.mem.eql(u8, arch, "riscv64")) return "qemu-riscv64";
-    if (std.mem.eql(u8, arch, "powerpc64le")) return "qemu-ppc64le";
-    if (std.mem.eql(u8, arch, "s390x")) return "qemu-s390x";
-    std.debug.panic("Unsupported foreign Linux arch for QEMU: {s}", .{arch});
-}
-
-fn debianArchForTarget(raw: []const u8) []const u8 {
-    if (std.mem.eql(u8, raw, "aarch64-linux-gnu")) return "arm64";
-    if (std.mem.eql(u8, raw, "riscv64-linux-gnu")) return "riscv64";
-    if (std.mem.eql(u8, raw, "powerpc64le-linux-gnu")) return "ppc64el";
-    if (std.mem.eql(u8, raw, "s390x-linux-gnu")) return "s390x";
-    std.debug.panic("Unsupported foreign glibc target: {s}", .{raw});
-}
-
-fn pathExists(io: Io, path: []const u8) bool {
-    Dir.cwd().access(io, path, .{}) catch return false;
-    return true;
-}
-
-const Context = struct {
-    init: std.process.Init,
-    cache_dir: []const u8,
-    fixtures_abs: []const u8,
-    save_deferred_abs: ?[]const u8,
-    print_mutex: Io.Mutex = .init,
-    wine_mutex: Io.Mutex = .init,
-};
-
-const PairJob = struct {
-    prefix_abs: []const u8,
-    host: Triple,
-    target: Triple,
-};
 
 pub fn run(self: *VerifyToolchains, init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
     const arena = init.arena.allocator();
-
     const cur = currentMachineTriple();
-    const cache_dir = if (self.cache_dir) |c|
-        try Dir.cwd().realPathFileAlloc(io, c, arena)
-    else blk: {
-        if (init.environ_map.get("XDG_CACHE_HOME")) |xdg| {
-            break :blk try std.fs.path.join(arena, &.{ xdg, "zcaml" });
-        }
-        if (init.environ_map.get("LOCALAPPDATA")) |appdata| {
-            break :blk try std.fs.path.join(arena, &.{ appdata, "zcaml" });
-        }
+
+    const cache_dir = blk: {
+        if (init.environ_map.get("XDG_CACHE_HOME")) |xdg| break :blk try std.fs.path.join(arena, &.{ xdg, "zcaml" });
+        if (init.environ_map.get("LOCALAPPDATA")) |appdata| break :blk try std.fs.path.join(arena, &.{ appdata, "zcaml" });
         const home = init.environ_map.get("HOME") orelse init.environ_map.get("USERPROFILE") orelse "/tmp";
         break :blk try std.fs.path.join(arena, &.{ home, ".cache", "zcaml" });
     };
     try Dir.cwd().createDirPath(io, cache_dir);
 
-    const fixtures_abs = try Dir.cwd().realPathFileAlloc(io, self.fixtures_dir.path(), arena);
-    const save_deferred_abs: ?[]const u8 = if (self.save_deferred) |sd| blk: {
-        try Dir.cwd().createDirPath(io, sd);
-        break :blk try Dir.cwd().realPathFileAlloc(io, sd, arena);
-    } else null;
+    var ctx: Context = .{
+        .init = init,
+        .cache_dir = cache_dir,
+        .fixtures_abs = try Dir.cwd().realPathFileAlloc(io, self.fixtures_dir.path(), arena),
+        .save_deferred_abs = if (self.save_deferred) |sd| blk: {
+            try Dir.cwd().createDirPath(io, sd);
+            break :blk try Dir.cwd().realPathFileAlloc(io, sd, arena);
+        } else null,
+    };
 
     if (self.run_deferred) |rd| {
         try Dir.cwd().createDirPath(io, rd);
-        const rd_abs = try Dir.cwd().realPathFileAlloc(io, rd, arena);
-        try runDeferredBundles(init, cache_dir, fixtures_abs, rd_abs, self.jobs);
+        try runDeferredBundles(&ctx, try Dir.cwd().realPathFileAlloc(io, rd, arena));
         if (!pathExists(io, self.root_dir)) return;
     }
 
     const root_abs = try Dir.cwd().realPathFileAlloc(io, self.root_dir, arena);
-    const jobs = try discoverPairs(io, arena, root_abs, self.host, self.target);
-
     var runnable: std.ArrayList(PairJob) = .empty;
     var skipped_count: usize = 0;
-    for (jobs) |job| {
-        if (canExecuteHostOnCurrentMachine(job.host, cur)) {
+    for (try discoverPairs(io, arena, root_abs, self.host, self.target)) |job| {
+        if (canRun(job.host, cur, false)) {
             try runnable.append(arena, job);
         } else {
             skipped_count += 1;
         }
     }
-    std.mem.sort(PairJob, runnable.items, cur, pairJobPriorityDesc);
+    std.mem.sort(PairJob, runnable.items, cur, slowestFirst);
 
     std.debug.print(
         "==> Running zcaml toolchain verification on {s} ({d} runnable, {d} for other host OS, jobs={d})\n",
         .{ cur.raw, runnable.items.len, skipped_count, self.jobs },
     );
 
-    // Pre-provision sysroots and Wine prefix sequentially before parallel execution
+    // Provision sysroots and the Wine prefix up front, not concurrently from the workers.
     var needed_sysroots: std.StringHashMapUnmanaged(Triple) = .empty;
     var needs_wine = false;
     for (runnable.items) |job| {
         if (job.host.isLinux()) try needed_sysroots.put(arena, job.host.raw, job.host);
-        if (job.target.isLinux() and canExecuteTargetOnCurrentMachine(job.target, cur)) {
-            try needed_sysroots.put(arena, job.target.raw, job.target);
-        }
-        if (cur.isLinux() and job.target.isWindows() and canExecuteTargetOnCurrentMachine(job.target, cur)) {
-            needs_wine = true;
-        }
+        if (job.target.isLinux() and canRun(job.target, cur, true)) try needed_sysroots.put(arena, job.target.raw, job.target);
+        if (usesWine(job.target, cur)) needs_wine = true;
     }
-
     var sys_it = needed_sysroots.valueIterator();
-    while (sys_it.next()) |t| {
-        _ = try ensureSysroot(init, cache_dir, t.*);
-    }
-
-    if (needs_wine) {
-        initWinePrefix(init);
-    }
-
-    var ctx: Context = .{
-        .init = init,
-        .cache_dir = cache_dir,
-        .fixtures_abs = fixtures_abs,
-        .save_deferred_abs = save_deferred_abs,
-    };
+    while (sys_it.next()) |t| _ = try ensureSysroot(init, cache_dir, t.*);
+    if (needs_wine) initWinePrefix(init);
 
     const start_ts = Io.Clock.awake.now(io);
     var next_idx: std.atomic.Value(usize) = .init(0);
@@ -269,6 +105,66 @@ pub fn run(self: *VerifyToolchains, init: std.process.Init) !void {
     if (failed > 0) std.process.exit(1);
 }
 
+const Context = struct {
+    init: std.process.Init,
+    cache_dir: []const u8,
+    fixtures_abs: []const u8,
+    save_deferred_abs: ?[]const u8,
+    print_mutex: Io.Mutex = .init,
+    wine_mutex: Io.Mutex = .init,
+};
+
+const PairJob = struct {
+    prefix_abs: []const u8,
+    host: Triple,
+    target: Triple,
+};
+
+/// `<root_abs>/host-<triple>/target-<triple>` install prefixes, sorted.
+fn discoverPairs(
+    io: Io,
+    arena: Allocator,
+    root_abs: []const u8,
+    host_filter: ?[]const u8,
+    target_filter: ?[]const u8,
+) ![]PairJob {
+    var jobs: std.ArrayList(PairJob) = .empty;
+    for (try listDirs(io, arena, root_abs, "host-")) |h_name| {
+        const host = Triple.parse(h_name["host-".len..]);
+        if (!host.matchesFilter(arena, host_filter)) continue;
+        const host_abs = try std.fs.path.join(arena, &.{ root_abs, h_name });
+        for (try listDirs(io, arena, host_abs, "target-")) |t_name| {
+            const target = Triple.parse(t_name["target-".len..]);
+            if (!target.matchesFilter(arena, target_filter)) continue;
+            try jobs.append(arena, .{
+                .prefix_abs = try std.fs.path.join(arena, &.{ host_abs, t_name }),
+                .host = host,
+                .target = target,
+            });
+        }
+    }
+    return jobs.items;
+}
+
+/// Start the slowest pairs (Wine, emulated hosts) first.
+fn slowestFirst(cur: Triple, a: PairJob, b: PairJob) bool {
+    const pa = cost(cur, a);
+    const pb = cost(cur, b);
+    if (pa != pb) return pa > pb;
+    const h_cmp = std.mem.order(u8, a.host.raw, b.host.raw);
+    if (h_cmp != .eq) return h_cmp == .lt;
+    return std.mem.order(u8, a.target.raw, b.target.raw) == .lt;
+}
+
+fn cost(cur: Triple, job: PairJob) u32 {
+    var score: u32 = 0;
+    if (job.target.isWindows()) score += 100;
+    if (!std.mem.eql(u8, job.host.arch, cur.arch)) score += 80;
+    if (job.host.isMusl() != cur.isMusl()) score += 20;
+    if (!std.mem.eql(u8, job.target.arch, cur.arch)) score += 10;
+    return score;
+}
+
 fn workerFn(
     ctx: *Context,
     jobs: []const PairJob,
@@ -291,7 +187,7 @@ fn workerFn(
             job.target.shortName(arena),
         }) catch @panic("OOM");
 
-        if (verifySinglePair(ctx, arena, job)) |status| {
+        if (verifyPair(ctx, arena, job)) |status| {
             const dt = t0.untilNow(io, .awake);
             ctx.print_mutex.lockUncancelable(io);
             defer ctx.print_mutex.unlock(io);
@@ -305,426 +201,117 @@ fn workerFn(
     }
 }
 
-fn discoverPairs(
-    io: Io,
-    arena: Allocator,
-    root_abs: []const u8,
-    host_filter: ?[]const u8,
-    target_filter: ?[]const u8,
-) ![]PairJob {
-    var host_names: std.ArrayList([]const u8) = .empty;
-    {
-        var root_dir = try Dir.openDirAbsolute(io, root_abs, .{ .iterate = true });
-        defer root_dir.close(io);
-        var it = root_dir.iterate();
-        while (try it.next(io)) |entry| {
-            if (entry.kind == .directory and std.mem.startsWith(u8, entry.name, "host-")) {
-                try host_names.append(arena, try arena.dupe(u8, entry.name));
-            }
-        }
-    }
-    std.mem.sort([]const u8, host_names.items, {}, strLessThan);
-
-    var jobs: std.ArrayList(PairJob) = .empty;
-    for (host_names.items) |h_name| {
-        const host = Triple.parse(h_name["host-".len..]);
-        if (!host.matchesFilter(arena, host_filter)) continue;
-
-        const host_abs = try std.fs.path.join(arena, &.{ root_abs, h_name });
-        var target_names: std.ArrayList([]const u8) = .empty;
-        {
-            var h_dir = try Dir.openDirAbsolute(io, host_abs, .{ .iterate = true });
-            defer h_dir.close(io);
-            var it = h_dir.iterate();
-            while (try it.next(io)) |entry| {
-                if (entry.kind == .directory and std.mem.startsWith(u8, entry.name, "target-")) {
-                    try target_names.append(arena, try arena.dupe(u8, entry.name));
-                }
-            }
-        }
-        std.mem.sort([]const u8, target_names.items, {}, strLessThan);
-
-        for (target_names.items) |t_name| {
-            const target = Triple.parse(t_name["target-".len..]);
-            if (!target.matchesFilter(arena, target_filter)) continue;
-            const prefix_abs = try std.fs.path.join(arena, &.{ host_abs, t_name });
-            try jobs.append(arena, .{
-                .prefix_abs = prefix_abs,
-                .host = host,
-                .target = target,
-            });
-        }
-    }
-    return jobs.items;
-}
-
-fn strLessThan(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
-}
-
-fn jobPriority(cur: Triple, job: PairJob) u32 {
-    var score: u32 = 0;
-    if (job.target.isWindows()) score += 100;
-    if (!std.mem.eql(u8, job.host.arch, cur.arch)) score += 80;
-    if (job.host.isMusl() != cur.isMusl()) score += 20;
-    if (!std.mem.eql(u8, job.target.arch, cur.arch)) score += 10;
-    return score;
-}
-
-fn pairJobPriorityDesc(cur: Triple, a: PairJob, b: PairJob) bool {
-    const pa = jobPriority(cur, a);
-    const pb = jobPriority(cur, b);
-    if (pa != pb) return pa > pb;
-    const h_cmp = std.mem.order(u8, a.host.raw, b.host.raw);
-    if (h_cmp != .eq) return h_cmp == .lt;
-    return std.mem.order(u8, a.target.raw, b.target.raw) == .lt;
-}
-
-const ExecWrapper = struct {
-    prefix_argv: []const []const u8,
-    env: std.process.Environ.Map,
-};
-
-fn buildExecWrapper(
-    ctx: *Context,
-    arena: Allocator,
-    triple: Triple,
-    extra_dll_dirs: []const []const u8,
-) !ExecWrapper {
-    const cur = currentMachineTriple();
-    var env = try ctx.init.environ_map.clone(arena);
-
-    if (triple.isWindows()) {
-        if (cur.isWindows()) {
-            return .{ .prefix_argv = &.{}, .env = env };
-        }
-        try env.put("WINEDEBUG", "-all");
-        var wine_paths: std.ArrayList(u8) = .empty;
-        for (extra_dll_dirs) |d| {
-            if (wine_paths.items.len > 0) try wine_paths.append(arena, ';');
-            try wine_paths.print(arena, "Z:{s}", .{d});
-        }
-        if (wine_paths.items.len > 0) {
-            try env.put("WINEPATH", wine_paths.items);
-        }
-        return .{ .prefix_argv = &.{"wine"}, .env = env };
-    }
-
-    if (triple.isMacos()) {
-        if (std.mem.eql(u8, cur.arch, "aarch64") and std.mem.eql(u8, triple.arch, "x86_64")) {
-            return .{ .prefix_argv = &.{ "arch", "-x86_64" }, .env = env };
-        }
-        return .{ .prefix_argv = &.{}, .env = env };
-    }
-
-    if (triple.isLinux()) {
-        const sysroot_opt = try ensureSysroot(ctx.init, ctx.cache_dir, triple);
-        if (std.mem.eql(u8, triple.arch, cur.arch)) {
-            if (triple.isMusl()) {
-                if (sysroot_opt) |sysroot| {
-                    if (!std.mem.eql(u8, sysroot, "/")) {
-                        // Use qemu-x86_64 -L <sysroot> so `/proc/self/exe` and `argv[0]` remain the actual
-                        // target binary (important for OCaml's relocatable stdlib discovery and `-custom`
-                        // bytecode self-reading).
-                        return .{
-                            .prefix_argv = try arena.dupe([]const u8, &.{ "qemu-x86_64", "-L", sysroot }),
-                            .env = env,
-                        };
-                    }
-                }
-            }
-            return .{ .prefix_argv = &.{}, .env = env };
-        } else {
-            const sysroot = sysroot_opt orelse return error.MissingSysroot;
-            const qemu_bin = qemuBinForArch(triple.arch);
-            return .{
-                .prefix_argv = try arena.dupe([]const u8, &.{ qemu_bin, "-L", sysroot }),
-                .env = env,
-            };
-        }
-    }
-
-    return error.UnsupportedTriple;
-}
-
-fn verifySinglePair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
+fn verifyPair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
     const io = ctx.init.io;
     const cur = currentMachineTriple();
 
-    // Serialize Wine invocations so concurrent wineserver operations don't race
-    const uses_wine = cur.isLinux() and job.target.isWindows() and canExecuteTargetOnCurrentMachine(job.target, cur);
+    // Concurrent wineserver operations race.
+    const uses_wine = usesWine(job.target, cur);
     if (uses_wine) ctx.wine_mutex.lockUncancelable(io);
     defer if (uses_wine) ctx.wine_mutex.unlock(io);
 
     var rand_int: u64 = undefined;
     io.random(@ptrCast(&rand_int));
-    const rand_hex = std.fmt.hex(rand_int);
-
     const tmp_base = ctx.init.environ_map.get("RUNNER_TEMP") orelse
         ctx.init.environ_map.get("TEMP") orelse
         ctx.init.environ_map.get("TMP") orelse
         "/tmp";
-    const work_dir_path = try std.fs.path.join(arena, &.{
+    const work_dir = try std.fs.path.join(arena, &.{
         tmp_base,
-        try std.fmt.allocPrint(
-            arena,
-            "zcaml-verify-{s}-{s}-{s}",
-            .{ job.host.shortName(arena), job.target.shortName(arena), rand_hex },
-        ),
+        try std.fmt.allocPrint(arena, "zcaml-verify-{s}-{s}-{s}", .{
+            job.host.shortName(arena),
+            job.target.shortName(arena),
+            std.fmt.hex(rand_int),
+        }),
     });
-    try Dir.cwd().createDirPath(io, work_dir_path);
-    defer Dir.cwd().deleteTree(io, work_dir_path) catch {};
-
-    // Copy fixture files into work_dir_path
-    const fixture_files = [_][]const u8{
-        "cstub.c",
-        "calc_parser.mly",
-        "calc_lexer.mll",
-        "sub_a.ml",
-        "sub_b.ml",
-        "packed.ml",
-        "plugin_api.ml",
-        "myplugin.ml",
-        "main.ml",
-    };
-    for (fixture_files) |fname| {
-        const src_p = try std.fs.path.join(arena, &.{ ctx.fixtures_abs, fname });
-        const dst_p = try std.fs.path.join(arena, &.{ work_dir_path, fname });
-        _ = try Dir.cwd().updateFile(io, src_p, Dir.cwd(), dst_p, .{});
-    }
+    try Dir.cwd().createDirPath(io, work_dir);
+    defer Dir.cwd().deleteTree(io, work_dir) catch {};
+    try copyDirFiles(io, arena, ctx.fixtures_abs, work_dir);
 
     const bin_dir = try std.fs.path.join(arena, &.{ job.prefix_abs, "bin" });
-    const lib_dir = try std.fs.path.join(arena, &.{ job.prefix_abs, "lib", "ocaml" });
-    const stublibs_dir = try std.fs.path.join(arena, &.{ lib_dir, "stublibs" });
+    const stublibs_dir = try std.fs.path.join(arena, &.{ job.prefix_abs, "lib", "ocaml", "stublibs" });
 
-    var host_wrap = try buildExecWrapper(ctx, arena, job.host, &.{stublibs_dir});
+    var host: Host = .{
+        .ctx = ctx,
+        .arena = arena,
+        .wrap = try buildExecWrapper(ctx, arena, job.host, &.{stublibs_dir}),
+        .bin_dir = bin_dir,
+        .triple = job.host,
+        .cwd = work_dir,
+    };
     const path_sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
     const parent_path = ctx.init.environ_map.get("PATH") orelse "/usr/bin:/bin";
     var new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ bin_dir, path_sep, parent_path });
     // Emulated hosts: compilers run `flexlink` by name, so wrap it too.
     const flexlink_bin = try std.fs.path.join(arena, &.{ bin_dir, "flexlink" });
-    if (host_wrap.prefix_argv.len > 0 and !job.host.isWindows() and pathExists(io, flexlink_bin)) {
-        const shim_dir = try std.fs.path.join(arena, &.{ work_dir_path, "host-shims" });
+    if (host.wrap.prefix_argv.len > 0 and !job.host.isWindows() and pathExists(io, flexlink_bin)) {
+        const shim_dir = try std.fs.path.join(arena, &.{ work_dir, "host-shims" });
         try Dir.cwd().createDirPath(io, shim_dir);
         var script: std.ArrayList(u8) = .empty;
         try script.appendSlice(arena, "#!/bin/sh\nexec");
-        for (host_wrap.prefix_argv) |a| try script.print(arena, " '{s}'", .{a});
+        for (host.wrap.prefix_argv) |a| try script.print(arena, " '{s}'", .{a});
         try script.print(arena, " '{s}' \"$@\"\n", .{flexlink_bin});
         const shim_path = try std.fs.path.join(arena, &.{ shim_dir, "flexlink" });
         try Dir.cwd().writeFile(io, .{ .sub_path = shim_path, .data = script.items, .flags = .{ .permissions = .executable_file } });
         new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ shim_dir, path_sep, new_path });
     }
-    try host_wrap.env.put("PATH", new_path);
+    try host.wrap.env.put("PATH", new_path);
 
-    const h_ext = job.host.exeExt();
     const t_ext = job.target.exeExt();
 
-    // 1. Verify ocamlc.opt -config
-    const cfg_out = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{"-config"}),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlc.opt -config",
-    );
+    const cfg_out = try host.run("ocamlc.opt", &.{"-config"});
     const has_natdynlink = std.mem.indexOf(u8, cfg_out, "native_dynlink: true") != null;
     const has_shared_libs = std.mem.indexOf(u8, cfg_out, "supports_shared_libraries: true") != null;
 
-    // 2. Smoke check compiler/tool binaries
-    const ToolCheck = struct { name: []const u8, is_byte: bool };
-    const tool_checks = [_]ToolCheck{
-        .{ .name = "ocamlc.byte", .is_byte = true },
-        .{ .name = "ocamlopt.byte", .is_byte = true },
-        .{ .name = "ocamlopt.opt", .is_byte = false },
-        .{ .name = "ocamllex.byte", .is_byte = true },
-        .{ .name = "ocamllex.opt", .is_byte = false },
-        .{ .name = "ocamldep.opt", .is_byte = false },
-        .{ .name = "ocamlobjinfo.opt", .is_byte = false },
-    };
-    for (tool_checks) |tc| {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, tc.name, h_ext, tc.is_byte, job.host.isWindows(), &.{"-version"}),
-            work_dir_path,
-            &host_wrap.env,
-            tc.name,
-        );
-    }
-    if (job.host.eql(job.target)) {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamldoc.opt", h_ext, false, job.host.isWindows(), &.{"-version"}),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamldoc.opt -version",
-        );
-    }
+    for ([_][]const u8{ "ocamlc.byte", "ocamlopt.byte", "ocamllex.byte" }) |tool| _ = try host.runByte(tool, &.{"-version"});
+    for ([_][]const u8{ "ocamlopt.opt", "ocamllex.opt", "ocamldep.opt", "ocamlobjinfo.opt" }) |tool| _ = try host.run(tool, &.{"-version"});
+    if (job.host.eql(job.target)) _ = try host.run("ocamldoc.opt", &.{"-version"});
 
-    // 3. ocamlyacc & ocamllex
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlyacc", h_ext, false, job.host.isWindows(), &.{"calc_parser.mly"}),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlyacc",
-    );
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamllex.opt", h_ext, false, job.host.isWindows(), &.{"calc_lexer.mll"}),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamllex.opt",
-    );
+    _ = try host.run("ocamlyacc", &.{"calc_parser.mly"});
+    _ = try host.run("ocamllex.opt", &.{"calc_lexer.mll"});
 
-    // 4. Compile C stubs
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "cstub.c", "-o", "cstub_byt.o" }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlc -c cstub.c",
-    );
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "cstub.c", "-o", "cstub_nat.o" }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlopt -c cstub.c",
-    );
+    _ = try host.run("ocamlc.opt", &.{ "-c", "cstub.c", "-o", "cstub_byt.o" });
+    _ = try host.run("ocamlopt.opt", &.{ "-c", "cstub.c", "-o", "cstub_nat.o" });
 
-    // 5. Bytecode pack (sub_a + sub_b -> packed.cmo)
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "sub_a.ml", "sub_b.ml" }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlc sub_a sub_b",
-    );
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{ "-pack", "-o", "packed.cmo", "sub_a.cmo", "sub_b.cmo" }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlc -pack",
-    );
+    // Pack sub_a + sub_b into `Packed`. Zig's partial linker (`ld -r`) can't handle
+    // every COFF / Mach-O relocation, so those targets use an archive instead.
+    _ = try host.run("ocamlc.opt", &.{ "-c", "sub_a.ml", "sub_b.ml" });
+    _ = try host.run("ocamlc.opt", &.{ "-pack", "-o", "packed.cmo", "sub_a.cmo", "sub_b.cmo" });
     const byte_pack_obj: []const u8 = if (!job.target.isLinux()) blk: {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "packed.ml" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlc packed.ml",
-        );
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{ "-a", "-o", "packed_lib.cma", "sub_a.cmo", "sub_b.cmo", "packed.cmo" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlc -a packed_lib.cma",
-        );
+        _ = try host.run("ocamlc.opt", &.{ "-c", "packed.ml" });
+        _ = try host.run("ocamlc.opt", &.{ "-a", "-o", "packed_lib.cma", "sub_a.cmo", "sub_b.cmo", "packed.cmo" });
         break :blk "packed_lib.cma";
     } else "packed.cmo";
 
     for ([_][]const u8{ "sub_a.cmi", "sub_b.cmi", "packed.cmi" }) |f| {
-        const p = try std.fs.path.join(arena, &.{ work_dir_path, f });
-        Dir.cwd().deleteFile(io, p) catch {};
+        Dir.cwd().deleteFile(io, try std.fs.path.join(arena, &.{ work_dir, f })) catch {};
     }
 
-    // Native pack (or archive on COFF/Mach-O where Zig's partial linker `ld -r` has relocation limitations)
     const native_pack_obj: []const u8 = if (!job.target.isLinux()) blk: {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "sub_a.ml", "sub_b.ml", "packed.ml" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlopt sub_a sub_b packed",
-        );
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-a", "-o", "packed_lib.cmxa", "sub_a.cmx", "sub_b.cmx", "packed.cmx" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlopt -a packed_lib.cmxa",
-        );
+        _ = try host.run("ocamlopt.opt", &.{ "-c", "sub_a.ml", "sub_b.ml", "packed.ml" });
+        _ = try host.run("ocamlopt.opt", &.{ "-a", "-o", "packed_lib.cmxa", "sub_a.cmx", "sub_b.cmx", "packed.cmx" });
         break :blk "packed_lib.cmxa";
     } else blk: {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-for-pack", "Packed", "-c", "sub_a.ml", "sub_b.ml" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlopt -for-pack",
-        );
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-pack", "-o", "packed.cmx", "sub_a.cmx", "sub_b.cmx" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlopt -pack",
-        );
+        _ = try host.run("ocamlopt.opt", &.{ "-for-pack", "Packed", "-c", "sub_a.ml", "sub_b.ml" });
+        _ = try host.run("ocamlopt.opt", &.{ "-pack", "-o", "packed.cmx", "sub_a.cmx", "sub_b.cmx" });
         break :blk "packed.cmx";
     };
 
-    // 6. Compile modules & link custom bytecode, pure bytecode, and native executable
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "calc_parser.mli", "calc_parser.ml", "calc_lexer.ml", "plugin_api.ml", "myplugin.ml" }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlc modules",
-    );
+    _ = try host.run("ocamlc.opt", &.{ "-c", "calc_parser.mli", "calc_parser.ml", "calc_lexer.ml", "plugin_api.ml", "myplugin.ml" });
 
+    const otherlibs_includes: []const []const u8 = &.{ "-I", "+unix", "-I", "+str", "-I", "+threads", "-I", "+runtime_events", "-I", "+dynlink" };
     const custom_byte_name = try std.fmt.allocPrint(arena, "test_custom_byte{s}", .{t_ext});
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{
-            "-custom",
-            "-g",
-            "-I", "+unix",
-            "-I", "+str",
-            "-I", "+threads",
-            "-I", "+runtime_events",
-            "-I", "+dynlink",
-            "unix.cma",
-            "str.cma",
-            "threads.cma",
-            "runtime_events.cma",
-            "dynlink.cma",
-            "cstub_byt.o",
-            "calc_parser.cmo",
-            "calc_lexer.cmo",
-            byte_pack_obj,
-            "plugin_api.cmo",
-            "main.ml",
-            "-o",
-            custom_byte_name,
-        }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlc link custom bytecode",
-    );
+    _ = try host.run("ocamlc.opt", try std.mem.concat(arena, []const u8, &.{
+        &.{ "-custom", "-g" },
+        otherlibs_includes,
+        &.{ "unix.cma", "str.cma", "threads.cma", "runtime_events.cma", "dynlink.cma" },
+        &.{ "cstub_byt.o", "calc_parser.cmo", "calc_lexer.cmo", byte_pack_obj, "plugin_api.cmo", "main.ml", "-o", custom_byte_name },
+    }));
     if (job.host.isWindows() and !job.target.isWindows()) {
-        // Upstream OCaml's `Bytelink.fix_exec_name` checks `Sys.os_type` (host OS)
-        // and appends `.exe` when `-custom` is used and the output name has no `.`.
-        const win_custom = try std.fs.path.join(arena, &.{ work_dir_path, "test_custom_byte.exe" });
-        const dst_custom = try std.fs.path.join(arena, &.{ work_dir_path, custom_byte_name });
+        // `Bytelink.fix_exec_name` checks the host's `Sys.os_type` and appends
+        // `.exe` to `-custom` outputs without an extension.
+        const win_custom = try std.fs.path.join(arena, &.{ work_dir, "test_custom_byte.exe" });
+        const dst_custom = try std.fs.path.join(arena, &.{ work_dir, custom_byte_name });
         if (!pathExists(io, dst_custom) and pathExists(io, win_custom)) {
             try Dir.cwd().rename(win_custom, Dir.cwd(), dst_custom, io);
         }
@@ -732,299 +319,168 @@ fn verifySinglePair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
 
     const pure_byte_name = try std.fmt.allocPrint(arena, "test_pure_byte{s}", .{t_ext});
     if (has_shared_libs) {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlmklib", h_ext, true, job.host.isWindows(), &.{ "-o", "zcamlstub", "cstub_byt.o" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlmklib zcamlstub",
-        );
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlc.opt", h_ext, false, job.host.isWindows(), &.{
-                "-g",
-                "-I", "+unix",
-                "-I", "+str",
-                "-I", "+threads",
-                "-I", "+runtime_events",
-                "-I", "+dynlink",
-                "unix.cma",
-                "str.cma",
-                "threads.cma",
-                "runtime_events.cma",
-                "dynlink.cma",
-                "-dllib",
-                "-lzcamlstub",
-                "calc_parser.cmo",
-                "calc_lexer.cmo",
-                byte_pack_obj,
-                "plugin_api.cmo",
-                "main.ml",
-                "-o",
-                pure_byte_name,
-            }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlc link pure bytecode",
-        );
+        _ = try host.runByte("ocamlmklib", &.{ "-o", "zcamlstub", "cstub_byt.o" });
+        _ = try host.run("ocamlc.opt", try std.mem.concat(arena, []const u8, &.{
+            &.{"-g"},
+            otherlibs_includes,
+            &.{ "unix.cma", "str.cma", "threads.cma", "runtime_events.cma", "dynlink.cma" },
+            &.{ "-dllib", "-lzcamlstub", "calc_parser.cmo", "calc_lexer.cmo", byte_pack_obj, "plugin_api.cmo", "main.ml", "-o", pure_byte_name },
+        }));
     }
 
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-c", "calc_parser.ml", "calc_lexer.ml", "plugin_api.ml" }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlopt modules",
-    );
-    if (has_natdynlink) {
-        _ = try runChecked(
-            ctx,
-            arena,
-            try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{ "-shared", "myplugin.ml", "-o", "myplugin.cmxs" }),
-            work_dir_path,
-            &host_wrap.env,
-            "ocamlopt -shared myplugin.cmxs",
-        );
-    }
+    _ = try host.run("ocamlopt.opt", &.{ "-c", "calc_parser.ml", "calc_lexer.ml", "plugin_api.ml" });
+    if (has_natdynlink) _ = try host.run("ocamlopt.opt", &.{ "-shared", "myplugin.ml", "-o", "myplugin.cmxs" });
 
     const nat_exe_name = try std.fmt.allocPrint(arena, "test_native_opt{s}", .{t_ext});
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlopt.opt", h_ext, false, job.host.isWindows(), &.{
-            "-g",
-            "-I", "+unix",
-            "-I", "+str",
-            "-I", "+threads",
-            "-I", "+runtime_events",
-            "-I", "+dynlink",
-            "unix.cmxa",
-            "str.cmxa",
-            "threads.cmxa",
-            "runtime_events.cmxa",
-            "dynlink.cmxa",
-            "cstub_nat.o",
-            "calc_parser.cmx",
-            "calc_lexer.cmx",
-            native_pack_obj,
-            "plugin_api.cmx",
-            "main.ml",
-            "-o",
-            nat_exe_name,
-        }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlopt link native executable",
-    );
+    _ = try host.run("ocamlopt.opt", try std.mem.concat(arena, []const u8, &.{
+        &.{"-g"},
+        otherlibs_includes,
+        &.{ "unix.cmxa", "str.cmxa", "threads.cmxa", "runtime_events.cmxa", "dynlink.cmxa" },
+        &.{ "cstub_nat.o", "calc_parser.cmx", "calc_lexer.cmx", native_pack_obj, "plugin_api.cmx", "main.ml", "-o", nat_exe_name },
+    }));
 
-    _ = try runChecked(
-        ctx,
-        arena,
-        try toolCmd(arena, host_wrap.prefix_argv, bin_dir, "ocamlobjinfo.opt", h_ext, false, job.host.isWindows(), &.{ byte_pack_obj, native_pack_obj }),
-        work_dir_path,
-        &host_wrap.env,
-        "ocamlobjinfo.opt",
-    );
+    _ = try host.run("ocamlobjinfo.opt", &.{ byte_pack_obj, native_pack_obj });
 
-    // 7. Execute on target (or save deferred bundle if target OS is different)
-    if (canExecuteTargetOnCurrentMachine(job.target, cur)) {
-        try executeTargetBinaries(
-            ctx,
-            arena,
-            job.target,
-            bin_dir,
-            stublibs_dir,
-            work_dir_path,
-            has_shared_libs,
-            has_natdynlink,
-        );
+    if (canRun(job.target, cur, true)) {
+        try runTargetBinaries(ctx, arena, job.target, bin_dir, stublibs_dir, work_dir, has_shared_libs, has_natdynlink);
         return "PASSED (compiled & executed)";
     }
 
-    if (ctx.save_deferred_abs) |deferred_root| {
-        const bundle_name = try std.fmt.allocPrint(arena, "host-{s}__target-{s}", .{ job.host.raw, job.target.raw });
-        const bundle_dir = try std.fs.path.join(arena, &.{ deferred_root, bundle_name });
-        try Dir.cwd().createDirPath(io, bundle_dir);
+    const deferred_root = ctx.save_deferred_abs orelse return "COMPILED (target OS not runnable here)";
+    const bundle_name = try std.fmt.allocPrint(arena, "host-{s}__target-{s}", .{ job.host.raw, job.target.raw });
+    const bundle_dir = try std.fs.path.join(arena, &.{ deferred_root, bundle_name });
+    try Dir.cwd().createDirPath(io, bundle_dir);
 
-        const to_copy = [_][]const u8{
-            custom_byte_name,
-            pure_byte_name,
-            "myplugin.cmo",
-            nat_exe_name,
-            "myplugin.cmxs",
-            "dllzcamlstub.so",
-            "dllzcamlstub.dll",
-        };
-        for (to_copy) |f| {
-            const src_f = try std.fs.path.join(arena, &.{ work_dir_path, f });
-            if (pathExists(io, src_f)) {
-                const dst_f = try std.fs.path.join(arena, &.{ bundle_dir, f });
-                _ = try Dir.cwd().updateFile(io, src_f, Dir.cwd(), dst_f, .{});
-            }
+    for ([_][]const u8{
+        custom_byte_name,
+        pure_byte_name,
+        "myplugin.cmo",
+        nat_exe_name,
+        "myplugin.cmxs",
+        "dllzcamlstub.so",
+        "dllzcamlstub.dll",
+    }) |f| {
+        const src_f = try std.fs.path.join(arena, &.{ work_dir, f });
+        if (pathExists(io, src_f)) {
+            _ = try Dir.cwd().updateFile(io, src_f, Dir.cwd(), try std.fs.path.join(arena, &.{ bundle_dir, f }), .{});
         }
-
-        const rt_target_name = try std.fmt.allocPrint(arena, "ocamlrun-target{s}", .{t_ext});
-        const rt_host_name = try std.fmt.allocPrint(arena, "ocamlrun{s}", .{t_ext});
-        const rt_src = blk: {
-            const p1 = try std.fs.path.join(arena, &.{ bin_dir, rt_target_name });
-            if (pathExists(io, p1)) break :blk p1;
-            break :blk try std.fs.path.join(arena, &.{ bin_dir, rt_host_name });
-        };
-        if (pathExists(io, rt_src)) {
-            const rt_dst = try std.fs.path.join(arena, &.{ bundle_dir, rt_target_name });
-            _ = try Dir.cwd().updateFile(io, rt_src, Dir.cwd(), rt_dst, .{});
-        }
-
-        if (pathExists(io, stublibs_dir)) {
-            const dst_stublibs = try std.fs.path.join(arena, &.{ bundle_dir, "stublibs" });
-            try Dir.cwd().createDirPath(io, dst_stublibs);
-            var sdir = try Dir.openDirAbsolute(io, stublibs_dir, .{ .iterate = true });
-            defer sdir.close(io);
-            var it = sdir.iterate();
-            while (try it.next(io)) |entry| {
-                if (entry.kind == .file) {
-                    const sf = try std.fs.path.join(arena, &.{ stublibs_dir, entry.name });
-                    const df = try std.fs.path.join(arena, &.{ dst_stublibs, entry.name });
-                    _ = try Dir.cwd().updateFile(io, sf, Dir.cwd(), df, .{});
-                }
-            }
-        }
-        return "COMPILED (deferred bundle saved)";
     }
-
-    return "COMPILED (target OS not runnable here)";
+    const rt_src = try targetOcamlrun(io, arena, bin_dir, t_ext);
+    if (pathExists(io, rt_src)) {
+        const rt_dst = try std.fs.path.join(arena, &.{ bundle_dir, try std.fmt.allocPrint(arena, "ocamlrun-target{s}", .{t_ext}) });
+        _ = try Dir.cwd().updateFile(io, rt_src, Dir.cwd(), rt_dst, .{});
+    }
+    if (pathExists(io, stublibs_dir)) {
+        const dst_stublibs = try std.fs.path.join(arena, &.{ bundle_dir, "stublibs" });
+        try Dir.cwd().createDirPath(io, dst_stublibs);
+        try copyDirFiles(io, arena, stublibs_dir, dst_stublibs);
+    }
+    return "COMPILED (deferred bundle saved)";
 }
 
-fn executeTargetBinaries(
+/// Runs the installed host tools in the work directory.
+const Host = struct {
+    ctx: *Context,
+    arena: Allocator,
+    wrap: ExecWrapper,
+    bin_dir: []const u8,
+    triple: Triple,
+    cwd: []const u8,
+
+    fn run(self: Host, tool: []const u8, args: []const []const u8) ![]const u8 {
+        return self.runTool(tool, false, args);
+    }
+
+    /// Bytecode executables are `#!` scripts on Unix hosts: run them with `ocamlrun`.
+    fn runByte(self: Host, tool: []const u8, args: []const []const u8) ![]const u8 {
+        return self.runTool(tool, !self.triple.isWindows(), args);
+    }
+
+    fn runTool(self: Host, tool: []const u8, via_ocamlrun: bool, args: []const []const u8) ![]const u8 {
+        const ext = self.triple.exeExt();
+        const tool_path = try std.fs.path.join(self.arena, &.{ self.bin_dir, try std.fmt.allocPrint(self.arena, "{s}{s}", .{ tool, ext }) });
+        const ocamlrun = try std.fs.path.join(self.arena, &.{ self.bin_dir, try std.fmt.allocPrint(self.arena, "ocamlrun{s}", .{ext}) });
+        const argv = try std.mem.concat(self.arena, []const u8, &.{
+            self.wrap.prefix_argv,
+            if (via_ocamlrun) &.{ ocamlrun, tool_path } else &.{tool_path},
+            args,
+        });
+        return runChecked(self.ctx, self.arena, argv, self.cwd, &self.wrap.env, tool);
+    }
+};
+
+/// Run the fixture executables in `work_dir` (built by `verifyPair`, or a deferred bundle)
+/// and check that they print `ZCAML_VERIFY_OK`.
+fn runTargetBinaries(
     ctx: *Context,
     arena: Allocator,
     target: Triple,
     bin_dir: []const u8,
     stublibs_dir: []const u8,
-    work_dir_path: []const u8,
+    work_dir: []const u8,
     has_shared_libs: bool,
     has_natdynlink: bool,
 ) !void {
     const io = ctx.init.io;
     const t_ext = target.exeExt();
 
-    var target_wrap = try buildExecWrapper(ctx, arena, target, &.{ stublibs_dir, work_dir_path });
+    var wrap = try buildExecWrapper(ctx, arena, target, &.{ stublibs_dir, work_dir });
     const caml_ld = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{
-        work_dir_path,
+        work_dir,
         @as(u8, if (target.isWindows()) ';' else ':'),
         stublibs_dir,
     });
-    try target_wrap.env.put("CAML_LD_LIBRARY_PATH", caml_ld);
-    if (target.isMacos()) {
-        try target_wrap.env.put("DYLD_LIBRARY_PATH", caml_ld);
+    try wrap.env.put("CAML_LD_LIBRARY_PATH", caml_ld);
+    if (target.isMacos()) try wrap.env.put("DYLD_LIBRARY_PATH", caml_ld);
+
+    const Check = struct { desc: []const u8, argv: []const []const u8 };
+    var checks: std.ArrayList(Check) = .empty;
+
+    const pure_byte_name = try std.fmt.allocPrint(arena, "test_pure_byte{s}", .{t_ext});
+    if (has_shared_libs and pathExists(io, try std.fs.path.join(arena, &.{ work_dir, pure_byte_name }))) {
+        try checks.append(arena, .{
+            .desc = "run pure bytecode",
+            .argv = try arena.dupe([]const u8, &.{ try targetOcamlrun(io, arena, bin_dir, t_ext), pure_byte_name, "myplugin.cmo" }),
+        });
     }
+    try checks.append(arena, .{
+        .desc = "run custom bytecode",
+        .argv = try arena.dupe([]const u8, &.{ try std.fs.path.join(arena, &.{ work_dir, try std.fmt.allocPrint(arena, "test_custom_byte{s}", .{t_ext}) }), "myplugin.cmo" }),
+    });
+    const nat_exe_path = try std.fs.path.join(arena, &.{ work_dir, try std.fmt.allocPrint(arena, "test_native_opt{s}", .{t_ext}) });
+    try checks.append(arena, .{
+        .desc = "run native executable",
+        .argv = try arena.dupe([]const u8, if (has_natdynlink and pathExists(io, try std.fs.path.join(arena, &.{ work_dir, "myplugin.cmxs" })))
+            &.{ nat_exe_path, "myplugin.cmxs" }
+        else
+            &.{nat_exe_path}),
+    });
 
-    const ocamlrun_target = blk: {
-        const p1 = try std.fs.path.join(arena, &.{ bin_dir, try std.fmt.allocPrint(arena, "ocamlrun-target{s}", .{t_ext}) });
-        if (pathExists(io, p1)) break :blk p1;
-        break :blk try std.fs.path.join(arena, &.{ bin_dir, try std.fmt.allocPrint(arena, "ocamlrun{s}", .{t_ext}) });
-    };
-
-    if (has_shared_libs) {
-        const pure_byte_name = try std.fmt.allocPrint(arena, "test_pure_byte{s}", .{t_ext});
-        const pure_byte_path = try std.fs.path.join(arena, &.{ work_dir_path, pure_byte_name });
-        if (pathExists(io, pure_byte_path)) {
-            const out = try runChecked(
-                ctx,
-                arena,
-                try concatArgs(arena, target_wrap.prefix_argv, &.{ ocamlrun_target, pure_byte_name, "myplugin.cmo" }),
-                work_dir_path,
-                &target_wrap.env,
-                "run pure bytecode",
-            );
-            if (std.mem.indexOf(u8, out, "ZCAML_VERIFY_OK") == null) return error.VerifyOutputMismatch;
-        }
-    }
-
-    const custom_byte_path = try std.fs.path.join(arena, &.{ work_dir_path, try std.fmt.allocPrint(arena, "test_custom_byte{s}", .{t_ext}) });
-    {
-        const out = try runChecked(
-            ctx,
-            arena,
-            try concatArgs(arena, target_wrap.prefix_argv, &.{ custom_byte_path, "myplugin.cmo" }),
-            work_dir_path,
-            &target_wrap.env,
-            "run custom bytecode",
-        );
-        if (std.mem.indexOf(u8, out, "ZCAML_VERIFY_OK") == null) return error.VerifyOutputMismatch;
-    }
-
-    const nat_exe_path = try std.fs.path.join(arena, &.{ work_dir_path, try std.fmt.allocPrint(arena, "test_native_opt{s}", .{t_ext}) });
-    const nat_args: []const []const u8 = if (has_natdynlink and pathExists(io, try std.fs.path.join(arena, &.{ work_dir_path, "myplugin.cmxs" })))
-        &.{ nat_exe_path, "myplugin.cmxs" }
-    else
-        &.{nat_exe_path};
-    {
-        const out = try runChecked(
-            ctx,
-            arena,
-            try concatArgs(arena, target_wrap.prefix_argv, nat_args),
-            work_dir_path,
-            &target_wrap.env,
-            "run native executable",
-        );
+    for (checks.items) |check| {
+        const argv = try std.mem.concat(arena, []const u8, &.{ wrap.prefix_argv, check.argv });
+        const out = try runChecked(ctx, arena, argv, work_dir, &wrap.env, check.desc);
         if (std.mem.indexOf(u8, out, "ZCAML_VERIFY_OK") == null) return error.VerifyOutputMismatch;
     }
 }
 
-fn runDeferredBundles(
-    init: std.process.Init,
-    cache_dir: []const u8,
-    fixtures_abs: []const u8,
-    deferred_root: []const u8,
-    jobs: usize,
-) !void {
-    _ = jobs;
-    const io = init.io;
-    const arena = init.arena.allocator();
+fn runDeferredBundles(ctx: *Context, deferred_root: []const u8) !void {
+    const io = ctx.init.io;
+    const arena = ctx.init.arena.allocator();
     const cur = currentMachineTriple();
 
-    var bundle_names: std.ArrayList([]const u8) = .empty;
-    {
-        var dir = try Dir.openDirAbsolute(io, deferred_root, .{ .iterate = true });
-        defer dir.close(io);
-        var it = dir.iterate();
-        while (try it.next(io)) |entry| {
-            if (entry.kind == .directory and std.mem.startsWith(u8, entry.name, "host-")) {
-                try bundle_names.append(arena, try arena.dupe(u8, entry.name));
-            }
-        }
-    }
-    std.mem.sort([]const u8, bundle_names.items, {}, strLessThan);
-
-    var ctx: Context = .{
-        .init = init,
-        .cache_dir = cache_dir,
-        .fixtures_abs = fixtures_abs,
-        .save_deferred_abs = null,
-    };
-
     var failures: usize = 0;
-    for (bundle_names.items) |bname| {
+    for (try listDirs(io, arena, deferred_root, "host-")) |bname| {
         const sep_idx = std.mem.indexOf(u8, bname, "__target-") orelse continue;
-        const h_raw = bname["host-".len..sep_idx];
-        const t_raw = bname[sep_idx + "__target-".len ..];
-        const host = Triple.parse(h_raw);
-        const target = Triple.parse(t_raw);
-        if (!canExecuteTargetOnCurrentMachine(target, cur)) continue;
+        const host = Triple.parse(bname["host-".len..sep_idx]);
+        const target = Triple.parse(bname[sep_idx + "__target-".len ..]);
+        if (!canRun(target, cur, true)) continue;
 
         const bundle_dir = try std.fs.path.join(arena, &.{ deferred_root, bname });
         const stublibs_dir = try std.fs.path.join(arena, &.{ bundle_dir, "stublibs" });
         const t0 = Io.Clock.awake.now(io);
-        const label = try std.fmt.allocPrint(arena, "{s} -> {s} (deferred)", .{
-            host.shortName(arena),
-            target.shortName(arena),
-        });
+        const label = try std.fmt.allocPrint(arena, "{s} -> {s} (deferred)", .{ host.shortName(arena), target.shortName(arena) });
 
-        if (executeTargetBinaries(&ctx, arena, target, bundle_dir, stublibs_dir, bundle_dir, true, !target.isWindows())) {
+        if (runTargetBinaries(ctx, arena, target, bundle_dir, stublibs_dir, bundle_dir, true, !target.isWindows())) {
             const dt = t0.untilNow(io, .awake);
             std.debug.print("  [OK]   {s:<45} ({f}) PASSED (deferred execution)\n", .{ label, dt });
         } else |err| {
@@ -1033,41 +489,6 @@ fn runDeferredBundles(
         }
     }
     if (failures > 0) std.process.exit(1);
-}
-
-fn toolCmd(
-    arena: Allocator,
-    prefix_argv: []const []const u8,
-    bin_dir: []const u8,
-    tool_name: []const u8,
-    exe_ext: []const u8,
-    is_bytecode_script: bool,
-    is_windows_host: bool,
-    extra_args: []const []const u8,
-) ![]const []const u8 {
-    const tool_file = try std.fmt.allocPrint(arena, "{s}{s}", .{ tool_name, exe_ext });
-    const tool_path = try std.fs.path.join(arena, &.{ bin_dir, tool_file });
-    if (is_bytecode_script and !is_windows_host) {
-        const ocamlrun_file = try std.fmt.allocPrint(arena, "ocamlrun{s}", .{exe_ext});
-        const ocamlrun_path = try std.fs.path.join(arena, &.{ bin_dir, ocamlrun_file });
-        return concatArgs3(arena, prefix_argv, &.{ ocamlrun_path, tool_path }, extra_args);
-    }
-    return concatArgs3(arena, prefix_argv, &.{tool_path}, extra_args);
-}
-
-fn concatArgs(arena: Allocator, a: []const []const u8, b: []const []const u8) ![]const []const u8 {
-    const out = try arena.alloc([]const u8, a.len + b.len);
-    @memcpy(out[0..a.len], a);
-    @memcpy(out[a.len..], b);
-    return out;
-}
-
-fn concatArgs3(arena: Allocator, a: []const []const u8, b: []const []const u8, c: []const []const u8) ![]const []const u8 {
-    const out = try arena.alloc([]const u8, a.len + b.len + c.len);
-    @memcpy(out[0..a.len], a);
-    @memcpy(out[a.len .. a.len + b.len], b);
-    @memcpy(out[a.len + b.len ..], c);
-    return out;
 }
 
 fn runChecked(
@@ -1101,6 +522,59 @@ fn runChecked(
     return try arena.dupe(u8, res.stdout);
 }
 
+/// How to run an executable for `triple` on this machine.
+const ExecWrapper = struct {
+    prefix_argv: []const []const u8,
+    env: std.process.Environ.Map,
+};
+
+fn buildExecWrapper(
+    ctx: *Context,
+    arena: Allocator,
+    triple: Triple,
+    extra_dll_dirs: []const []const u8,
+) !ExecWrapper {
+    const cur = currentMachineTriple();
+    var env = try ctx.init.environ_map.clone(arena);
+
+    if (triple.isWindows()) {
+        if (cur.isWindows()) return .{ .prefix_argv = &.{}, .env = env };
+        try env.put("WINEDEBUG", "-all");
+        var wine_paths: std.ArrayList(u8) = .empty;
+        for (extra_dll_dirs) |d| {
+            if (wine_paths.items.len > 0) try wine_paths.append(arena, ';');
+            try wine_paths.print(arena, "Z:{s}", .{d});
+        }
+        if (wine_paths.items.len > 0) try env.put("WINEPATH", wine_paths.items);
+        return .{ .prefix_argv = &.{"wine"}, .env = env };
+    }
+
+    if (triple.isMacos()) {
+        if (std.mem.eql(u8, cur.arch, "aarch64") and std.mem.eql(u8, triple.arch, "x86_64")) {
+            return .{ .prefix_argv = &.{ "arch", "-x86_64" }, .env = env };
+        }
+        return .{ .prefix_argv = &.{}, .env = env };
+    }
+
+    if (triple.isLinux()) {
+        const sysroot_opt = try ensureSysroot(ctx.init, ctx.cache_dir, triple);
+        if (!std.mem.eql(u8, triple.arch, cur.arch)) {
+            const sysroot = sysroot_opt orelse return error.MissingSysroot;
+            return .{ .prefix_argv = try arena.dupe([]const u8, &.{ qemuBinForArch(triple.arch), "-L", sysroot }), .env = env };
+        }
+        if (triple.isMusl()) if (sysroot_opt) |sysroot| if (!std.mem.eql(u8, sysroot, "/")) {
+            // Not the loader directly: `/proc/self/exe` and `argv[0]` must remain the
+            // program itself (relocatable stdlib discovery, `-custom` bytecode reading itself).
+            return .{ .prefix_argv = try arena.dupe([]const u8, &.{ "qemu-x86_64", "-L", sysroot }), .env = env };
+        };
+        return .{ .prefix_argv = &.{}, .env = env };
+    }
+
+    return error.UnsupportedTriple;
+}
+
+/// The root to run `target` executables from with QEMU, `"/"` for the system one,
+/// or `null` when they run natively.
 fn ensureSysroot(init: std.process.Init, cache_dir: []const u8, target: Triple) !?[]const u8 {
     const io = init.io;
     const gpa = init.gpa;
@@ -1114,35 +588,27 @@ fn ensureSysroot(init: std.process.Init, cache_dir: []const u8, target: Triple) 
 
     if (target.isMusl()) {
         const sys_loader = try std.fmt.allocPrint(arena, "/lib/ld-musl-{s}.so.1", .{target.arch});
-        if (pathExists(io, sys_loader) and std.mem.eql(u8, target.arch, cur.arch)) {
-            return "/";
-        }
+        if (pathExists(io, sys_loader) and std.mem.eql(u8, target.arch, cur.arch)) return "/";
 
         const ready = try std.fs.path.join(arena, &.{ sysroot, ".musl-1.2.5-r13-ready" });
         const loader = try std.fmt.allocPrint(arena, "{s}/lib/ld-musl-{s}.so.1", .{ sysroot, target.arch });
-        if (pathExists(io, ready) and pathExists(io, loader)) {
-            return sysroot;
-        }
+        if (pathExists(io, ready) and pathExists(io, loader)) return sysroot;
 
-        const info = blk: {
-            for (musl_infos) |m| {
-                if (std.mem.eql(u8, m.arch, target.arch)) break :blk m;
-            }
-            return error.UnsupportedMuslArch;
-        };
+        const apk_arch = for (musl_apks) |m| {
+            if (std.mem.eql(u8, m.arch, target.arch)) break m.apk_arch;
+        } else return error.UnsupportedMuslArch;
 
         std.debug.print("==> Downloading Alpine musl loader for {s}...\n", .{target.raw});
         const usr_lib = try std.fs.path.join(arena, &.{ sysroot, "usr", "lib" });
         try Dir.cwd().createDirPath(io, usr_lib);
 
         const apk_path = try std.fs.path.join(arena, &.{ sysroot, "musl-1.2.5-r13.apk" });
-        const url = try std.fmt.allocPrint(arena, "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/{s}/musl-1.2.5-r13.apk", .{info.apk_arch});
+        const url = try std.fmt.allocPrint(arena, "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/{s}/musl-1.2.5-r13.apk", .{apk_arch});
         const dl = try std.process.run(gpa, io, .{ .argv = &.{ "curl", "-fsSL", url, "-o", apk_path } });
         gpa.free(dl.stdout);
         gpa.free(dl.stderr);
         if (!dl.term.success()) return error.DownloadFailed;
 
-        // Extract lib/ld-musl-<arch>.so.1
         const member = try std.fmt.allocPrint(arena, "lib/ld-musl-{s}.so.1", .{target.arch});
         const ex = try std.process.run(gpa, io, .{
             .argv = &.{ "tar", "--ignore-zeros", "--warning=no-unknown-keyword", "-xOzf", apk_path, member },
@@ -1151,9 +617,8 @@ fn ensureSysroot(init: std.process.Init, cache_dir: []const u8, target: Triple) 
         defer gpa.free(ex.stderr);
         if (!ex.term.success()) return error.ExtractFailed;
 
-        const out_loader = try std.fmt.allocPrint(arena, "{s}/ld-musl-{s}.so.1", .{ usr_lib, target.arch });
         try Dir.cwd().writeFile(io, .{
-            .sub_path = out_loader,
+            .sub_path = try std.fmt.allocPrint(arena, "{s}/ld-musl-{s}.so.1", .{ usr_lib, target.arch }),
             .data = ex.stdout,
             .flags = .{ .permissions = .executable_file },
         });
@@ -1166,17 +631,11 @@ fn ensureSysroot(init: std.process.Init, cache_dir: []const u8, target: Triple) 
         return sysroot;
     }
 
-    // Foreign glibc target on Linux: check Ubuntu cross-libc in /usr/<arch>-linux-gnu first
+    // Foreign glibc: prefer Ubuntu's cross libc in /usr/<arch>-linux-gnu.
     const multiarch = try std.fmt.allocPrint(arena, "/usr/{s}-linux-gnu", .{target.arch});
-    const multiarch_libc = try std.fmt.allocPrint(arena, "{s}/lib/libc.so.6", .{multiarch});
-    if (pathExists(io, multiarch_libc)) {
-        return multiarch;
-    }
+    if (pathExists(io, try std.fmt.allocPrint(arena, "{s}/lib/libc.so.6", .{multiarch}))) return multiarch;
 
-    const ready = try std.fs.path.join(arena, &.{ sysroot, ".ready-v2" });
-    if (pathExists(io, ready)) {
-        return sysroot;
-    }
+    if (pathExists(io, try std.fs.path.join(arena, &.{ sysroot, ".ready-v2" }))) return sysroot;
 
     const deb_arch = debianArchForTarget(target.raw);
     std.debug.print("==> Downloading Debian stable glibc sysroot ({s}) for {s}...\n", .{ deb_arch, target.raw });
@@ -1219,6 +678,30 @@ fn ensureSysroot(init: std.process.Init, cache_dir: []const u8, target: Triple) 
     return sysroot;
 }
 
+const musl_apks = [_]struct { arch: []const u8, apk_arch: []const u8 }{
+    .{ .arch = "x86_64", .apk_arch = "x86_64" },
+    .{ .arch = "aarch64", .apk_arch = "aarch64" },
+    .{ .arch = "riscv64", .apk_arch = "riscv64" },
+    .{ .arch = "powerpc64le", .apk_arch = "ppc64le" },
+    .{ .arch = "s390x", .apk_arch = "s390x" },
+};
+
+fn qemuBinForArch(arch: []const u8) []const u8 {
+    if (std.mem.eql(u8, arch, "aarch64")) return "qemu-aarch64";
+    if (std.mem.eql(u8, arch, "riscv64")) return "qemu-riscv64";
+    if (std.mem.eql(u8, arch, "powerpc64le")) return "qemu-ppc64le";
+    if (std.mem.eql(u8, arch, "s390x")) return "qemu-s390x";
+    std.debug.panic("Unsupported foreign Linux arch for QEMU: {s}", .{arch});
+}
+
+fn debianArchForTarget(raw: []const u8) []const u8 {
+    if (std.mem.eql(u8, raw, "aarch64-linux-gnu")) return "arm64";
+    if (std.mem.eql(u8, raw, "riscv64-linux-gnu")) return "riscv64";
+    if (std.mem.eql(u8, raw, "powerpc64le-linux-gnu")) return "ppc64el";
+    if (std.mem.eql(u8, raw, "s390x-linux-gnu")) return "s390x";
+    std.debug.panic("Unsupported foreign glibc target: {s}", .{raw});
+}
+
 fn initWinePrefix(init: std.process.Init) void {
     const io = init.io;
     const gpa = init.gpa;
@@ -1231,4 +714,125 @@ fn initWinePrefix(init: std.process.Init) void {
     }) catch return;
     gpa.free(res.stdout);
     gpa.free(res.stderr);
+}
+
+/// `<arch>-<os>-<abi>`, as in the install layout (`host-x86_64-linux-gnu`).
+const Triple = struct {
+    raw: []const u8,
+    arch: []const u8,
+    os: []const u8,
+    abi: []const u8,
+
+    fn parse(raw: []const u8) Triple {
+        var it = std.mem.splitScalar(u8, raw, '-');
+        const arch = it.next() orelse raw;
+        const os = it.next() orelse "unknown";
+        const abi = it.next() orelse "none";
+        return .{ .raw = raw, .arch = arch, .os = os, .abi = abi };
+    }
+
+    fn isWindows(self: Triple) bool {
+        return std.mem.eql(u8, self.os, "windows");
+    }
+
+    fn isMacos(self: Triple) bool {
+        return std.mem.eql(u8, self.os, "macos");
+    }
+
+    fn isLinux(self: Triple) bool {
+        return std.mem.eql(u8, self.os, "linux");
+    }
+
+    fn isMusl(self: Triple) bool {
+        return std.mem.eql(u8, self.abi, "musl");
+    }
+
+    fn exeExt(self: Triple) []const u8 {
+        return if (self.isWindows()) ".exe" else "";
+    }
+
+    /// `aarch64-macos-none` -> `aarch64-macos`
+    fn shortName(self: Triple, arena: Allocator) []const u8 {
+        if (self.isMacos() and std.mem.eql(u8, self.abi, "none")) {
+            return std.fmt.allocPrint(arena, "{s}-macos", .{self.arch}) catch @panic("OOM");
+        }
+        return self.raw;
+    }
+
+    fn eql(a: Triple, b: Triple) bool {
+        return std.mem.eql(u8, a.raw, b.raw);
+    }
+
+    fn matchesFilter(self: Triple, arena: Allocator, filter: ?[]const u8) bool {
+        const f = filter orelse return true;
+        return std.mem.eql(u8, self.raw, f) or std.mem.eql(u8, self.shortName(arena), f);
+    }
+};
+
+fn currentMachineTriple() Triple {
+    const arch = @tagName(builtin.cpu.arch);
+    return switch (builtin.os.tag) {
+        .macos => .{ .raw = arch ++ "-macos-none", .arch = arch, .os = "macos", .abi = "none" },
+        .linux => .{ .raw = arch ++ "-linux-gnu", .arch = arch, .os = "linux", .abi = "gnu" },
+        .windows => .{ .raw = arch ++ "-windows-gnu", .arch = arch, .os = "windows", .abi = "gnu" },
+        else => @compileError("Unsupported host OS"),
+    };
+}
+
+/// Whether `t` executables can run on `cur`: Linux runs every Linux arch with QEMU
+/// (and Windows with Wine, if allowed); Apple Silicon also runs x86_64 with Rosetta.
+fn canRun(t: Triple, cur: Triple, wine: bool) bool {
+    const same_arch = std.mem.eql(u8, t.arch, cur.arch);
+    if (cur.isLinux()) return t.isLinux() or (wine and t.isWindows());
+    if (cur.isMacos()) return t.isMacos() and (same_arch or
+        (std.mem.eql(u8, cur.arch, "aarch64") and std.mem.eql(u8, t.arch, "x86_64")));
+    if (cur.isWindows()) return t.isWindows() and same_arch;
+    return t.eql(cur);
+}
+
+fn usesWine(target: Triple, cur: Triple) bool {
+    return cur.isLinux() and target.isWindows();
+}
+
+/// `ocamlrun-target` when cross compiling, else `ocamlrun`.
+fn targetOcamlrun(io: Io, arena: Allocator, bin_dir: []const u8, t_ext: []const u8) ![]const u8 {
+    const cross = try std.fs.path.join(arena, &.{ bin_dir, try std.fmt.allocPrint(arena, "ocamlrun-target{s}", .{t_ext}) });
+    if (pathExists(io, cross)) return cross;
+    return std.fs.path.join(arena, &.{ bin_dir, try std.fmt.allocPrint(arena, "ocamlrun{s}", .{t_ext}) });
+}
+
+/// Names of the subdirectories of `dir_abs` starting with `prefix`, sorted.
+fn listDirs(io: Io, arena: Allocator, dir_abs: []const u8, prefix: []const u8) ![]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var dir = try Dir.openDirAbsolute(io, dir_abs, .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .directory and std.mem.startsWith(u8, entry.name, prefix)) {
+            try names.append(arena, try arena.dupe(u8, entry.name));
+        }
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    return names.items;
+}
+
+fn copyDirFiles(io: Io, arena: Allocator, src_abs: []const u8, dst_abs: []const u8) !void {
+    var dir = try Dir.openDirAbsolute(io, src_abs, .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        const src = try std.fs.path.join(arena, &.{ src_abs, entry.name });
+        const dst = try std.fs.path.join(arena, &.{ dst_abs, entry.name });
+        _ = try Dir.cwd().updateFile(io, src, Dir.cwd(), dst, .{});
+    }
+}
+
+fn pathExists(io: Io, path: []const u8) bool {
+    Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
 }

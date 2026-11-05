@@ -11,9 +11,7 @@ const configure = @import("configure.zig");
 const Tools = @import("tools.zig");
 const LazyPath = std.Build.LazyPath;
 
-/// Default stdlib location, relative to `bin/`.
-pub const stdlib_dir_from_bin = "../lib/ocaml";
-pub const native_link_flags: []const []const u8 = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ stdlib_dir_from_bin };
+pub const native_link_flags: []const []const u8 = &.{ "-g", "-set-runtime-default", "standard_library_default=" ++ configure.stdlib_dir_from_bin };
 
 /// Target- and host-independent compiler bootstrap artifacts, built once per OCaml release.
 pub const Shared = struct {
@@ -24,6 +22,8 @@ pub const Shared = struct {
     boot: Ocamlc,
     lex: Ocamlc.Compiled,
     build_ocamlrun: *std.Build.Step.Compile,
+    /// The compiler's `compflags` without `-g -bin-annot`, for its bytecode build.
+    byte_compflags: []const []const u8,
     frontend_byte: Ocamlc.Compiled,
     ocamlbytecomp_cma: LazyPath,
     ocamlmiddleend_cma: LazyPath,
@@ -42,14 +42,13 @@ pub fn buildShared(
     const b = src.b;
     const m = src.manifest;
 
-    const config_common = configure.compilerConfigCommon(src.*);
+    const config_common = configure.compilerConfigCommon(src);
     const config_wf = b.addWriteFiles();
     const compilerlibs_meta = config_wf.add("META", src.renderMeta("compilerlibs/META.in", &.{}));
 
     const gen, _ = Tools.run(b, .gen_compiler_sources, .{
         .ocaml_src_dir = .of(src.path("")),
         .primitives = .of(rt_common.primitives),
-        .arch64 = true,
         .domainstate_ml = .of("domainstate.ml"),
         .domainstate_mli = .of("domainstate.mli"),
         .runtimedef_ml = .of("runtimedef.ml"),
@@ -69,7 +68,9 @@ pub fn buildShared(
         .prefix_map = src.prefixMap(),
         .cwd = src.path(""),
     };
-    const cvt_emit = buildTool(boot, lexer.run(src.path("tools/cvt_emit.mll"), "cvt_emit.ml"), "cvt_emit", build_launch_info_dir);
+    const cvt_emit = boot.link("cvt_emit.byte", &.{boot.impl(lexer.run(src.path("tools/cvt_emit.mll"), "cvt_emit.ml"), "cvt_emit", null, .{}).cmo}, .{
+        .includes = &.{build_launch_info_dir},
+    });
 
     const lex_parser = runYacc(b, build_ocamlyacc, src.path("lex/parser.mly"), "parser");
     const dbg_parser = runYacc(b, build_ocamlyacc, src.path("debugger/debugger_parser.mly"), "debugger_parser");
@@ -103,12 +104,16 @@ pub fn buildShared(
     base_sources.gen.put(.odoc_see_lexer_ml, lexer.run(src.path("ocamldoc/odoc_see_lexer.mll"), "odoc_see_lexer.ml"));
     base_sources.gen.put(.odoc_ocamlhtml_ml, lexer.run(src.path("ocamldoc/odoc_ocamlhtml.mll"), "odoc_ocamlhtml.ml"));
 
-    const compflags = withoutByteDebugFlags(b, m.compiler.compflags);
+    var byte_compflags: std.ArrayList([]const u8) = .empty;
+    for (m.compiler.compflags) |f| {
+        if (std.mem.eql(u8, f, "-bin-annot") or std.mem.eql(u8, f, "-g")) continue;
+        byte_compflags.append(b.allocator, f) catch @panic("OOM");
+    }
 
-    const lex = boot.compilePlan(m.lex.plan, base_sources, .{ .flags = compflags });
+    const lex = boot.compilePlan(m.lex.plan, base_sources, .{ .flags = byte_compflags.items });
 
     const frontend_byte = boot.compilePlan(m.compiler.plan, base_sources, .{
-        .flags = compflags,
+        .flags = byte_compflags.items,
         .only_frontend = true,
     });
 
@@ -136,6 +141,7 @@ pub fn buildShared(
         .boot = boot,
         .lex = lex,
         .build_ocamlrun = build_ocamlrun,
+        .byte_compflags = byte_compflags.items,
         .frontend_byte = frontend_byte,
         .ocamlbytecomp_cma = ocamlbytecomp_cma,
         .ocamlmiddleend_cma = ocamlmiddleend_cma,
@@ -161,18 +167,22 @@ pub fn buildArchByte(src: *const Source, shared: Shared, arch: ?Platform.Arch) A
     var sources = shared.base_sources;
     sources.arch = arch;
     if (arch != null) {
-        const body = runCapture(b, shared.build_ocamlrun, shared.cvt_emit, &.{}, src.path(b.fmt("asmcomp/{s}/emit.mlp", .{arch_name})));
-        const prep, _ = Tools.run(b, .prepend_emit_line, .{
-            .cvt_emit_output = .of(body),
-            .arch = arch_name,
-            .out_emit_ml = .of("emit.ml"),
+        const emit_mlp = b.fmt("asmcomp/{s}/emit.mlp", .{arch_name});
+        const cvt_emit = b.addRunArtifact(shared.build_ocamlrun);
+        cvt_emit.addFileArg(shared.cvt_emit);
+        cvt_emit.setStdIn(.{ .lazy_path = src.path(emit_mlp) });
+        const cat, _ = Tools.run(b, .cat, .{
+            .inputs = b.allocator.dupe(Tools.InputFile, &.{
+                .of(b.addWriteFiles().add("line", b.fmt("# 1 \"{s}\"\n", .{emit_mlp}))),
+                .of(cvt_emit.captureStdOut(.{})),
+            }) catch @panic("OOM"),
+            .output = .of("emit.ml"),
         });
-        sources.gen.put(.emit_ml, prep.out_emit_ml.lazyPath());
+        sources.gen.put(.emit_ml, cat.output.lazyPath());
     }
 
-    const compflags = withoutByteDebugFlags(b, cc.compflags);
     const compiled = shared.boot.compilePlan(cc.plan, sources, .{
-        .flags = compflags,
+        .flags = shared.byte_compflags,
         .reuse_frontend = shared.frontend_byte,
     });
 
@@ -228,17 +238,17 @@ pub fn buildByteCommon(
     const boot = shared.boot;
 
     const config_wf = b.addWriteFiles();
-    const config_main_ml = config_wf.add("config_main.ml", configure.compilerConfigMl(src.*, shared.config_common, host, target));
+    const config_main_ml = config_wf.add("config_main.ml", configure.compilerConfigMl(src, shared.config_common, host, target));
 
     const cfg_intf = arch_byte.compiled.intfs.get("utils/config").?;
     const cfg_impl = boot.impl(config_main_ml, "config", cfg_intf.cmi, .{
         .includes = &.{arch_byte.compiled.cmis_dir},
-        .flags = withoutByteDebugFlags(b, cc.compflags),
+        .flags = shared.byte_compflags,
     });
 
     var compiled = arch_byte.compiled;
     compiled.impls = arch_byte.compiled.impls.clone(b.allocator) catch @panic("OOM");
-    compiled.impls.put(b.allocator, "utils/config", .{ .unit = cfg_intf.unit, .src = config_main_ml, .impl = cfg_impl }) catch @panic("OOM");
+    compiled.impls.put(b.allocator, "utils/config", .{ .unit = cfg_intf.unit, .impl = cfg_impl }) catch @panic("OOM");
 
     const ocamlcommon = boot.archive("ocamlcommon.cma", compiled.cmos(b, cc.ocamlcommon), .{ .flags = &.{"-linkall"} });
 
@@ -422,10 +432,10 @@ pub fn buildArchNative(
         }
     }
 
-    const bytecomp = if (frontend) |fe| fe.bytecomp_cmxa else archiveNativeLib(opt, compiled, libs, "ocamlbytecomp", cc.ocamlbytecomp, &.{});
-    const middleend = if (frontend) |fe| fe.middleend_cmxa else archiveNativeLib(opt, compiled, libs, "ocamlmiddleend", cc.ocamlmiddleend, &.{});
-    const optcomp = archiveNativeLib(opt, compiled, libs, "ocamloptcomp", cc.ocamloptcomp, &.{});
-    const toplevel = if (libs != null) archiveNativeLib(opt, compiled, libs, "ocamltoplevel", cc.ocamltoplevel_native, &.{}) else null;
+    const bytecomp = if (frontend) |fe| fe.bytecomp_cmxa else archiveNativeLib(opt, compiled, libs, "ocamlbytecomp", cc.ocamlbytecomp);
+    const middleend = if (frontend) |fe| fe.middleend_cmxa else archiveNativeLib(opt, compiled, libs, "ocamlmiddleend", cc.ocamlmiddleend);
+    const optcomp = archiveNativeLib(opt, compiled, libs, "ocamloptcomp", cc.ocamloptcomp);
+    const toplevel = if (libs != null) archiveNativeLib(opt, compiled, libs, "ocamltoplevel", cc.ocamltoplevel_native) else null;
 
     const lex_compiled: ?Ocamlopt.Compiled = if (dynlink_dir != null)
         opt.compilePlan(src.manifest.lex.plan, arch_byte.sources, shared.lex, .{ .flags = cc.compflags })
@@ -445,16 +455,14 @@ pub fn buildArchNative(
 }
 
 pub fn linkOcamllexOpt(
-    b: *std.Build,
-    manifest: Source.Manifest,
+    src: *const Source,
     arch_byte: ArchByte,
     lex: Ocamlopt.Compiled,
     opt: Ocamlopt,
     rt: runtime.Artifacts,
 ) LazyPath {
-    const runtime_dir = nativeRuntimeDir(b, rt);
-    return opt.link("ocamllex.opt", lex.cmxs(b, manifest.lex.ocamllex), .{
-        .includes = &.{ arch_byte.compiled.cmis_dir, runtime_dir, lex.dir },
+    return opt.link("ocamllex.opt", lex.cmxs(src.b, src.manifest.lex.ocamllex), .{
+        .includes = &.{ arch_byte.compiled.cmis_dir, rt.native_runtime_dir.?, lex.dir },
         .flags = native_link_flags,
         .strip_debug = true,
     });
@@ -462,7 +470,6 @@ pub fn linkOcamllexOpt(
 
 pub const NativeCommon = struct {
     config_cmx: LazyPath,
-    config_obj: LazyPath,
     cmxa: LazyPath,
     lib: LazyPath,
 };
@@ -492,56 +499,39 @@ pub fn buildNativeCommon(
 
     return .{
         .config_cmx = cfg_nat.cmx,
-        .config_obj = cfg_nat.obj,
         .cmxa = common_archive.cmxa,
         .lib = common_archive.lib,
     };
 }
 
 pub fn linkOcamloptOpt(
-    b: *std.Build,
     arch_byte: ArchByte,
     arch_nat: ArchNative,
     nat_common: NativeCommon,
     opt: Ocamlopt,
     rt: runtime.Artifacts,
 ) LazyPath {
-    const runtime_dir = nativeRuntimeDir(b, rt);
-    const link_opts: Ocamlopt.Options = .{
-        .includes = &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, runtime_dir },
-        .flags = native_link_flags,
-        .strip_debug = true,
-    };
-    return opt.link("ocamlopt.opt", &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.compiled.impls.get("driver/optmain").?.impl.cmx }, link_opts);
+    return opt.link("ocamlopt.opt", &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.compiled.cmx("driver/optmain").? }, nativeLinkOpts(opt, arch_byte, arch_nat, rt));
 }
 
+/// `ocamlopt_opt` and `ocamllex_opt` are linked separately (`linkOcamloptOpt`, `linkOcamllexOpt`).
 pub fn linkNativePrograms(
-    b: *std.Build,
     arch_byte: ArchByte,
     arch_nat: ArchNative,
     nat_common: NativeCommon,
     opt: Ocamlopt,
     rt: runtime.Artifacts,
+    ocamlopt_opt: LazyPath,
     ocamllex_opt: LazyPath,
 ) NativePrograms {
-    const runtime_dir = nativeRuntimeDir(b, rt);
-
-    const opts: Ocamlopt.Options = .{
-        .includes = &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, runtime_dir },
-        .flags = native_link_flags,
-        .strip_debug = true,
-    };
+    const opts = nativeLinkOpts(opt, arch_byte, arch_nat, rt);
     return .{
-        .ocamlc = opt.link("ocamlc.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.compiled.impls.get("driver/main").?.impl.cmx }, opts),
-        .ocamlopt = opt.link("ocamlopt.opt", &.{ nat_common.cmxa, arch_nat.optcomp_cmxa, arch_nat.compiled.impls.get("driver/optmain").?.impl.cmx }, opts),
+        .ocamlc = opt.link("ocamlc.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.compiled.cmx("driver/main").? }, opts),
+        .ocamlopt = ocamlopt_opt,
         .ocamllex = ocamllex_opt,
-        .ocamldep = opt.link("ocamldep.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.compiled.impls.get("tools/ocamldep").?.impl.cmx }, opts),
-        .ocamlobjinfo = opt.link("ocamlobjinfo.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.middleend_cmxa, arch_nat.compiled.impls.get("tools/objinfo").?.impl.cmx }, opts),
+        .ocamldep = opt.link("ocamldep.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.compiled.cmx("tools/ocamldep").? }, opts),
+        .ocamlobjinfo = opt.link("ocamlobjinfo.opt", &.{ nat_common.cmxa, arch_nat.bytecomp_cmxa, arch_nat.middleend_cmxa, arch_nat.compiled.cmx("tools/objinfo").? }, opts),
     };
-}
-
-pub fn nativeRuntimeDir(_: *std.Build, rt: runtime.Artifacts) LazyPath {
-    return rt.native_runtime_dir.?;
 }
 
 /// How installed bytecode programs find `ocamlrun` and the stdlib. Relocatable
@@ -551,7 +541,7 @@ pub fn nativeRuntimeDir(_: *std.Build, rt: runtime.Artifacts) LazyPath {
 pub fn launchFlags(b: *std.Build, host: Platform) []const []const u8 {
     return b.allocator.dupe([]const u8, &.{
         "-set-runtime-default",
-        "standard_library_default=" ++ stdlib_dir_from_bin,
+        "standard_library_default=" ++ configure.stdlib_dir_from_bin,
         "-launch-method",
         if (host.is_windows) "exe" else "sh",
         "-runtime-search",
@@ -599,38 +589,17 @@ fn runYacc(b: *std.Build, ocamlyacc: *std.Build.Step.Compile, mly: LazyPath, ste
     };
 }
 
-/// Compile and link a single-file helper run at build time (`ocamlrun tool.byte`).
-fn buildTool(boot: Ocamlc, src_ml: LazyPath, name: []const u8, launch_info_dir: LazyPath) LazyPath {
-    const compiled = boot.impl(src_ml, name, null, .{});
-    return boot.link(boot.b.fmt("{s}.byte", .{name}), &.{compiled.cmo}, .{ .includes = &.{launch_info_dir} });
+/// For the compiler's own native executables.
+fn nativeLinkOpts(opt: Ocamlopt, arch_byte: ArchByte, arch_nat: ArchNative, rt: runtime.Artifacts) Ocamlopt.Options {
+    return .{
+        .includes = opt.b.allocator.dupe(LazyPath, &.{ arch_byte.compiled.cmis_dir, arch_nat.compiled.dir, rt.native_runtime_dir.? }) catch @panic("OOM"),
+        .flags = native_link_flags,
+        .strip_debug = true,
+    };
 }
 
-fn runCapture(
-    b: *std.Build,
-    ocamlrun: *std.Build.Step.Compile,
-    exe: LazyPath,
-    args: []const []const u8,
-    stdin: LazyPath,
-) LazyPath {
-    const run = b.addRunArtifact(ocamlrun);
-    run.addFileArg(exe);
-    run.addArgs(args);
-    run.setStdIn(.{ .lazy_path = stdin });
-    return run.captureStdOut(.{});
-}
-
-pub fn withoutByteDebugFlags(b: *std.Build, flags: []const []const u8) []const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    for (flags) |f| {
-        if (!std.mem.eql(u8, f, "-bin-annot") and !std.mem.eql(u8, f, "-g")) {
-            out.append(b.allocator, f) catch @panic("OOM");
-        }
-    }
-    return out.items;
-}
-
-fn archiveNativeLib(o: Ocamlopt, c: Ocamlopt.Compiled, wf: ?*std.Build.Step.WriteFile, name: []const u8, keys: []const []const u8, flags: []const []const u8) LazyPath {
-    const a = o.archive(name, c.cmxs(o.b, keys), .{ .flags = flags });
+fn archiveNativeLib(o: Ocamlopt, c: Ocamlopt.Compiled, wf: ?*std.Build.Step.WriteFile, name: []const u8, keys: []const []const u8) LazyPath {
+    const a = o.archive(name, c.cmxs(o.b, keys), .{});
     if (wf) |w| {
         _ = w.addCopyFile(a.cmxa, o.b.fmt("{s}.cmxa", .{name}));
         _ = w.addCopyFile(a.lib, o.b.fmt("{s}.a", .{name}));

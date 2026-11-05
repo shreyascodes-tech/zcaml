@@ -5,7 +5,6 @@
 const std = @import("std");
 const Platform = @import("platform.zig");
 const driver = @import("driver.zig");
-const runtime = @import("runtime.zig");
 const Tools = @import("tools.zig");
 const Ocamlc = driver.Ocamlc;
 const Ocamlopt = driver.Ocamlopt;
@@ -14,19 +13,15 @@ const LazyPath = std.Build.LazyPath;
 const module_names = [_][]const u8{ "version", "Compat", "coff", "cmdline", "create_dll", "reloc" };
 const Modules = [module_names.len]LazyPath;
 
-fn dependency(b: *std.Build) *std.Build.Dependency {
-    return b.lazyDependency("flexdll", .{}) orelse @panic("flexdll dependency is not fetched");
-}
-
 pub const Byte = struct {
     sources: Modules,
     cmis_dir: LazyPath,
     cmos: Modules,
 };
 
-pub fn compileByte(boot: Ocamlc) Byte {
+/// `dep`: the `flexdll` package (`Source.Deps.flexdll`).
+pub fn compileByte(boot: Ocamlc, dep: *std.Build.Dependency) Byte {
     const b = boot.b;
-    const dep = dependency(b);
     const gen, _ = Tools.run(b, .gen_flexlink_sources, .{
         .flexdll_src_dir = .of(dep.path("")),
         .zig_toolchain_ml = .of(b.path("build/flexdll/zig_toolchain.ml")),
@@ -63,7 +58,8 @@ pub fn linkByte(boot: Ocamlc, byte: Byte, launch_info_dir: LazyPath, launch_flag
     });
 }
 
-pub fn linkNative(opt: Ocamlopt, byte: Byte, rt: runtime.Artifacts) LazyPath {
+/// `native_runtime_dir`: `libasmrun.a` & co. for the host (`runtime.Artifacts.native_runtime_dir`).
+pub fn linkNative(opt: Ocamlopt, byte: Byte, native_runtime_dir: LazyPath) LazyPath {
     const b = opt.b;
     var cmxs: Modules = undefined;
     var includes: std.ArrayList(LazyPath) = .empty;
@@ -75,33 +71,18 @@ pub fn linkNative(opt: Ocamlopt, byte: Byte, rt: runtime.Artifacts) LazyPath {
         includes.append(b.allocator, r.cmx.dirname()) catch @panic("OOM");
         cmx.* = r.cmx;
     }
-    includes.append(b.allocator, rt.native_runtime_dir.?) catch @panic("OOM");
+    includes.append(b.allocator, native_runtime_dir) catch @panic("OOM");
     return opt.link("flexlink.opt", &cmxs, .{ .includes = includes.items, .strip_debug = true });
 }
 
-pub fn chain(p: Platform) []const u8 {
-    std.debug.assert(p.is_windows);
-    return if (p.arch64) "mingw64" else "mingw";
-}
-
-/// As upstream's `configure`.
-pub fn flags(b: *std.Build, p: Platform) []const []const u8 {
-    return b.allocator.dupe([]const u8, &.{ "-chain", chain(p), "-stack", if (p.arch64) "33554432" else "16777216" }) catch @panic("OOM");
-}
-
-pub fn includeDir(b: *std.Build) LazyPath {
-    return dependency(b).path("");
-}
-
 /// Installed as `lib/ocaml/flexdll/`.
-pub fn supportDir(b: *std.Build, p: Platform) LazyPath {
-    const dep = dependency(b);
-    const c = chain(p);
+pub fn supportDir(b: *std.Build, dep: *std.Build.Dependency, p: Platform) LazyPath {
+    const c = p.flexlinkChain();
     const wf = b.addWriteFiles();
     for ([_][]const u8{ "flexdll", "flexdll_initer" }) |name| {
         const obj = b.addObject(.{
             .name = b.fmt("{s}_{s}", .{ name, c }),
-            .root_module = runtime.cModule(b, p, .{}),
+            .root_module = p.cModule(b, .{}),
         });
         obj.root_module.addIncludePath(dep.path(""));
         obj.root_module.addCSourceFile(.{

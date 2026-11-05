@@ -1,7 +1,7 @@
-//! An OCaml source tree (a `build.zig.zon` dependency) together with its manifest.
+//! An OCaml source tree (a `build.zig.zon` dependency) together with its manifest
+//! and the other packages it is built with.
 const std = @import("std");
 const templates = @import("templates.zig");
-const Versions = @import("versions.zig");
 pub const Manifest = @import("manifests/manifest.zig");
 
 pub const Var = templates.Var;
@@ -11,44 +11,24 @@ const Source = @This();
 b: *std.Build,
 dep: *std.Build.Dependency,
 manifest: Manifest,
+deps: Deps,
 
-pub fn load(b: *std.Build, dep: *std.Build.Dependency, version: Versions.Version) Source {
-    const manifest_path = Versions.manifestPath(version);
-    const zon_src = readFileZ(b, b.root, manifest_path) catch |err| std.debug.panic(
-        "Failed to read manifest '{s}' for OCaml {t} ({t}). Run `zig build generate`.",
-        .{ manifest_path, version, err },
-    );
+/// The packages besides OCaml itself, resolved by the root build script.
+pub const Deps = struct {
+    /// FlexDLL sources: the Windows linker wrapper and its support objects.
+    flexdll: *std.Build.Dependency,
+    /// The `zstd` package, instantiated per target.
+    zstd: *const fn (b: *std.Build, options: ZstdOptions) *std.Build.Dependency,
 
-    @setEvalBranchQuota(20_000);
-    var diag: std.zon.parse.Diagnostics = undefined;
-    const manifest = std.zon.parse.fromSlice(Manifest, .{
-        .gpa = b.allocator,
-        .arena = b.graph.arena,
-        .diagnostics = &diag,
-        .source = zon_src,
-        .ignore_unknown_fields = true,
-    }) catch |err| {
-        std.debug.panic("Failed to parse manifest '{s}': {t}\n{f}\nRun `zig build generate`.", .{ manifest_path, err, diag.fmt(manifest_path) });
+    pub const ZstdOptions = struct {
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+        pie: bool,
     };
-
-    if (!std.mem.eql(u8, manifest.version.string, @tagName(version))) std.debug.panic(
-        "Manifest '{s}' is for OCaml {s}, expected {t}. Run `zig build generate`.",
-        .{ manifest_path, manifest.version.string, version },
-    );
-
-    return .{ .b = b, .dep = dep, .manifest = manifest };
-}
+};
 
 pub fn path(self: Source, sub_path: []const u8) std.Build.LazyPath {
     return self.dep.path(sub_path);
-}
-
-/// Read a file from the source tree at configure time.
-pub fn read(self: Source, sub_path: []const u8) []const u8 {
-    return readFileZ(self.b, self.dep.builder.root, sub_path) catch |err| std.debug.panic(
-        "Failed to read '{s}' from OCaml source dependency: {t}",
-        .{ sub_path, err },
-    );
 }
 
 /// `BUILD_PATH_PREFIX_MAP` value that strips the Zig package cache path from
@@ -151,6 +131,16 @@ pub const Resolver = struct {
     }
 };
 
+/// Read a file from the source tree at configure time.
+fn read(self: Source, sub_path: []const u8) []const u8 {
+    const b = self.b;
+    const file_path = self.dep.builder.root.joinString(b.allocator, sub_path) catch @panic("OOM");
+    return std.Io.Dir.cwd().readFileAlloc(b.graph.io, file_path, b.allocator, .unlimited) catch |err| std.debug.panic(
+        "Failed to read '{s}' from OCaml source dependency: {t}",
+        .{ sub_path, err },
+    );
+}
+
 fn absolutePath(b: *std.Build, cache_path: std.Build.Cache.Path) []const u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = cache_path.root_dir.handle.realPath(b.graph.io, &buf) catch @panic("cannot resolve build directory");
@@ -168,12 +158,4 @@ fn encodePrefix(b: *std.Build, prefix: []const u8) []const u8 {
         }) catch @panic("OOM");
     }
     return result.toOwnedSlice(b.allocator) catch @panic("OOM");
-}
-
-fn readFileZ(b: *std.Build, dir: std.Build.Cache.Path, sub_path: []const u8) ![:0]u8 {
-    const file = try dir.openFile(b.graph.io, sub_path, .{ .mode = .read_only });
-    defer file.close(b.graph.io);
-    var buf: [2048]u8 = undefined;
-    var reader = file.reader(b.graph.io, &buf);
-    return reader.interface.allocRemainingAlignedSentinel(b.allocator, .unlimited, .of(u8), 0);
 }
