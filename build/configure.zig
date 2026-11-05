@@ -240,7 +240,9 @@ pub fn compilerConfigMl(src: *const Source, config_common: []const u8, host: Pla
     // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
     const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
     const cc = b.fmt("zig cc -target {s} -fno-sanitize=undefined{s}", .{ triple, if (target.resolved.result.abi.isMusl()) " -dynamic" else "" });
-    const asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
+    // `-g0`: no DWARF for the (temporary, randomly named) assembly file itself;
+    // the `.loc` debug info `ocamlopt -g` emits is kept.
+    const asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -g0 -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" });
     const packld = b.fmt("{s} -nostdlib -r -o ", .{cc});
     const flexlink_flags = if (target.is_windows) std.mem.join(b.allocator, " ", target.flexlinkFlags(b)) catch @panic("OOM") else "";
     const mkdll = if (target.is_windows)

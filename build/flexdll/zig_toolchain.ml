@@ -130,6 +130,9 @@ let zig_setup () =
     flush stdout
   end;
   default_libs := libs;
+  (* Reproducible images: a content hash instead of the link time in the
+     COFF timestamp and the PDB signature. *)
+  extra_args := "-Wl,-Brepro" :: !extra_args;
   (* Flexdll requires all images (the main program and the DLLs) to be close
      to each other in memory, because of 32-bit relative relocations. As for
      the msvc64 chain, request a low image base. *)

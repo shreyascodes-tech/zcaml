@@ -274,7 +274,7 @@ fn linkOcamlrun(
         run.addFileArg(lib.getEmittedBin());
         run.addFileArg(rt.zstd_lib.getEmittedBin());
         for (p.c.libs) |l| run.addArg(b.fmt("-l{s}", .{l}));
-        run.addArgs(&.{ "-link", "-municode", "-link", "-s" });
+        run.addArgs(&.{ "-link", "-municode" });
         return .{ .bin = out, .step = null };
     }
 

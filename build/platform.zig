@@ -189,9 +189,10 @@ pub fn flexlinkChain(self: Platform) []const u8 {
     return if (self.arch64) "mingw64" else "mingw";
 }
 
-/// `flexlink` flags, as upstream's `configure`.
+/// `flexlink` flags, as upstream's `configure`, plus `-s`: `zig cc` would write a
+/// `.pdb` next to every image, naming the temporary objects it was linked from.
 pub fn flexlinkFlags(self: Platform, b: *std.Build) []const []const u8 {
-    return b.allocator.dupe([]const u8, &.{ "-chain", self.flexlinkChain(), "-stack", if (self.arch64) "33554432" else "16777216" }) catch @panic("OOM");
+    return b.allocator.dupe([]const u8, &.{ "-chain", self.flexlinkChain(), "-stack", if (self.arch64) "33554432" else "16777216", "-link", "-s" }) catch @panic("OOM");
 }
 
 /// How C code is compiled and linked for this platform. Used both to build the

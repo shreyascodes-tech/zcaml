@@ -417,7 +417,8 @@ pub const Ocamlopt = struct {
 
     fn addLinkerArgs(self: Ocamlopt, run: *std.Build.Step.Run, mode: Flexlink.Mode, strip: bool) void {
         if (self.flexlink) |fl| {
-            fl.addOcamloptArgs(self.b, run, mode, strip);
+            // Always stripped: see `Platform.flexlinkFlags`.
+            fl.addOcamloptArgs(self.b, run, mode);
         } else if (strip) {
             run.addArgs(&.{ "-ccopt", "-Wl,-S" });
         }
@@ -462,14 +463,13 @@ pub const Flexlink = struct {
     }
 
     /// `-cc` replaces `Config.mkexe`/`mkdll`.
-    fn addOcamloptArgs(self: Flexlink, b: *std.Build, run_step: *std.Build.Step.Run, mode: Mode, strip: bool) void {
+    fn addOcamloptArgs(self: Flexlink, b: *std.Build, run_step: *std.Build.Step.Run, mode: Mode) void {
         run_step.addArg("-cc");
         run_step.addFileArg(self.exe);
         var opts: std.ArrayList(u8) = .empty;
         if (mode == .exe) opts.appendSlice(b.allocator, "-exe ") catch @panic("OOM");
         for (self.flags) |f| opts.print(b.allocator, "{s} ", .{f}) catch @panic("OOM");
         if (mode == .exe) opts.appendSlice(b.allocator, "-link -municode ") catch @panic("OOM");
-        if (strip) opts.appendSlice(b.allocator, "-link -s ") catch @panic("OOM");
         run_step.addArgs(&.{ "-ccopt", std.mem.trimEnd(u8, opts.items, " ") });
         run_step.addArg("-I");
         run_step.addDirectoryArg(self.support_dir);
