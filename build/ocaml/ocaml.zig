@@ -165,16 +165,31 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
 
 /// The toolchain's C compiler (`c_compiler`): see `cc_wrapper.zig`.
 fn buildCcWrapper(b: *std.Build, host: Platform, target: Platform) *std.Build.Step.Compile {
+    const args = configure.ccWrapperArgs(b, target);
+    // The Windows command line is built by plain concatenation.
+    for (args) |arg| if (std.mem.findAny(u8, arg, " \t\"") != null) std.debug.panic("cc wrapper argument needs quoting: {s}", .{arg});
     const options = b.addOptions();
-    options.addOption([]const []const u8, "args", configure.ccWrapperArgs(b, target));
+    options.addOption([]const []const u8, "args", args);
+
+    // Small: it runs for every C compilation.
+    const is_windows = host.resolved.result.os.tag == .windows;
     const mod = b.createModule(.{
         .root_source_file = b.path("build/ocaml/cc_wrapper.zig"),
         .target = host.resolved,
         .optimize = .ReleaseSmall,
         .strip = true,
+        .single_threaded = true,
+        .link_libc = !is_windows,
+        .error_tracing = false,
+        .sanitize_c = .off,
     });
     mod.addOptions("options", options);
-    return b.addExecutable(.{ .name = configure.ccWrapperName(b, target), .root_module = mod });
+    const exe = b.addExecutable(.{ .name = configure.ccWrapperName(b, target), .root_module = mod });
+    exe.link_gc_sections = true;
+    exe.bundle_ubsan_rt = false;
+    // lld-link keeps most of compiler_rt (~36 KiB); the wrapper has its own `memcpy`/`memset`.
+    if (is_windows) exe.bundle_compiler_rt = false;
+    return exe;
 }
 
 pub const Toolchain = struct {

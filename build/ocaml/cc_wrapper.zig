@@ -7,34 +7,158 @@
 //! wrappers of several toolchains can be on `PATH` at once.
 //!
 //! The `zig` run is `$ZIG` if set, otherwise `zig` from `PATH`.
+//!
+//! It runs for every C compilation, so it is kept small: libc's `execvp` on POSIX,
+//! `CreateProcessW` on Windows, and nothing of `std.Io`, panics or stack traces.
 const std = @import("std");
 const builtin = @import("builtin");
+/// `args`: the target's `zig cc` flags.
 const options = @import("options");
 
-pub fn main(init: std.process.Init) !u8 {
-    const io = init.io;
-    const arena = init.arena.allocator();
+pub const panic = std.debug.no_panic;
+pub const std_options: std.Options = .{
+    .enable_segfault_handler = false,
+    .signal_stack_size = null,
+    .allow_stack_tracing = false,
+};
 
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.append(arena, init.environ_map.get("ZIG") orelse "zig");
-    try argv.append(arena, "cc");
-    try argv.appendSlice(arena, options.args);
-    var args = try init.minimal.args.iterateAllocator(arena);
-    _ = args.skip();
-    while (args.next()) |arg| try argv.append(arena, arg);
+pub fn main(init: std.process.Init.Minimal) u8 {
+    return if (builtin.os.tag == .windows) windows.run(init.args.vector) else posix.run(init.args.vector);
+}
 
-    if (builtin.os.tag != .windows) {
-        const err = std.process.replace(io, .{ .argv = argv.items });
-        std.log.err("could not run {s}: {t}", .{ argv.items[0], err });
+const posix = struct {
+    extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+
+    /// The target flags, NUL-terminated.
+    const target_args = blk: {
+        var args: [options.args.len][*:0]const u8 = undefined;
+        for (&args, options.args) |*z, arg| z.* = std.fmt.comptimePrint("{s}", .{arg});
+        const final = args;
+        break :blk final;
+    };
+
+    fn run(args: []const [*:0]const u8) u8 {
+        const zig = std.c.getenv("ZIG") orelse "zig";
+
+        // zig cc <target args> <our args, minus the program name>
+        const ours = args[@min(args.len, 1)..];
+        const len = 2 + target_args.len + ours.len;
+        const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
+        const argv = ptr[0..len :null];
+        argv[0..2].* = .{ zig, "cc" };
+        @memcpy(argv[2..][0..target_args.len], &target_args);
+        @memcpy(argv[2 + target_args.len ..], ours);
+        argv[len] = null;
+
+        _ = execvp(zig, argv);
+        return cannotRun(zig);
+    }
+
+    fn cannotRun(zig: [*:0]const u8) u8 {
+        for ([_][]const u8{ "zcaml-cc: could not run ", std.mem.span(zig), "\n" }) |s| _ = std.c.write(2, s.ptr, s.len);
+        return 127;
+    }
+};
+
+/// No libc: Windows has the command line as one string, which is kept as is.
+const windows = struct {
+    const w = std.os.windows;
+
+    extern "kernel32" fn WaitForSingleObject(handle: w.HANDLE, ms: w.DWORD) callconv(.winapi) w.DWORD;
+    extern "kernel32" fn GetExitCodeProcess(process: w.HANDLE, code: *w.DWORD) callconv(.winapi) w.BOOL;
+    extern "kernel32" fn GetStdHandle(which: w.DWORD) callconv(.winapi) ?w.HANDLE;
+    extern "kernel32" fn WriteFile(file: w.HANDLE, buf: [*]const u8, len: w.DWORD, written: ?*w.DWORD, overlapped: ?*anyopaque) callconv(.winapi) w.BOOL;
+    extern "kernel32" fn ExitProcess(code: w.UINT) callconv(.winapi) noreturn;
+    const INFINITE = 0xFFFFFFFF;
+    const STD_ERROR_HANDLE: w.DWORD = @bitCast(@as(i32, -12));
+
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+
+    /// `" cc <target args>`, closing the quoted zig path. The flags need no quoting (`buildCcWrapper`).
+    const cc_and_target_args = L(blk: {
+        var s: []const u8 = "\" cc";
+        for (options.args) |arg| s = s ++ " " ++ arg;
+        break :blk s;
+    });
+
+    /// The longest command line `CreateProcessW` takes.
+    var cmd_buf: [32768]u16 = undefined;
+
+    /// Runs `"<zig>" cc <target args>` followed by our command line, minus the program name.
+    fn run(cmdline: []const u16) u8 {
+        const zig = getenv("ZIG") orelse L("zig");
+
+        var len: usize = 0;
+        for ([_][]const u16{ L("\""), zig, cc_and_target_args, skipProgramName(cmdline) }) |part| {
+            if (len + part.len >= cmd_buf.len) return cannotRun();
+            @memcpy(cmd_buf[len..][0..part.len], part);
+            len += part.len;
+        }
+        cmd_buf[len] = 0;
+
+        var startup: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
+        startup.cb = @sizeOf(w.STARTUPINFOW);
+        var child: w.PROCESS.INFORMATION = undefined;
+        // No application name: `zig` is looked up like the shell does, `PATH` included.
+        if (w.kernel32.CreateProcessW(null, @ptrCast(&cmd_buf), null, null, .TRUE, .{}, null, null, &startup, &child) == .FALSE)
+            return cannotRun();
+
+        var code: w.DWORD = 1;
+        _ = WaitForSingleObject(child.hProcess, INFINITE);
+        _ = GetExitCodeProcess(child.hProcess, &code);
+        ExitProcess(code);
+    }
+
+    /// The program name ends at the closing quote if quoted (no escapes there), else at the first blank.
+    fn skipProgramName(cmdline: []const u16) []const u16 {
+        if (cmdline.len > 0 and cmdline[0] == '"') {
+            const end = std.mem.findScalarPos(u16, cmdline, 1, '"') orelse return &.{};
+            return cmdline[end + 1 ..];
+        }
+        const end = std.mem.findAny(u16, cmdline, L(" \t")) orelse cmdline.len;
+        return cmdline[end..];
+    }
+
+    /// The environment block: `NAME=value` strings, names case-insensitive.
+    fn getenv(comptime name: []const u8) ?[]const u16 {
+        var env: [*:0]const u16 = w.peb().ProcessParameters.Environment;
+        while (env[0] != 0) : (env += std.mem.len(env) + 1) {
+            const entry = std.mem.span(env);
+            if (entry.len > name.len and entry[name.len] == '=' and eqlIgnoreCase(entry[0..name.len], name))
+                return entry[name.len + 1 ..];
+        }
+        return null;
+    }
+
+    fn eqlIgnoreCase(a: []const u16, comptime b: []const u8) bool {
+        for (a, b) |x, y| if (x != y and x != std.ascii.toLower(y)) return false;
+        return true;
+    }
+
+    fn cannotRun() u8 {
+        const msg = "zcaml-cc: could not run zig\n";
+        if (GetStdHandle(STD_ERROR_HANDLE)) |h| _ = WriteFile(h, msg, msg.len, null, null);
         return 127;
     }
 
-    var child = std.process.spawn(io, .{ .argv = argv.items }) catch |err| {
-        std.log.err("could not run {s}: {t}", .{ argv.items[0], err });
-        return 127;
-    };
-    return switch (try child.wait(io)) {
-        .exited => |code| code,
-        else => 1,
-    };
-}
+    // Without libc and compiler_rt (`buildCcWrapper`: lld-link keeps ~36 KiB of it),
+    // these are all that's missing.
+    comptime {
+        if (builtin.os.tag == .windows) {
+            @export(&memcpy, .{ .name = "memcpy" });
+            @export(&memset, .{ .name = "memset" });
+        }
+    }
+
+    fn memcpy(noalias dest: [*]u8, noalias src: [*]const u8, len: usize) callconv(.c) [*]u8 {
+        @disableIntrinsics();
+        for (dest[0..len], src[0..len]) |*d, s| d.* = s;
+        return dest;
+    }
+
+    fn memset(dest: [*]u8, c: c_int, len: usize) callconv(.c) [*]u8 {
+        @disableIntrinsics();
+        for (dest[0..len]) |*d| d.* = @truncate(@as(c_uint, @bitCast(c)));
+        return dest;
+    }
+};
