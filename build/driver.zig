@@ -239,7 +239,7 @@ pub const Ocamlc = struct {
     /// `ocamlrun ocamlc -nostdlib [-I stdlib] [-use-prims p] -I includes... flags...`
     fn cmd(self: Ocamlc, opts: Options) *std.Build.Step.Run {
         const run = self.b.addRunArtifact(self.ocamlrun);
-        if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
+        setEnv(self.b, run, self.prefix_map);
         if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
         run.addFileArg(self.exe);
         run.addArg("-nostdlib");
@@ -427,9 +427,8 @@ pub const Ocamlopt = struct {
     fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
         const run = if (self.ocamlrun) |orun| self.b.addRunArtifact(orun) else std.Build.Step.Run.create(self.b, "run ocamlopt");
         run.addFileArg(self.exe);
-        if (self.prefix_map) |pm| run.setEnvironmentVariable("BUILD_PATH_PREFIX_MAP", pm);
+        setEnv(self.b, run, self.prefix_map);
         if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
-        addZigToPath(self.b, run);
         run.addArg("-nostdlib");
         if (self.stdlib_dir) |dir| {
             run.addArg("-I");
@@ -455,7 +454,7 @@ pub const Flexlink = struct {
     pub fn run(self: Flexlink, b: *std.Build) *std.Build.Step.Run {
         const run_step = std.Build.Step.Run.create(b, "run flexlink");
         run_step.addFileArg(self.exe);
-        addZigToPath(b, run_step);
+        setEnv(b, run_step, null);
         run_step.addArgs(self.flags);
         run_step.addArg("-I");
         run_step.addDirectoryArg(self.support_dir);
@@ -502,12 +501,29 @@ fn addSourceArg(run: *std.Build.Step.Run, src: LazyPath, rel_src: ?[]const u8) v
     }
 }
 
-/// Build steps must find the Zig used by this build, even when it was invoked
-/// by absolute path and is not otherwise on PATH.
-fn addZigToPath(b: *std.Build, run: *std.Build.Step.Run) void {
-    run.setEnvironmentVariable("PATH", b.fmt("{s}{s}{s}", .{
+/// Only what the compilers, `flexlink` and the `zig cc` they run need: a step's
+/// environment is part of its cache key, so with the whole environment any
+/// unrelated variable would rerun every step.
+fn setEnv(b: *std.Build, run: *std.Build.Step.Run, prefix_map: ?[]const u8) void {
+    const parent = &b.graph.environ_map;
+    run.clearEnvironment();
+    const env = run.getEnvMap();
+    for (inherited_env) |key| {
+        if (parent.get(key)) |value| env.put(key, value) catch @panic("OOM");
+    }
+    // The Zig of this build, even when it was invoked by absolute path.
+    env.put("PATH", b.fmt("{s}{s}{s}", .{
         std.fs.path.dirname(b.graph.zig_exe).?,
         if (b.graph.host.result.os.tag == .windows) ";" else ":",
-        run.getEnvMap().get("PATH") orelse "",
-    }));
+        parent.get("PATH") orelse "",
+    })) catch @panic("OOM");
+    if (prefix_map) |pm| env.put("BUILD_PATH_PREFIX_MAP", pm) catch @panic("OOM");
 }
+
+const inherited_env = [_][]const u8{
+    // Zig's caches and temporary files.
+    "HOME",        "XDG_CACHE_HOME", "ZIG_GLOBAL_CACHE_DIR", "ZIG_LIB_DIR", "TMPDIR",
+    // Windows.
+    "USERPROFILE", "LOCALAPPDATA",   "APPDATA",              "TEMP",        "TMP",
+    "SystemRoot",  "windir",         "ComSpec",              "PATHEXT",
+};
