@@ -2,6 +2,7 @@
 //! and the other packages it is built with.
 const std = @import("std");
 const templates = @import("templates.zig");
+const Tools = @import("tools.zig");
 pub const Manifest = @import("manifests/manifest.zig");
 
 pub const Var = templates.Var;
@@ -44,6 +45,23 @@ pub fn prefixMap(self: Source) []const u8 {
     return b.fmt(".={s}:={s}/:.={s}:={s}/:={s}/:=./{s}/:.={s}/stdlib:={s}/stdlib/:={s}/stdlib/:=./{s}/stdlib/", .{
         root, root, abs, abs, relative, relative, abs, abs, relative, relative,
     });
+}
+
+/// Name the `generated` OCaml source `name`, as if it were compiled in the source
+/// tree: what OCaml records (locations, debug info, and through them digests)
+/// then doesn't depend on the cache directory it was generated in.
+pub fn nameSource(self: Source, generated: std.Build.LazyPath, name: []const u8) std.Build.LazyPath {
+    const out, _ = Tools.run(self.b, .name_source, .{
+        .input = .of(generated),
+        .name = name,
+        .output = .of(std.fs.path.basename(name)),
+    });
+    return out.output.lazyPath();
+}
+
+/// Like `nameSource`, for sources rendered at configure time.
+pub fn namedText(b: *std.Build, name: []const u8, text: []const u8) []const u8 {
+    return b.fmt("# 1 \"{s}\"\n{s}", .{ name, text });
 }
 
 /// Render a `@var@` template from the source tree.

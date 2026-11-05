@@ -26,7 +26,7 @@ pub fn buildCommon(src: *const Source, primitives: LazyPath, build_rt: runtime.A
     const m = src.manifest;
 
     const config = b.addWriteFiles();
-    const sys_ml = config.add("sys.ml", configure.stdlibSysMl(src));
+    const sys_ml = config.add("sys.ml", Source.namedText(b, "sys.ml", configure.stdlibSysMl(src)));
     const meta = config.add("META", src.renderMeta("stdlib/META.in", &.{}));
 
     const gen, _ = Tools.run(b, .gen_stdlib_sources, .{

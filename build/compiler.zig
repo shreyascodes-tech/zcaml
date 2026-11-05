@@ -59,7 +59,7 @@ pub fn buildShared(
         .ccomp_ml = .of("ccomp.ml"),
     });
 
-    const lexer: Lexer = .{ .b = b, .ocamlrun = build_ocamlrun, .exe = src.path("boot/ocamllex") };
+    const lexer: Lexer = .{ .src = src, .ocamlrun = build_ocamlrun };
 
     const boot: Ocamlc = .{
         .b = b,
@@ -70,42 +70,42 @@ pub fn buildShared(
         .prefix_map = src.prefixMap(),
         .cwd = src.path(""),
     };
-    const cvt_emit = boot.link("cvt_emit.byte", &.{boot.impl(lexer.run(src.path("tools/cvt_emit.mll"), "cvt_emit.ml"), "cvt_emit", null, .{}).cmo}, .{
+    const cvt_emit = boot.link("cvt_emit.byte", &.{boot.impl(lexer.run("tools/cvt_emit.mll"), "cvt_emit", null, .{}).cmo}, .{
         .includes = &.{build_launch_info_dir},
     });
 
-    const lex_parser = runYacc(b, build_ocamlyacc, src.path("lex/parser.mly"), "parser");
-    const dbg_parser = runYacc(b, build_ocamlyacc, src.path("debugger/debugger_parser.mly"), "debugger_parser");
-    const text_parser = runYacc(b, build_ocamlyacc, src.path("ocamldoc/odoc_text_parser.mly"), "odoc_text_parser");
-    const odoc_parser = runYacc(b, build_ocamlyacc, src.path("ocamldoc/odoc_parser.mly"), "odoc_parser");
+    const lex_parser = runYacc(src, build_ocamlyacc, "lex/parser.mly");
+    const dbg_parser = runYacc(src, build_ocamlyacc, "debugger/debugger_parser.mly");
+    const text_parser = runYacc(src, build_ocamlyacc, "ocamldoc/odoc_text_parser.mly");
+    const odoc_parser = runYacc(src, build_ocamlyacc, "ocamldoc/odoc_parser.mly");
 
     var base_sources: Source.Resolver = .{ .source = src, .arch = null };
-    base_sources.gen.put(.domainstate_ml, gen.domainstate_ml.lazyPath());
-    base_sources.gen.put(.domainstate_mli, gen.domainstate_mli.lazyPath());
-    base_sources.gen.put(.runtimedef_ml, gen.runtimedef_ml.lazyPath());
-    base_sources.gen.put(.ccomp_ml, gen.ccomp_ml.lazyPath());
-    base_sources.gen.put(.camlinternalMenhirLib_mli, gen.menhir_lib_mli.lazyPath());
-    base_sources.gen.put(.parser_ml, gen.parser_ml.lazyPath());
-    base_sources.gen.put(.parser_mli, gen.parser_mli.lazyPath());
-    base_sources.gen.put(.parsing_lexer_ml, lexer.run(src.path("parsing/lexer.mll"), "lexer.ml"));
-    base_sources.gen.put(.byterntm_ml, lexer.run(src.path("bytecomp/byterntm.mll"), "byterntm.ml"));
-    base_sources.gen.put(.opcodes_ml, rt_common.opcodes_ml);
-    base_sources.gen.put(.opcodes_mli, rt_common.opcodes_mli);
-    base_sources.gen.put(.opnames_ml, rt_common.opnames_ml);
+    base_sources.gen.put(.domainstate_ml, src.nameSource(gen.domainstate_ml.lazyPath(), "utils/domainstate.ml"));
+    base_sources.gen.put(.domainstate_mli, src.nameSource(gen.domainstate_mli.lazyPath(), "utils/domainstate.mli"));
+    base_sources.gen.put(.runtimedef_ml, src.nameSource(gen.runtimedef_ml.lazyPath(), "lambda/runtimedef.ml"));
+    base_sources.gen.put(.ccomp_ml, src.nameSource(gen.ccomp_ml.lazyPath(), "utils/ccomp.ml"));
+    base_sources.gen.put(.camlinternalMenhirLib_mli, src.nameSource(gen.menhir_lib_mli.lazyPath(), "parsing/camlinternalMenhirLib.mli"));
+    base_sources.gen.put(.parser_ml, src.nameSource(gen.parser_ml.lazyPath(), "parsing/parser.ml"));
+    base_sources.gen.put(.parser_mli, src.nameSource(gen.parser_mli.lazyPath(), "parsing/parser.mli"));
+    base_sources.gen.put(.parsing_lexer_ml, lexer.run("parsing/lexer.mll"));
+    base_sources.gen.put(.byterntm_ml, lexer.run("bytecomp/byterntm.mll"));
+    base_sources.gen.put(.opcodes_ml, src.nameSource(rt_common.opcodes_ml, "bytecomp/opcodes.ml"));
+    base_sources.gen.put(.opcodes_mli, src.nameSource(rt_common.opcodes_mli, "bytecomp/opcodes.mli"));
+    base_sources.gen.put(.opnames_ml, src.nameSource(rt_common.opnames_ml, "tools/opnames.ml"));
     base_sources.gen.put(.lex_parser_ml, lex_parser.ml);
     base_sources.gen.put(.lex_parser_mli, lex_parser.mli);
-    base_sources.gen.put(.lex_lexer_ml, lexer.run(src.path("lex/lexer.mll"), "lexer.ml"));
+    base_sources.gen.put(.lex_lexer_ml, lexer.run("lex/lexer.mll"));
     base_sources.gen.put(.debugger_parser_ml, dbg_parser.ml);
     base_sources.gen.put(.debugger_parser_mli, dbg_parser.mli);
-    base_sources.gen.put(.debugger_lexer_ml, lexer.run(src.path("debugger/debugger_lexer.mll"), "debugger_lexer.ml"));
+    base_sources.gen.put(.debugger_lexer_ml, lexer.run("debugger/debugger_lexer.mll"));
     base_sources.gen.put(.odoc_text_parser_ml, text_parser.ml);
     base_sources.gen.put(.odoc_text_parser_mli, text_parser.mli);
     base_sources.gen.put(.odoc_parser_ml, odoc_parser.ml);
     base_sources.gen.put(.odoc_parser_mli, odoc_parser.mli);
-    base_sources.gen.put(.odoc_text_lexer_ml, lexer.run(src.path("ocamldoc/odoc_text_lexer.mll"), "odoc_text_lexer.ml"));
-    base_sources.gen.put(.odoc_lexer_ml, lexer.run(src.path("ocamldoc/odoc_lexer.mll"), "odoc_lexer.ml"));
-    base_sources.gen.put(.odoc_see_lexer_ml, lexer.run(src.path("ocamldoc/odoc_see_lexer.mll"), "odoc_see_lexer.ml"));
-    base_sources.gen.put(.odoc_ocamlhtml_ml, lexer.run(src.path("ocamldoc/odoc_ocamlhtml.mll"), "odoc_ocamlhtml.ml"));
+    base_sources.gen.put(.odoc_text_lexer_ml, lexer.run("ocamldoc/odoc_text_lexer.mll"));
+    base_sources.gen.put(.odoc_lexer_ml, lexer.run("ocamldoc/odoc_lexer.mll"));
+    base_sources.gen.put(.odoc_see_lexer_ml, lexer.run("ocamldoc/odoc_see_lexer.mll"));
+    base_sources.gen.put(.odoc_ocamlhtml_ml, lexer.run("ocamldoc/odoc_ocamlhtml.mll"));
 
     var byte_compflags: std.ArrayList([]const u8) = .empty;
     for (m.compiler.compflags) |f| {
@@ -174,14 +174,7 @@ pub fn buildArchByte(src: *const Source, shared: Shared, arch: ?Platform.Arch) A
         const cvt_emit = b.addRunArtifact(shared.build_ocamlrun);
         cvt_emit.addFileArg(shared.cvt_emit);
         cvt_emit.setStdIn(.{ .lazy_path = src.path(emit_mlp) });
-        const cat, _ = Tools.run(b, .cat, .{
-            .inputs = b.allocator.dupe(Tools.InputFile, &.{
-                .of(b.addWriteFiles().add("line", b.fmt("# 1 \"{s}\"\n", .{emit_mlp}))),
-                .of(cvt_emit.captureStdOut(.{})),
-            }) catch @panic("OOM"),
-            .output = .of("emit.ml"),
-        });
-        sources.gen.put(.emit_ml, cat.output.lazyPath());
+        sources.gen.put(.emit_ml, src.nameSource(cvt_emit.captureStdOut(.{}), emit_mlp));
     }
 
     const compiled = shared.boot.compilePlan(cc.plan, sources, .{
@@ -241,7 +234,7 @@ pub fn buildByteCommon(
     const boot = shared.boot;
 
     const config_wf = b.addWriteFiles();
-    const config_main_ml = config_wf.add("config_main.ml", configure.compilerConfigMl(src, shared.config_common, host, target));
+    const config_main_ml = config_wf.add("config_main.ml", Source.namedText(b, "utils/config_main.ml", configure.compilerConfigMl(src, shared.config_common, host, target)));
 
     const cfg_intf = arch_byte.compiled.intfs.get("utils/config").?;
     const cfg_impl = boot.impl(config_main_ml, "config", cfg_intf.cmi, .{
@@ -552,18 +545,21 @@ pub fn launchFlags(b: *std.Build, host: Platform) []const []const u8 {
     }) catch @panic("OOM");
 }
 
+/// `boot/ocamllex`, run in the source tree on `mll` (relative to it).
 const Lexer = struct {
-    b: *std.Build,
+    src: *const Source,
     ocamlrun: *std.Build.Step.Compile,
-    exe: LazyPath,
 
-    fn run(self: Lexer, mll: LazyPath, out_name: []const u8) LazyPath {
-        const r = self.b.addRunArtifact(self.ocamlrun);
-        r.addFileArg(self.exe);
+    fn run(self: Lexer, mll: []const u8) LazyPath {
+        const r = self.src.b.addRunArtifact(self.ocamlrun);
+        r.setCwd(self.src.path(""));
+        r.addFileArg(self.src.path("boot/ocamllex"));
         r.addArgs(&.{ "-q", "-o" });
-        const out = r.addOutputFileArg(out_name);
-        r.addFileArg(mll);
-        return out;
+        const ml = replaceExt(self.src.b, mll, ".ml");
+        const out = r.addOutputFileArg(std.fs.path.basename(ml));
+        r.addFileInput(self.src.path(mll));
+        r.addArg(mll);
+        return self.src.nameSource(out, ml);
     }
 };
 
@@ -580,16 +576,25 @@ const Linker = struct {
     }
 };
 
-fn runYacc(b: *std.Build, ocamlyacc: *std.Build.Step.Compile, mly: LazyPath, stem: []const u8) struct { ml: LazyPath, mli: LazyPath } {
+/// `ocamlyacc`, run in the source tree on `mly` (relative to it).
+fn runYacc(src: *const Source, ocamlyacc: *std.Build.Step.Compile, mly: []const u8) struct { ml: LazyPath, mli: LazyPath } {
+    const b = src.b;
     const run = b.addRunArtifact(ocamlyacc);
+    run.setCwd(src.path(""));
     run.addArgs(&.{ "--strict", "-b" });
-    const prefix = run.addOutputFileArg(stem);
-    run.addFileArg(mly);
+    const stem = replaceExt(b, mly, "");
+    const prefix = run.addOutputFileArg(std.fs.path.basename(stem));
+    run.addFileInput(src.path(mly));
+    run.addArg(mly);
     const dir = prefix.dirname();
     return .{
-        .ml = dir.path(b, b.fmt("{s}.ml", .{stem})),
-        .mli = dir.path(b, b.fmt("{s}.mli", .{stem})),
+        .ml = src.nameSource(dir.path(b, b.fmt("{s}.ml", .{std.fs.path.basename(stem)})), b.fmt("{s}.ml", .{stem})),
+        .mli = src.nameSource(dir.path(b, b.fmt("{s}.mli", .{std.fs.path.basename(stem)})), b.fmt("{s}.mli", .{stem})),
     };
+}
+
+fn replaceExt(b: *std.Build, path: []const u8, ext: []const u8) []const u8 {
+    return b.fmt("{s}{s}", .{ path[0 .. path.len - std.fs.path.extension(path).len], ext });
 }
 
 /// For the compiler's own native executables.

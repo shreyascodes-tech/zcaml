@@ -12,6 +12,7 @@ pub const Command = union(enum) {
     gen_stdlib_sources: @import("tools/gen_stdlib_sources.zig"),
     gen_compiler_sources: @import("tools/gen_compiler_sources.zig"),
     cat: @import("tools/cat.zig"),
+    name_source: @import("tools/name_source.zig"),
     gen_flexlink_sources: @import("tools/gen_flexlink_sources.zig"),
     verify_toolchains: @import("tools/verify_toolchains.zig"),
 };
@@ -41,6 +42,9 @@ fn toolsExe(b: *std.Build) *std.Build.Step.Compile {
     if (tools_exe) |exe| return exe;
     const exe = b.addExecutable(.{
         .name = "tools",
+        // Zig's own backend doesn't build reproducibly yet, and every tool step's
+        // cache key (so every generated path OCaml records) depends on this binary.
+        .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("build/tools.zig"),
             .target = b.graph.host,

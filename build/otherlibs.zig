@@ -148,7 +148,7 @@ const Ctx = struct {
         const b = self.src.b;
         const m = self.src.manifest;
         const p = self.platform();
-        const cfg_ml = b.addWriteFiles().add("dynlink_config.ml", configure.dynlinkConfigMl(self.src, p));
+        const cfg_ml = b.addWriteFiles().add("dynlink_config.ml", Source.namedText(b, "otherlibs/dynlink/dynlink_config.ml", configure.dynlinkConfigMl(self.src, p)));
 
         var lib = LibBuilder.init(self, "", "otherlibs/dynlink/META.in", &.{
             .{ .name = "natdynlink_archive", .value = if (p.hasNativeCompiler()) "dynlink.cmxa" else "" },
