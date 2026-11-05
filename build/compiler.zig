@@ -49,12 +49,14 @@ pub fn buildShared(
     const gen, _ = Tools.run(b, .gen_compiler_sources, .{
         .ocaml_src_dir = .of(src.path("")),
         .primitives = .of(rt_common.primitives),
+        .ccomp_zig_cache_ml = .of(b.path("build/compiler/ccomp_zig_cache.ml")),
         .domainstate_ml = .of("domainstate.ml"),
         .domainstate_mli = .of("domainstate.mli"),
         .runtimedef_ml = .of("runtimedef.ml"),
         .menhir_lib_mli = .of("camlinternalMenhirLib.mli"),
         .parser_ml = .of("parser.ml"),
         .parser_mli = .of("parser.mli"),
+        .ccomp_ml = .of("ccomp.ml"),
     });
 
     const lexer: Lexer = .{ .b = b, .ocamlrun = build_ocamlrun, .exe = src.path("boot/ocamllex") };
@@ -81,6 +83,7 @@ pub fn buildShared(
     base_sources.gen.put(.domainstate_ml, gen.domainstate_ml.lazyPath());
     base_sources.gen.put(.domainstate_mli, gen.domainstate_mli.lazyPath());
     base_sources.gen.put(.runtimedef_ml, gen.runtimedef_ml.lazyPath());
+    base_sources.gen.put(.ccomp_ml, gen.ccomp_ml.lazyPath());
     base_sources.gen.put(.camlinternalMenhirLib_mli, gen.menhir_lib_mli.lazyPath());
     base_sources.gen.put(.parser_ml, gen.parser_ml.lazyPath());
     base_sources.gen.put(.parser_mli, gen.parser_mli.lazyPath());

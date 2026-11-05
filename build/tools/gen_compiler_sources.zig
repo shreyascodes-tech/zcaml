@@ -1,21 +1,24 @@
-//! Generated compiler sources: `Domainstate`, `Runtimedef`, and the
-//! `CamlinternalMenhirLib`-renamed boot parser.
+//! Generated compiler sources: `Domainstate`, `Runtimedef`, the
+//! `CamlinternalMenhirLib`-renamed boot parser, and the patched `Ccomp`.
 const std = @import("std");
 const utils = @import("utils.zig");
 const InputFile = utils.InputFile;
 const InputDir = utils.InputDir;
 const OutputFile = utils.OutputFile;
+const replaceOnce = utils.replaceOnce;
 
 const GenCompilerSources = @This();
 
 ocaml_src_dir: InputDir,
 primitives: InputFile,
+ccomp_zig_cache_ml: InputFile,
 domainstate_ml: OutputFile,
 domainstate_mli: OutputFile,
 runtimedef_ml: OutputFile,
 menhir_lib_mli: OutputFile,
 parser_ml: OutputFile,
 parser_mli: OutputFile,
+ccomp_ml: OutputFile,
 
 pub fn run(self: *GenCompilerSources, init: std.process.Init) !void {
     const io = init.io;
@@ -28,6 +31,7 @@ pub fn run(self: *GenCompilerSources, init: std.process.Init) !void {
     try self.generateDomainstate(io, gpa, arena, root_dir);
     try self.generateRuntimedef(io, gpa, arena, root_dir);
     try self.generateMenhir(io, gpa, arena, root_dir);
+    try self.generateCcomp(io, arena, root_dir);
 }
 
 fn generateDomainstate(
@@ -170,4 +174,16 @@ fn generateMenhir(
         defer gpa.free(replaced);
         try self.parser_mli.writeAll(io, replaced);
     }
+}
+
+/// Splice `build/compiler/ccomp_zig_cache.ml` into `utils/ccomp.ml`.
+fn generateCcomp(self: *GenCompilerSources, io: std.Io, arena: std.mem.Allocator, root_dir: std.Io.Dir) !void {
+    var ccomp: []const u8 = try root_dir.readFileAlloc(io, "utils/ccomp.ml", arena, .unlimited);
+    const fragment = try self.ccomp_zig_cache_ml.readAll(io, arena);
+    ccomp = try replaceOnce(arena, ccomp, "let command cmdline =\n", try std.mem.concat(arena, u8, &.{
+        fragment,
+        "let command cmdline =\n",
+    }));
+    ccomp = try replaceOnce(arena, ccomp, "  let res = Sys.command cmdline in\n", "  let res = Sys.command (with_zig_cache cmdline) in\n");
+    try self.ccomp_ml.writeAll(io, ccomp);
 }

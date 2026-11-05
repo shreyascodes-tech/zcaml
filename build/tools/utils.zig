@@ -117,3 +117,13 @@ pub const OutputDir = union(enum) {
         return std.Io.Dir.cwd().createDirPathOpen(io, self.path(), options);
     }
 };
+
+/// Patch upstream sources: replace the one occurrence of `needle` in `haystack`.
+pub fn replaceOnce(arena: std.mem.Allocator, haystack: []const u8, needle: []const u8, replacement: []const u8) ![]const u8 {
+    const idx = std.mem.indexOf(u8, haystack, needle) orelse {
+        std.log.err("patch does not apply, expected:\n{s}", .{needle});
+        return error.PatchDoesNotApply;
+    };
+    if (std.mem.indexOfPos(u8, haystack, idx + 1, needle) != null) return error.PatchIsAmbiguous;
+    return std.mem.concat(arena, u8, &.{ haystack[0..idx], replacement, haystack[idx + needle.len ..] });
+}

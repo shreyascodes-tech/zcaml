@@ -85,11 +85,16 @@ let zig_setup () =
       !files
   in
   List.iter (fun f -> Hashtbl.replace zig_libs f ()) missing;
-  let src = temp_file "flexlink_zig" ".c" in
-  let oc = open_out src in
-  output_string oc "int main(void) { return 0; }\n";
-  close_out oc;
-  let stem = Filename.chop_suffix src ".c" in
+  (* `zig cc` caches the probe's object under the source path: keep it fixed. *)
+  let src = Filename.concat (Filename.get_temp_dir_name ()) "flexlink_zig_probe.c" in
+  if not (Sys.file_exists src) then begin
+    let tmp = temp_file "flexlink_zig" ".c" in
+    let oc = open_out tmp in
+    output_string oc "int main(void) { return 0; }\n";
+    close_out oc;
+    Sys.rename tmp src
+  end;
+  let stem = Filename.chop_suffix (temp_file "flexlink_zig" ".tmp") ".tmp" in
   let out = stem ^ (if !exe_mode = `EXE then ".exe" else ".dll") in
   List.iter (fun ext -> ignore (add_temp (stem ^ ext))) [".exe"; ".dll"; ".pdb"; ".lib"];
   let log = temp_file "flexlink_zig" ".log" in
@@ -113,7 +118,7 @@ let zig_setup () =
     try List.find (fun l -> has_prefix "lld-link " l) lines
     with Not_found -> failwith "Cannot find the lld-link command in zig cc -v output"
   in
-  let own_obj = Filename.basename stem ^ ".obj" in
+  let own_obj = Filename.chop_suffix (Filename.basename src) ".c" ^ ".obj" in
   let libs =
     List.filter (fun f -> Filename.basename f <> own_obj) (zig_parse_libs link_line)
   in

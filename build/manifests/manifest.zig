@@ -79,6 +79,7 @@ pub const Gen = enum {
     domainstate_ml,
     domainstate_mli,
     runtimedef_ml,
+    ccomp_ml,
     camlinternalMenhirLib_mli,
     parser_ml,
     parser_mli,

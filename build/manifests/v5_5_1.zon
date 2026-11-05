@@ -5299,7 +5299,7 @@
                 .{
                     .key = "utils/ccomp",
                     .name = "ccomp",
-                    .src = .{ .upstream = "utils/ccomp.ml" },
+                    .src = .{ .gen = .ccomp_ml },
                     .flags = .{},
                     .native_flags = .{},
                     .archs = .{},
@@ -8266,7 +8266,7 @@
                     .{
                         .key = "utils/ccomp",
                         .name = "ccomp",
-                        .src = .{ .upstream = "utils/ccomp.ml" },
+                        .src = .{ .gen = .ccomp_ml },
                         .flags = .{},
                         .native_flags = .{},
                         .archs = .{},

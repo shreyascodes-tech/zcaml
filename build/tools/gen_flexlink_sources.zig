@@ -5,6 +5,7 @@ const utils = @import("utils.zig");
 const InputFile = utils.InputFile;
 const InputDir = utils.InputDir;
 const OutputFile = utils.OutputFile;
+const replaceOnce = utils.replaceOnce;
 
 flexdll_src_dir: InputDir,
 zig_toolchain_ml: InputFile,
@@ -185,12 +186,3 @@ const reloc_patches = [_][2][]const u8{
         \\      zig_setup ()
     },
 };
-
-fn replaceOnce(arena: std.mem.Allocator, haystack: []const u8, needle: []const u8, replacement: []const u8) ![]const u8 {
-    const idx = std.mem.indexOf(u8, haystack, needle) orelse {
-        std.log.err("flexdll reloc.ml patch does not apply, expected:\n{s}", .{needle});
-        return error.PatchDoesNotApply;
-    };
-    if (std.mem.indexOfPos(u8, haystack, idx + 1, needle) != null) return error.PatchIsAmbiguous;
-    return std.mem.concat(arena, u8, &.{ haystack[0..idx], replacement, haystack[idx + needle.len ..] });
-}

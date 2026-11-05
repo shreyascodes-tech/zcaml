@@ -1015,6 +1015,7 @@ fn resolveMlSource(
         .{ "bytecomp/byterntm", Src{ .gen = .byterntm_ml } },
         .{ "bytecomp/opcodes", Src{ .gen = .opcodes_ml } },
         .{ "lambda/runtimedef", Src{ .gen = .runtimedef_ml } },
+        .{ "utils/ccomp", Src{ .gen = .ccomp_ml } },
         .{ "tools/opnames", Src{ .gen = .opnames_ml } },
         .{ "asmcomp/emit", Src{ .gen = .emit_ml } },
         .{ "lex/parser", Src{ .gen = .lex_parser_ml } },
