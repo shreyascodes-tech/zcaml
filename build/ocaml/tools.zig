@@ -46,7 +46,7 @@ fn toolsExe(b: *std.Build) *std.Build.Step.Compile {
         // cache key (so every generated path OCaml records) depends on this binary.
         .use_llvm = true,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("build/tools.zig"),
+            .root_source_file = b.path("build/ocaml/tools.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),

@@ -5,7 +5,7 @@
 //! const src = Versions.source(b, .@"5.5.1", deps) orelse return; // not fetched yet
 //! ```
 const std = @import("std");
-const zon = @import("../build.zig.zon");
+const zon = @import("../../build.zig.zon");
 const Source = @import("source.zig");
 const Manifest = @import("manifests/manifest.zig");
 
@@ -35,10 +35,10 @@ pub fn dependency(b: *std.Build, v: Version) ?*std.Build.Dependency {
     return b.lazyDependency(dependencyName(v), .{});
 }
 
-/// Path of the manifest relative to the build root, e.g. `build/manifests/v5_5_1.zon`.
+/// Path of the manifest relative to the build root, e.g. `build/ocaml/manifests/v5_5_1.zon`.
 pub fn manifestPath(v: Version) []const u8 {
     return switch (v) {
-        inline else => |tag| comptime "build/manifests/v" ++ dependencyName(tag)[dep_prefix.len..] ++ ".zon",
+        inline else => |tag| comptime "build/ocaml/manifests/v" ++ dependencyName(tag)[dep_prefix.len..] ++ ".zon",
     };
 }
 

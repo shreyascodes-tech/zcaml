@@ -250,7 +250,7 @@ jobs:
           path: |
             .zig-global-cache
             .zig-cache
-          key: zcaml-macos-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          key: zcaml-macos-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/ocaml/tools.zig', 'build/ocaml/tools/verify_toolchains.zig') }}
           restore-keys: |
             zcaml-macos-verify-v2-${{ env.ZIG_VERSION }}-
 
@@ -357,7 +357,7 @@ jobs:
           path: |
             .zig-global-cache
             .zig-cache
-          key: zcaml-windows-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          key: zcaml-windows-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/ocaml/tools.zig', 'build/ocaml/tools/verify_toolchains.zig') }}
           restore-keys: |
             zcaml-windows-verify-v2-${{ env.ZIG_VERSION }}-
 
@@ -453,7 +453,7 @@ jobs:
             .zig-global-cache
             ~/.cache/zcaml
             .zig-cache
-          key: zcaml-linux-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/tools.zig', 'build/tools/verify_toolchains.zig') }}
+          key: zcaml-linux-verify-v2-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build/ocaml/tools.zig', 'build/ocaml/tools/verify_toolchains.zig') }}
           restore-keys: |
             zcaml-linux-verify-v2-${{ env.ZIG_VERSION }}-
 

@@ -1,6 +1,6 @@
 const std = @import("std");
-const Ocaml = @import("build/ocaml.zig");
-const Tools = @import("build/tools.zig");
+const Ocaml = @import("build/ocaml/ocaml.zig");
+const Tools = @import("build/ocaml/tools.zig");
 
 pub fn build(b: *std.Build) !void {
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {

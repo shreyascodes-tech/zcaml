@@ -25,6 +25,7 @@ const extras = @import("extras.zig");
 const otherlibs = @import("otherlibs.zig");
 const flexdll = @import("flexdll.zig");
 const driver = @import("driver.zig");
+const configure = @import("configure.zig");
 const Ocamlc = driver.Ocamlc;
 const Ocamlopt = driver.Ocamlopt;
 const LazyPath = std.Build.LazyPath;
@@ -143,6 +144,8 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
         .b = b,
         .src = self.src,
         .ld_conf = self.ld_conf,
+        .makefile_config = b.addWriteFiles().add("Makefile.config", configure.makefileConfig(self.src, host, target)),
+        .cc_wrapper = buildCcWrapper(b, host, target),
         .host_rt = self.getRuntime(host),
         .target_rt = self.getRuntime(target),
         .stdlib = self.getStdlib(target),
@@ -160,10 +163,26 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     return tc;
 }
 
+/// The toolchain's C compiler (`c_compiler`): see `cc_wrapper.zig`.
+fn buildCcWrapper(b: *std.Build, host: Platform, target: Platform) *std.Build.Step.Compile {
+    const options = b.addOptions();
+    options.addOption([]const []const u8, "args", configure.ccWrapperArgs(b, target));
+    const mod = b.createModule(.{
+        .root_source_file = b.path("build/ocaml/cc_wrapper.zig"),
+        .target = host.resolved,
+        .optimize = .ReleaseSmall,
+        .strip = true,
+    });
+    mod.addOptions("options", options);
+    return b.addExecutable(.{ .name = configure.ccWrapperName(b, target), .root_module = mod });
+}
+
 pub const Toolchain = struct {
     b: *std.Build,
     src: *const Source,
     ld_conf: LazyPath,
+    makefile_config: LazyPath,
+    cc_wrapper: *std.Build.Step.Compile,
     host_rt: runtime.Artifacts,
     target_rt: runtime.Artifacts,
     stdlib: stdlib.Artifacts,
@@ -176,8 +195,18 @@ pub const Toolchain = struct {
 
     /// Install the layout to `<install prefix>/<sub_path>`.
     pub fn addInstall(tc: Toolchain, step: *std.Build.Step, sub_path: []const u8) void {
+        tc.layout(.{ .b = tc.b, .sink = .{ .install = .{ .step = step, .sub_path = sub_path } } });
+    }
+
+    /// The install layout as a directory, for using the toolchain in the build itself.
+    pub fn directory(tc: Toolchain) LazyPath {
+        const wf = tc.b.addWriteFiles();
+        tc.layout(.{ .b = tc.b, .sink = .{ .write_files = wf } });
+        return wf.getDirectory();
+    }
+
+    fn layout(tc: Toolchain, l: Install) void {
         const b = tc.b;
-        const l: Install = .{ .b = b, .step = step, .sub_path = sub_path };
         const host_exe = tc.host_rt.platform.exeExt();
         const target = tc.target_rt.platform;
         const target_exe = target.exeExt();
@@ -189,6 +218,7 @@ pub const Toolchain = struct {
         if (tc.host_rt.ocamlrund) |a| l.file(a, b.fmt("{s}/ocamlrund{s}", .{ bin, host_exe }));
         if (tc.host_rt.ocamlruni) |a| l.file(a, b.fmt("{s}/ocamlruni{s}", .{ bin, host_exe }));
         l.artifact(tc.host_rt.ocamlyacc, bin);
+        l.artifact(tc.cc_wrapper, bin);
         if (!tc.host_rt.platform.eql(target)) {
             l.file(tc.target_rt.ocamlrun, b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
             if (tc.target_rt.ocamlrund) |a| l.file(a, b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));
@@ -262,6 +292,7 @@ pub const Toolchain = struct {
         l.artifact(rt.zstd_lib, lib);
         l.file(rt.primitives, lib ++ "/primitives");
         l.file(tc.ld_conf, lib ++ "/ld.conf");
+        l.file(tc.makefile_config, lib ++ "/Makefile.config");
         l.dir(tc.src.path("runtime/caml"), lib ++ "/caml", &.{ ".in", "dune" });
         l.dir(rt.headers_dir.path(b, "caml"), lib ++ "/caml", &.{});
         if (rt.flexlink) |fl| l.dir(fl.support_dir, lib ++ "/flexdll", &.{});
@@ -604,22 +635,31 @@ fn codeKey(self: *Ocaml, p: Platform) []const u8 {
     return self.src.b.fmt("{s}-{s}", .{ p.archName(), p.system });
 }
 
+/// Where `Toolchain.layout` puts files: install steps under the install prefix, or a `WriteFile`.
 const Install = struct {
     b: *std.Build,
-    step: *std.Build.Step,
-    sub_path: []const u8,
+    sink: union(enum) {
+        install: struct { step: *std.Build.Step, sub_path: []const u8 },
+        write_files: *std.Build.Step.WriteFile,
+    },
 
     fn file(self: Install, src: LazyPath, dest: []const u8) void {
-        self.step.dependOn(&self.b.addInstallFileWithDir(src, .prefix, self.destPath(dest)).step);
+        switch (self.sink) {
+            .install => |i| i.step.dependOn(&self.b.addInstallFileWithDir(src, .prefix, self.destPath(dest)).step),
+            .write_files => |wf| _ = wf.addCopyFile(src, dest),
+        }
     }
 
     fn dir(self: Install, src: LazyPath, dest: []const u8, exclude_extensions: []const []const u8) void {
-        self.step.dependOn(&self.b.addInstallDirectory(.{
-            .source_dir = src,
-            .install_dir = .prefix,
-            .install_subdir = self.destPath(dest),
-            .exclude_extensions = exclude_extensions,
-        }).step);
+        switch (self.sink) {
+            .install => |i| i.step.dependOn(&self.b.addInstallDirectory(.{
+                .source_dir = src,
+                .install_dir = .prefix,
+                .install_subdir = self.destPath(dest),
+                .exclude_extensions = exclude_extensions,
+            }).step),
+            .write_files => |wf| _ = wf.addCopyDirectory(src, dest, .{ .exclude_extensions = exclude_extensions }),
+        }
     }
 
     /// Install a compiled artifact, using `lib<name>.a` for static archives (as OCaml expects on mingw).
@@ -632,6 +672,7 @@ const Install = struct {
     }
 
     fn destPath(self: Install, dest: []const u8) []const u8 {
-        return if (self.sub_path.len == 0) dest else self.b.fmt("{s}/{s}", .{ self.sub_path, dest });
+        const sub_path = self.sink.install.sub_path;
+        return if (sub_path.len == 0) dest else self.b.fmt("{s}/{s}", .{ sub_path, dest });
     }
 };

@@ -87,7 +87,7 @@ pub fn run(self: *GenFlexlinkSources, init: std.process.Init) !void {
         reloc = try replaceOnce(arena, reloc, patch[0], patch[1]);
     }
     reloc = try replaceOnce(arena, reloc, "let setup_toolchain () =\n", try std.mem.concat(arena, u8, &.{
-        "(* zcaml: zig cc support, from build/flexdll/zig_toolchain.ml *)\n",
+        "(* zcaml: zig cc support, from build/ocaml/flexdll/zig_toolchain.ml *)\n",
         zig_toolchain,
         "\nlet setup_toolchain () =\n",
     }));

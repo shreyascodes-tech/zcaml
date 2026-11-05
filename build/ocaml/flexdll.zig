@@ -24,7 +24,7 @@ pub fn compileByte(boot: Ocamlc, dep: *std.Build.Dependency) Byte {
     const b = boot.b;
     const gen, _ = Tools.run(b, .gen_flexlink_sources, .{
         .flexdll_src_dir = .of(dep.path("")),
-        .zig_toolchain_ml = .of(b.path("build/flexdll/zig_toolchain.ml")),
+        .zig_toolchain_ml = .of(b.path("build/ocaml/flexdll/zig_toolchain.ml")),
         .version_ml = .of("version.ml"),
         .compat_ml = .of("Compat.ml"),
         .coff_ml = .of("coff.ml"),

@@ -49,7 +49,7 @@ pub fn buildShared(
     const gen, _ = Tools.run(b, .gen_compiler_sources, .{
         .ocaml_src_dir = .of(src.path("")),
         .primitives = .of(rt_common.primitives),
-        .ccomp_zig_cache_ml = .of(b.path("build/compiler/ccomp_zig_cache.ml")),
+        .ccomp_zig_cache_ml = .of(b.path("build/ocaml/compiler/ccomp_zig_cache.ml")),
         .domainstate_ml = .of("domainstate.ml"),
         .domainstate_mli = .of("domainstate.mli"),
         .runtimedef_ml = .of("runtimedef.ml"),
