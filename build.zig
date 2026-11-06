@@ -1,6 +1,7 @@
 const std = @import("std");
 const Ocaml = @import("build/ocaml/ocaml.zig");
 const Tools = @import("build/ocaml/tools.zig");
+const Dune = @import("build/dune/dune.zig");
 
 pub fn build(b: *std.Build) !void {
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
@@ -40,11 +41,14 @@ pub fn build(b: *std.Build) !void {
         }
 
         const matrix_step = b.step("matrix", "build and install the full host -> target compiler matrix");
+        const dune_step = b.step("dune", "bootstrap dune for the build machine and every -Ddune-target");
+        const dune_targets = b.option([]const []const u8, "dune-target", "target to bootstrap dune for (repeatable; default: -Docaml-target)");
         // Request every lazy dependency before bailing out, so zig fetches them all in one pass.
         const ocaml_dep = Ocaml.Versions.dependency(b, version);
         const flexdll = b.lazyDependency("flexdll", .{});
         const zstd_fetched = b.lazyDependency("zstd", .{}) != null;
-        if (ocaml_dep == null or flexdll == null or !zstd_fetched) return;
+        const dune_dep = b.lazyDependency("dune", .{});
+        if (ocaml_dep == null or flexdll == null or !zstd_fetched or dune_dep == null) return;
         const src = Ocaml.Versions.source(b, version, .{ .flexdll = flexdll.?, .zstd = zstdDependency }).?;
 
         const default_extra = host_opt == null;
@@ -68,8 +72,12 @@ pub fn build(b: *std.Build) !void {
 
             const toolchain = ocaml.build(host, target);
             toolchain.addInstall(b.getInstallStep(), sub_path);
+
+            const targets: []const []const u8 = dune_targets orelse if (target_opt) |t| &.{t} else &.{};
+            addDune(b, dune_step, &ocaml, .init(b, dune_dep.?), targets);
         } else {
             b.getInstallStep().dependOn(&b.addFail("missing -Docaml-host (or run `zig build -Docaml matrix`)").step);
+            dune_step.dependOn(&b.addFail("missing -Docaml-host=native").step);
             for (matrix_pairs) |pair| {
                 const host = Ocaml.resolveTarget(b, pair.host);
                 const target = Ocaml.resolveTarget(b, pair.target);
@@ -91,6 +99,27 @@ pub fn build(b: *std.Build) !void {
         update_src.addCopyFileToSource(gen.out_file.lazyPath(), Ocaml.Versions.manifestPath(ver));
     }
     gen_step.dependOn(&update_src.step);
+}
+
+/// Dune for every `targets` (and the build machine), bootstrapped with the native
+/// toolchain and the target's, installed to `dune/<target>/bin/`.
+fn addDune(b: *std.Build, step: *std.Build.Step, ocaml: *Ocaml, dune: Dune, targets: []const []const u8) void {
+    const native = Ocaml.resolveTarget(b, "native");
+    const native_tc = ocaml.build(native, native).directory();
+    const native_name = native.result.linuxTriple(b.allocator) catch @panic("OOM");
+    installDune(b, step, dune, native_tc, native_tc, native_name, native.result.os.tag == .windows);
+    for (targets) |t| {
+        const target = Ocaml.resolveTarget(b, t);
+        const name = target.result.linuxTriple(b.allocator) catch @panic("OOM");
+        if (std.mem.eql(u8, name, native_name)) continue;
+        installDune(b, step, dune, native_tc, ocaml.build(native, target).directory(), name, target.result.os.tag == .windows);
+    }
+}
+
+fn installDune(b: *std.Build, step: *std.Build.Step, dune: Dune, native_tc: std.Build.LazyPath, tc: std.Build.LazyPath, name: []const u8, is_windows: bool) void {
+    const exe = dune.bootstrap(native_tc, tc, is_windows);
+    const dest = b.fmt("dune/{s}/bin/dune{s}", .{ name, if (is_windows) ".exe" else "" });
+    step.dependOn(&b.addInstallFileWithDir(exe, .prefix, dest).step);
 }
 
 /// `zstd` is configured per target, so the OCaml build gets it as a function.
