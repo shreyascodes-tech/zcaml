@@ -9,7 +9,9 @@ name: Dune
 # Dune is one binary per host, for any OCaml version. It is bootstrapped with the
 # toolchains of a published OCaml release (the latest by default): Linux and
 # Windows ones from the x86_64-linux-gnu-hosted toolchains, macOS ones on macOS,
-# for the SDK's frameworks. Then each binary is run on its own platform.
+# for the SDK's frameworks. Each binary is then smoke-tested where it was built:
+# the macOS ones natively and under Rosetta, the Linux ones in distro containers
+# (other architectures through qemu), the Windows one under Wine.
 
 on:
   push:
@@ -107,6 +109,43 @@ jobs:
           for h in $HOSTS; do targets+=("-Ddune-target=$h"); done
           zig build --summary failures -Docaml dune -Ddune-toolchains="$TOOLCHAINS" "${targets[@]}"
 
+      - name: Ensure Rosetta 2 is available
+        if: runner.os == 'macOS'
+        run: |
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+          fi
+
+      - name: Set up QEMU & Wine
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged tonistiigi/binfmt --install arm64 >/dev/null
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends wine
+
+      - name: Run dune
+        run: |
+          set -euo pipefail
+          version="$(zig-out/dune/$NATIVE/bin/dune --version)"
+          # Runs the test in <image> for <platform>, with the checkout at /w.
+          in_docker() {
+            docker run --rm --platform "$1" -v "$PWD:/w" -w /w "$2" \
+              sh -c "${3:+$3 && }scripts/test-dune.sh zig-out/dune/$4/bin/dune $version"
+          }
+          for h in $HOSTS; do
+            case "$h" in
+              x86_64-linux-gnu) scripts/test-dune.sh "zig-out/dune/$h/bin/dune" "$version" ;;
+              aarch64-linux-gnu) in_docker linux/arm64 ubuntu:24.04 "" "$h" ;;
+              x86_64-linux-musl) in_docker linux/amd64 alpine:3.22 "apk add --no-cache bash >/dev/null" "$h" ;;
+              aarch64-linux-musl) in_docker linux/arm64 alpine:3.22 "apk add --no-cache bash >/dev/null" "$h" ;;
+              x86_64-windows-gnu) WINEDEBUG=-all scripts/test-dune.sh "zig-out/dune/$h/bin/dune.exe" "$version" wine ;;
+              aarch64-macos-none) scripts/test-dune.sh "zig-out/dune/$h/bin/dune" "$version" ;;
+              x86_64-macos-none) scripts/test-dune.sh "zig-out/dune/$h/bin/dune" "$version" arch -x86_64 ;;
+              *) echo "error: no way to run dune for $h" >&2; exit 1 ;;
+            esac
+          done
+
       - name: Package
         run: |
           set -euo pipefail
@@ -125,65 +164,9 @@ jobs:
           path: archives/*.tar.zst
           compression-level: 0
 
-  # Each binary on its own platform: no emulators, no sysroots. musl in Alpine,
-  # where the whole test runs (it needs the container's filesystem).
-  test:
-    name: Run dune on ${{ matrix.host }}
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { host: x86_64-linux-gnu, runs-on: depot-ubuntu-24.04 }
-          - { host: aarch64-linux-gnu, runs-on: depot-ubuntu-24.04-arm }
-          - { host: x86_64-linux-musl, runs-on: depot-ubuntu-24.04, alpine: true }
-          - { host: aarch64-linux-musl, runs-on: depot-ubuntu-24.04-arm, alpine: true }
-          - { host: aarch64-macos-none, runs-on: depot-macos-15 }
-          - { host: x86_64-macos-none, runs-on: depot-macos-15, runner: "arch -x86_64" }
-          - { host: x86_64-windows-gnu, runs-on: depot-windows-2025-4 }
-    runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: 10
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Ensure Rosetta 2 is available
-        if: matrix.host == 'x86_64-macos-none'
-        run: |
-          if ! /usr/bin/pgrep -q oahd; then
-            sudo softwareupdate --install-rosetta --agree-to-license || true
-          fi
-
-      - name: Download archives
-        uses: actions/download-artifact@v4
-        with:
-          pattern: dune-*
-          path: archives
-          merge-multiple: true
-
-      - name: Run dune
-        run: |
-          set -euo pipefail
-          archive="$(ls archives/dune-*-${{ matrix.host }}.tar.zst)"
-          version="$(basename "$archive" -${{ matrix.host }}.tar.zst)"
-          version="${version#dune-}"
-          mkdir dune
-          zstd -d -q -c "$archive" | tar -xf - -C dune
-          exe=dune/bin/dune
-          if [[ -f $exe.exe ]]; then exe=$exe.exe; fi
-          if [[ "${{ matrix.alpine }}" == true ]]; then
-            docker run --rm -v "$PWD:/w" -w /w alpine:3.22 \
-              sh -c "apk add --no-cache bash >/dev/null && scripts/test-dune.sh $exe $version"
-          else
-            scripts/test-dune.sh "$exe" "$version" ${{ matrix.runner }}
-          fi
-
   publish:
     name: Publish dune
-    needs: [resolve, test]
+    needs: [resolve, build]
     if: startsWith(github.ref, 'refs/tags/dune-v')
     runs-on: depot-ubuntu-24.04-2
     timeout-minutes: 10

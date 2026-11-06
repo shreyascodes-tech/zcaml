@@ -60,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
     for ([_][]const u8{ "pps", "types", "libs" }) |m| try script.print(arena, "#mod_use \"{s}/boot/{s}.ml\";;\n", .{ work, m });
     try script.print(arena, "#use \"{s}/boot/duneboot.ml\";;\n", .{work});
     try Dir.cwd().writeFile(io, .{ .sub_path = try path.join(arena, &.{ work, "boot", "main.top" }), .data = script.items });
-    if (try ocamlFlags(io, arena, work, os)) |flags| try env.put("OCAMLPARAM", flags);
+    if (try ocamlFlags(io, arena, os)) |flags| try env.put("OCAMLPARAM", flags);
     try run(io, arena, work, &env, &.{
         try path.join(arena, &.{ host_bin, "ocaml" ++ exe_ext }),
         "-I",
@@ -97,11 +97,10 @@ fn setVersion(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
 ///   symbols nor DWARF. `-s` does nothing in compiles. Not on Windows, where the
 ///   linker is flexlink, without `-s`, and there is nothing to strip.
 /// - macOS: the SDK's frameworks, for the file watcher's `CoreFoundation` and
-///   `CoreServices`, which Zig doesn't ship: macOS dune is built on macOS.
-/// - macOS: Zig's macOS headers have no `sys/syscall.h`, which the vendored
-///   `spawn` includes, though `unistd.h` declares the `syscall` it uses and it
-///   defines the `SYS_` numbers it needs: an empty one does.
-fn ocamlFlags(io: Io, arena: std.mem.Allocator, work: []const u8, os: std.Target.Os.Tag) !?[]const u8 {
+///   `CoreServices`, which Zig doesn't ship: macOS dune is built on macOS. And
+///   the SDK's headers after Zig's, for what Zig's lack: those the frameworks
+///   include (`libDER/`), and the vendored `spawn`'s `sys/syscall.h`.
+fn ocamlFlags(io: Io, arena: std.mem.Allocator, os: std.Target.Os.Tag) !?[]const u8 {
     if (os == .windows) return null;
     var flags: std.ArrayList(u8) = .empty;
     try flags.appendSlice(arena, "_,ccopt=-s");
@@ -110,15 +109,7 @@ fn ocamlFlags(io: Io, arena: std.mem.Allocator, work: []const u8, os: std.Target
         const sdk = try std.process.run(arena, io, .{ .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" } });
         if (!sdk.term.success()) fatal("xcrun --show-sdk-path failed: {s}", .{sdk.stderr});
         const sdk_path = std.mem.trimEnd(u8, sdk.stdout, "\r\n");
-        try flags.print(arena, ",ccopt=-F{s}/System/Library/Frameworks", .{sdk_path});
-
-        const include = try path.join(arena, &.{ work, "_zcaml_include" });
-        try Dir.cwd().createDirPath(io, try path.join(arena, &.{ include, "sys" }));
-        try Dir.cwd().writeFile(io, .{
-            .sub_path = try path.join(arena, &.{ include, "sys", "syscall.h" }),
-            .data = "/* zcaml: missing from Zig's macOS headers; see build/dune/tool.zig. */\n",
-        });
-        try flags.print(arena, ",ccopt=-I{s}", .{include});
+        try flags.print(arena, ",ccopt=-F{s}/System/Library/Frameworks,ccopt=-idirafter{s}/usr/include", .{ sdk_path, sdk_path });
     }
     return flags.items;
 }
