@@ -99,7 +99,9 @@ fn setVersion(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
 /// - macOS: the SDK's frameworks, for the file watcher's `CoreFoundation` and
 ///   `CoreServices`, which Zig doesn't ship: macOS dune is built on macOS. And
 ///   the SDK's headers after Zig's, for what Zig's lack: those the frameworks
-///   include (`libDER/`), and the vendored `spawn`'s `sys/syscall.h`.
+///   include (`libDER/`), and the vendored `spawn`'s `sys/syscall.h`. And its
+///   libraries, for those the frameworks link (`/usr/lib/libobjc.A.dylib`, only
+///   in the dyld cache on macOS itself, but a `.tbd` in the SDK).
 fn ocamlFlags(io: Io, arena: std.mem.Allocator, os: std.Target.Os.Tag) !?[]const u8 {
     if (os == .windows) return null;
     var flags: std.ArrayList(u8) = .empty;
@@ -109,7 +111,7 @@ fn ocamlFlags(io: Io, arena: std.mem.Allocator, os: std.Target.Os.Tag) !?[]const
         const sdk = try std.process.run(arena, io, .{ .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" } });
         if (!sdk.term.success()) fatal("xcrun --show-sdk-path failed: {s}", .{sdk.stderr});
         const sdk_path = std.mem.trimEnd(u8, sdk.stdout, "\r\n");
-        try flags.print(arena, ",ccopt=-F{s}/System/Library/Frameworks,ccopt=-idirafter{s}/usr/include", .{ sdk_path, sdk_path });
+        try flags.print(arena, ",ccopt=-F{s}/System/Library/Frameworks,ccopt=-idirafter{s}/usr/include,ccopt=-L{s}/usr/lib", .{ sdk_path, sdk_path, sdk_path });
     }
     return flags.items;
 }
