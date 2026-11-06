@@ -176,7 +176,7 @@ fn generateMenhir(
     }
 }
 
-/// Splice `build/compiler/ccomp_zig_cache.ml` into `utils/ccomp.ml`.
+/// Splice `build/ocaml/compiler/ccomp_zig_cache.ml` into `utils/ccomp.ml`.
 fn generateCcomp(self: *GenCompilerSources, io: std.Io, arena: std.mem.Allocator, root_dir: std.Io.Dir) !void {
     var ccomp: []const u8 = try root_dir.readFileAlloc(io, "utils/ccomp.ml", arena, .unlimited);
     const fragment = try self.ccomp_zig_cache_ml.readAll(io, arena);
@@ -185,5 +185,6 @@ fn generateCcomp(self: *GenCompilerSources, io: std.Io, arena: std.mem.Allocator
         "let command cmdline =\n",
     }));
     ccomp = try replaceOnce(arena, ccomp, "  let res = Sys.command cmdline in\n", "  let res = Sys.command (with_zig_cache cmdline) in\n");
+    ccomp = try replaceOnce(arena, ccomp, "         (match output with\n          | None -> \"\"\n", "         (match output with\n          | None -> default_c_output name\n");
     try self.ccomp_ml.writeAll(io, ccomp);
 }

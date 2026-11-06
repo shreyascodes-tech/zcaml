@@ -1,4 +1,4 @@
-(* zcaml: a private Zig cache for C toolchain commands.
+(* zcaml: a private Zig cache for C toolchain commands, and gcc's object names.
 
    This fragment is spliced into utils/ccomp.ml (just before `command`) by
    `zig build`; it is not a standalone module.
@@ -32,3 +32,10 @@ let with_zig_cache cmdline =
     Printf.sprintf "set \"ZIG_LOCAL_CACHE_DIR=%s\" && %s"
       (Lazy.force zig_cache_dir) cmdline
 
+
+(* `ocamlopt -c foo.c` leaves the object's name to the C compiler, which
+   is `foo.o` for gcc but `foo.obj` for `zig cc` targeting Windows: name
+   it as gcc would, `Config.ext_obj` in the current directory. *)
+let default_c_output name =
+  Printf.sprintf "%s%s" Config.c_output_obj
+    (Filename.quote (Filename.remove_extension (Filename.basename name) ^ Config.ext_obj))
