@@ -262,6 +262,10 @@ fn verifyPair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
         new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ shim_dir, path_sep, new_path });
     }
     try host.wrap.env.put("PATH", new_path);
+    // Compile-only checks off macOS (on macOS, `zcaml-cc` finds Xcode's SDK): the
+    // fixtures use no Apple frameworks, so macOS targets don't need an SDK.
+    if (job.target.isMacos() and builtin.os.tag != .macos and host.wrap.env.get("ZCAML_MACOS_SDK") == null)
+        try host.wrap.env.put("ZCAML_MACOS_SDK", "none");
 
     const t_ext = job.target.exeExt();
 

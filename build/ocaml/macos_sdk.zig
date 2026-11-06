@@ -2,9 +2,9 @@
 //! C code using Apple's frameworks (`CoreFoundation`, `Security`, ...) when not on
 //! macOS: hexops' `xcode-frameworks`, a subset of Xcode's SDK.
 //!
-//! `zcaml-cc` takes an SDK in Xcode's layout (`cc_wrapper.zig`), from
-//! `ZCAML_MACOS_SDK` or installed in a toolchain (`scripts/add-macos-sdk.sh`).
-//! It isn't in the toolchain archives: those would redistribute Apple's files.
+//! `zcaml-cc` takes an SDK in Xcode's layout (`cc_wrapper.zig`): this one, for dune's
+//! build, goes through `ZCAML_MACOS_SDK`. It isn't in the toolchain archives: those
+//! would redistribute Apple's files.
 const std = @import("std");
 
 /// `xcode_frameworks` in Xcode's layout.

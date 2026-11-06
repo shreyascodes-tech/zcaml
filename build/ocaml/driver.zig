@@ -546,6 +546,8 @@ fn setEnv(b: *std.Build, run: *std.Build.Step.Run, prefix_map: ?[]const u8) void
         parent.get("PATH") orelse "",
     })) catch @panic("OOM");
     if (prefix_map) |pm| env.put("BUILD_PATH_PREFIX_MAP", pm) catch @panic("OOM");
+    // macOS targets' `zcaml-cc` needs an SDK, or this: the toolchains use no Apple frameworks.
+    env.put("ZCAML_MACOS_SDK", "none") catch @panic("OOM");
 }
 
 const inherited_env = [_][]const u8{

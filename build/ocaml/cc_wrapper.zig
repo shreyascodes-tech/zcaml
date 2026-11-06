@@ -1,4 +1,5 @@
 //! `zcaml-cc-<target>`: the C compiler of a toolchain (`ocamlc -config`'s `c_compiler`).
+//! `Config`'s other C commands (assembling, linking) run it too.
 //!
 //! Runs `zig cc` with the target's flags baked in, followed by its own arguments.
 //! `c_compiler` has to be a single program: tools like dune split it into a program
@@ -9,8 +10,15 @@
 //! The `zig` run is `$ZIG` if set, otherwise `zig` from `PATH`.
 //!
 //! For macOS targets, it adds the macOS SDK's frameworks, headers (after Zig's own)
-//! and libraries, which Zig doesn't ship, if there is one (`macosSdk`): Xcode's on
-//! macOS, or one installed next to the toolchain (`scripts/add-macos-sdk.sh`).
+//! and libraries, which Zig doesn't ship. The SDK, in Xcode's layout, is the first of:
+//!
+//! 1. `$ZCAML_MACOS_SDK`; `none` for Zig's headers only (no Apple frameworks)
+//! 2. on macOS, `$SDKROOT`
+//! 3. the path in `<toolchain>/lib/zcaml/macos-sdk.path`, where zcaml records the
+//!    SDK it installed
+//! 4. on macOS, Xcode's (`xcrun --show-sdk-path`)
+//!
+//! and without one it fails, saying so: not silently with Zig's headers only.
 //!
 //! Compiles in a dune-configurator probe directory get a local zig cache there
 //! (`isConfiguratorProbe`): the probe paths are random, so their entries in the
@@ -58,7 +66,7 @@ const posix = struct {
         }
 
         var sdk_buf: [sdk_dirs.len][*:0]const u8 = undefined;
-        const sdk_args: []const [*:0]const u8 = if (options.macos_sdk) sdkArgs(&sdk_buf) else &.{};
+        const sdk_args: []const [*:0]const u8 = if (options.macos_sdk) sdkArgs(&sdk_buf) orelse return 1 else &.{};
 
         // zig cc <target args> <SDK args> <our args, minus the program name>
         const ours = args[@min(args.len, 1)..];
@@ -78,35 +86,44 @@ const posix = struct {
     }
 
     fn cannotRun(zig: [*:0]const u8) u8 {
-        for ([_][]const u8{ "zcaml-cc: could not run ", std.mem.span(zig), "\n" }) |s| _ = std.c.write(2, s.ptr, s.len);
+        printErr(&.{ "zcaml-cc: could not run ", std.mem.span(zig), "\n" });
         return 127;
     }
 
-    /// `sdk_dirs`' flags for the macOS SDK, if there is one.
-    fn sdkArgs(buf: *[sdk_dirs.len][*:0]const u8) []const [*:0]const u8 {
-        const root = macosSdk() orelse return &.{};
-        for (buf, sdk_dirs) |*arg, dir| arg.* = concat(&.{ dir.flag, root, dir.path }) orelse return &.{};
+    /// `sdk_dirs`' flags for the macOS SDK (`macosSdk`), none for `none`; `null` if
+    /// there is no SDK, said on stderr.
+    fn sdkArgs(buf: *[sdk_dirs.len][*:0]const u8) ?[]const [*:0]const u8 {
+        const root = macosSdk() orelse return null;
+        if (std.mem.eql(u8, root, "none")) return &.{};
+        for (buf, sdk_dirs) |*arg, dir| arg.* = concat(&.{ dir.flag, root, dir.path }) orelse return null;
         return buf;
     }
 
-    /// `$ZCAML_MACOS_SDK`, or on macOS `$SDKROOT`; else the one installed with the
-    /// toolchain; else on macOS Xcode's.
     fn macosSdk() ?[]const u8 {
-        if (std.c.getenv("ZCAML_MACOS_SDK")) |sdk| return std.mem.span(sdk);
+        if (std.c.getenv("ZCAML_MACOS_SDK")) |sdk| return checked("ZCAML_MACOS_SDK", std.mem.span(sdk));
         if (builtin.os.tag == .macos) if (std.c.getenv("SDKROOT")) |sdk| return std.mem.span(sdk);
-        if (installedSdk()) |sdk| return sdk;
-        if (builtin.os.tag == .macos) return xcrunSdk();
+        if (pointerPath()) |pointer| if (readPointer(pointer)) |sdk| return checked(std.mem.span(pointer), sdk);
+        if (builtin.os.tag == .macos) if (xcrunSdk()) |sdk| return sdk;
+        printErr(&no_sdk);
+        return null;
+    }
+
+    /// `sdk`, if it is `none` or an SDK; else `null`, said on stderr.
+    fn checked(source: []const u8, sdk: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, sdk, "none")) return sdk;
+        const probe = concat(&.{ sdk, sdk_dirs[0].path }) orelse return null;
+        if (std.c.access(probe, 0) == 0) return sdk;
+        printErr(&.{ "zcaml-cc: ", source, ": '", sdk, "' is not a macOS SDK (no ", sdk_dirs[0].path[1..], ")\n" });
         return null;
     }
 
     var path_buf: [4096]u8 = undefined;
 
-    fn installedSdk() ?[]const u8 {
+    /// `<toolchain>/lib/zcaml/macos-sdk.path`, from this executable's path.
+    fn pointerPath() ?[*:0]const u8 {
         const exe = selfExe() orelse return null;
         const bin = exe[0 .. std.mem.findScalarLast(u8, exe, '/') orelse return null];
-        const sdk = std.mem.span(concat(&.{ bin, installed_sdk }) orelse return null);
-        const probe = concat(&.{ sdk, sdk_dirs[0].path }) orelse return null;
-        return if (std.c.access(probe, 0) == 0) sdk else null;
+        return concat(&.{ bin, sdk_pointer });
     }
 
     fn selfExe() ?[]const u8 {
@@ -124,12 +141,21 @@ const posix = struct {
         }
     }
 
+    /// The pointer's first line; `null` without one.
+    fn readPointer(pointer: [*:0]const u8) ?[]const u8 {
+        const fd = std.c.open(pointer, .{ .ACCMODE = .RDONLY });
+        if (fd < 0) return null;
+        defer _ = std.c.close(fd);
+        const n = std.c.read(fd, &path_buf, path_buf.len);
+        if (n <= 0) return null;
+        return firstLine(u8, path_buf[0..@intCast(n)]);
+    }
+
     fn xcrunSdk() ?[]const u8 {
         const out = popen("xcrun --sdk macosx --show-sdk-path 2>/dev/null", "r") orelse return null;
         defer _ = pclose(out);
         const line = fgets(&path_buf, path_buf.len, out) orelse return null;
-        const sdk = std.mem.trimEnd(u8, std.mem.span(line), "\r\n");
-        return if (sdk.len > 0) sdk else null;
+        return firstLine(u8, std.mem.span(line));
     }
 
     /// `parts`, joined and NUL-terminated, in memory never freed: we `exec` soon.
@@ -145,6 +171,10 @@ const posix = struct {
         buf[len] = 0;
         return buf[0..len :0];
     }
+
+    fn printErr(parts: []const []const u8) void {
+        for (parts) |s| _ = std.c.write(2, s.ptr, s.len);
+    }
 };
 
 /// No libc: Windows has the command line as one string, which is kept as is.
@@ -155,6 +185,9 @@ const windows = struct {
     extern "kernel32" fn GetExitCodeProcess(process: w.HANDLE, code: *w.DWORD) callconv(.winapi) w.BOOL;
     extern "kernel32" fn GetStdHandle(which: w.DWORD) callconv(.winapi) ?w.HANDLE;
     extern "kernel32" fn WriteFile(file: w.HANDLE, buf: [*]const u8, len: w.DWORD, written: ?*w.DWORD, overlapped: ?*anyopaque) callconv(.winapi) w.BOOL;
+    extern "kernel32" fn ReadFile(file: w.HANDLE, buf: [*]u8, len: w.DWORD, read: ?*w.DWORD, overlapped: ?*anyopaque) callconv(.winapi) w.BOOL;
+    extern "kernel32" fn CreateFileW(path: [*:0]const u16, access: w.DWORD, share: w.DWORD, security: ?*anyopaque, disposition: w.DWORD, flags: w.DWORD, template: ?w.HANDLE) callconv(.winapi) w.HANDLE;
+    extern "kernel32" fn CloseHandle(handle: w.HANDLE) callconv(.winapi) w.BOOL;
     extern "kernel32" fn ExitProcess(code: w.UINT) callconv(.winapi) noreturn;
     extern "kernel32" fn GetCurrentDirectoryW(len: w.DWORD, buf: [*]u16) callconv(.winapi) w.DWORD;
     extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: [*:0]const u16) callconv(.winapi) w.BOOL;
@@ -162,6 +195,9 @@ const windows = struct {
     extern "kernel32" fn GetFileAttributesW(path: [*:0]const u16) callconv(.winapi) w.DWORD;
     const INFINITE = 0xFFFFFFFF;
     const INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
+    const GENERIC_READ = 0x80000000;
+    const FILE_SHARE_READ = 0x1;
+    const OPEN_EXISTING = 3;
     const STD_ERROR_HANDLE: w.DWORD = @bitCast(@as(i32, -12));
 
     const L = std.unicode.utf8ToUtf16LeStringLiteral;
@@ -173,17 +209,19 @@ const windows = struct {
         break :blk s;
     });
 
-    /// The longest command line `CreateProcessW` takes.
-    var cmd_buf: [32768]u16 = undefined;
-    /// Static: a stack buffer this big needs compiler_rt's `__chkstk`.
-    var cwd_buf: [w.PATH_MAX_WIDE]u16 = undefined;
-    var sdk_buf: [w.PATH_MAX_WIDE]u16 = undefined;
-
     const sdk_dirs_w = blk: {
         var dirs: [sdk_dirs.len]struct { flag: []const u16, path: []const u16 } = undefined;
         for (&dirs, sdk_dirs) |*d, dir| d.* = .{ .flag = L(dir.flag), .path = L(dir.path) };
         break :blk dirs;
     };
+
+    /// The longest command line `CreateProcessW` takes.
+    var cmd_buf: [32768]u16 = undefined;
+    // Static: stack buffers this big need compiler_rt's `__chkstk`.
+    var cwd_buf: [w.PATH_MAX_WIDE]u16 = undefined;
+    var path_buf: [w.PATH_MAX_WIDE]u16 = undefined;
+    var sdk_buf: [w.PATH_MAX_WIDE]u16 = undefined;
+    var pointer_buf: [4096]u8 = undefined;
 
     /// Runs `"<zig>" cc <target args> <SDK args>` followed by our command line, minus the program name.
     fn run(cmdline: []const u16) u8 {
@@ -198,9 +236,12 @@ const windows = struct {
 
         var len: usize = 0;
         for ([_][]const u16{ L("\""), zig, cc_and_target_args }) |part| if (!append(&len, part)) return cannotRun();
-        if (options.macos_sdk) if (macosSdk()) |root| for (sdk_dirs_w) |dir| {
-            for ([_][]const u16{ L(" \""), dir.flag, root, dir.path, L("\"") }) |part| if (!append(&len, part)) return cannotRun();
-        };
+        if (options.macos_sdk) {
+            const root = macosSdk() orelse return 1;
+            if (!std.mem.eql(u16, root, L("none"))) for (sdk_dirs_w) |dir| {
+                for ([_][]const u16{ L(" \""), dir.flag, root, dir.path, L("\"") }) |part| if (!append(&len, part)) return cannotRun();
+            };
+        }
         if (!append(&len, skipProgramName(cmdline))) return cannotRun();
         cmd_buf[len] = 0;
 
@@ -224,21 +265,49 @@ const windows = struct {
         return true;
     }
 
-    /// `$ZCAML_MACOS_SDK`, else the one installed with the toolchain.
     fn macosSdk() ?[]const u16 {
-        if (getenv("ZCAML_MACOS_SDK")) |sdk| return sdk;
-        const n = GetModuleFileNameW(null, &sdk_buf, sdk_buf.len);
-        if (n == 0 or n >= sdk_buf.len) return null;
-        const bin = std.mem.findLastAny(u16, sdk_buf[0..n], L("\\/")) orelse return null;
-        const suffix = L(installed_sdk);
+        if (getenv("ZCAML_MACOS_SDK")) |sdk| return checked(L("ZCAML_MACOS_SDK"), sdk);
+        if (pointerPath()) |pointer| if (readPointer(pointer)) |sdk| return checked(pointer, sdk);
+        printErr(&.{L(no_sdk[0])});
+        return null;
+    }
+
+    /// `sdk`, if it is `none` or an SDK; else `null`, said on stderr.
+    fn checked(source: []const u16, sdk: []const u16) ?[]const u16 {
+        if (std.mem.eql(u16, sdk, L("none"))) return sdk;
         const probe = sdk_dirs_w[0].path;
-        if (bin + suffix.len + probe.len >= sdk_buf.len) return null;
-        @memcpy(sdk_buf[bin..][0..suffix.len], suffix);
-        const sdk = sdk_buf[0 .. bin + suffix.len];
-        @memcpy(cwd_buf[0..sdk.len], sdk);
-        @memcpy(cwd_buf[sdk.len..][0..probe.len], probe);
-        cwd_buf[sdk.len + probe.len] = 0;
-        return if (GetFileAttributesW(@ptrCast(&cwd_buf)) != INVALID_FILE_ATTRIBUTES) sdk else null;
+        if (sdk.len + probe.len < cwd_buf.len) {
+            @memcpy(cwd_buf[0..sdk.len], sdk);
+            @memcpy(cwd_buf[sdk.len..][0..probe.len], probe);
+            cwd_buf[sdk.len + probe.len] = 0;
+            if (GetFileAttributesW(@ptrCast(&cwd_buf)) != INVALID_FILE_ATTRIBUTES) return sdk;
+        }
+        printErr(&.{ L("zcaml-cc: "), source, L(": '"), sdk, L("' is not a macOS SDK (no " ++ sdk_dirs[0].path[1..] ++ ")\n") });
+        return null;
+    }
+
+    /// `<toolchain>/lib/zcaml/macos-sdk.path`, from this executable's path, NUL-terminated.
+    fn pointerPath() ?[:0]const u16 {
+        const n = GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (n == 0 or n >= path_buf.len) return null;
+        const bin = std.mem.findLastAny(u16, path_buf[0..n], L("\\/")) orelse return null;
+        const suffix = L(sdk_pointer);
+        if (bin + suffix.len >= path_buf.len) return null;
+        @memcpy(path_buf[bin..][0..suffix.len], suffix);
+        path_buf[bin + suffix.len] = 0;
+        return path_buf[0 .. bin + suffix.len :0];
+    }
+
+    /// The pointer's first line (UTF-8 in the file); `null` without one.
+    fn readPointer(pointer: [:0]const u16) ?[]const u16 {
+        const file = CreateFileW(pointer, GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
+        if (file == w.INVALID_HANDLE_VALUE) return null;
+        defer _ = CloseHandle(file);
+        var n: w.DWORD = 0;
+        if (ReadFile(file, &pointer_buf, pointer_buf.len, &n, null) == .FALSE or n == 0) return null;
+        const line = firstLine(u8, pointer_buf[0..n]) orelse return null;
+        const len = std.unicode.utf8ToUtf16Le(&sdk_buf, line) catch return null;
+        return sdk_buf[0..len];
     }
 
     /// The program name ends at the closing quote if quoted (no escapes there), else at the first blank.
@@ -273,6 +342,24 @@ const windows = struct {
         return 127;
     }
 
+    /// `parts` on stderr, as UTF-8.
+    fn printErr(parts: []const []const u16) void {
+        const h = GetStdHandle(STD_ERROR_HANDLE) orelse return;
+        var buf: [1024]u8 = undefined;
+        for (parts) |part| {
+            var it = std.unicode.Utf16LeIterator.init(part);
+            var n: usize = 0;
+            while (it.nextCodepoint() catch null) |cp| {
+                if (n + 4 > buf.len) {
+                    _ = WriteFile(h, &buf, @intCast(n), null, null);
+                    n = 0;
+                }
+                n += std.unicode.utf8Encode(cp, buf[n..]) catch 0;
+            }
+            _ = WriteFile(h, &buf, @intCast(n), null, null);
+        }
+    }
+
     // Without libc and compiler_rt (`buildCcWrapper`: lld-link keeps ~36 KiB of it),
     // these are all that's missing.
     comptime {
@@ -303,8 +390,22 @@ const sdk_dirs = [_]struct { flag: []const u8, path: []const u8 }{
     .{ .flag = "-L", .path = "/usr/lib" },
 };
 
-/// The SDK installed with the toolchain, relative to `bin/`.
-const installed_sdk = "/../lib/zcaml/macos-sdk";
+/// Where zcaml records the SDK it installed, relative to the toolchain's `bin/`.
+const sdk_pointer = "/../lib/zcaml/macos-sdk.path";
+
+const no_sdk = [_][]const u8{
+    \\zcaml-cc: no macOS SDK, which compiling for macOS needs. Set ZCAML_MACOS_SDK to
+    \\one (in Xcode's layout), or to `none` for Zig's headers only (no Apple frameworks).
+    \\zcaml records the SDK it installs in <toolchain>/lib/zcaml/macos-sdk.path. On
+    \\macOS, Xcode's is used (SDKROOT, or xcrun).
+    \\
+};
+
+/// `s` up to its first line break, if that isn't empty.
+fn firstLine(comptime T: type, s: []const T) ?[]const T {
+    const line = s[0 .. std.mem.findAny(T, s, &[_]T{ '\r', '\n' }) orelse s.len];
+    return if (line.len > 0) line else null;
+}
 
 /// Whether `cwd` is `<tmp>/ocaml-configurator<random>/c-test-<n>`, where dune-configurator
 /// compiles its probes (`otherlibs/configurator/src/v1.ml`), and removes it all on exit.
