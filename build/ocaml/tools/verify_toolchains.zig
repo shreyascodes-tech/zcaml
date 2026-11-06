@@ -242,17 +242,23 @@ fn verifyPair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
     const path_sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
     const parent_path = ctx.init.environ_map.get("PATH") orelse "/usr/bin:/bin";
     var new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ bin_dir, path_sep, parent_path });
-    // Emulated hosts: compilers run `flexlink` by name, so wrap it too.
-    const flexlink_bin = try std.fs.path.join(arena, &.{ bin_dir, "flexlink" });
-    if (host.wrap.prefix_argv.len > 0 and !job.host.isWindows() and pathExists(io, flexlink_bin)) {
+    // Emulated hosts: compilers run `flexlink` and the C compiler (`zcaml-cc-*`)
+    // by name, so wrap them too.
+    if (host.wrap.prefix_argv.len > 0 and !job.host.isWindows()) {
         const shim_dir = try std.fs.path.join(arena, &.{ work_dir, "host-shims" });
         try Dir.cwd().createDirPath(io, shim_dir);
-        var script: std.ArrayList(u8) = .empty;
-        try script.appendSlice(arena, "#!/bin/sh\nexec");
-        for (host.wrap.prefix_argv) |a| try script.print(arena, " '{s}'", .{a});
-        try script.print(arena, " '{s}' \"$@\"\n", .{flexlink_bin});
-        const shim_path = try std.fs.path.join(arena, &.{ shim_dir, "flexlink" });
-        try Dir.cwd().writeFile(io, .{ .sub_path = shim_path, .data = script.items, .flags = .{ .permissions = .executable_file } });
+        var bin = try Dir.cwd().openDir(io, bin_dir, .{ .iterate = true });
+        defer bin.close(io);
+        var it = bin.iterate();
+        while (try it.next(io)) |entry| {
+            if (!std.mem.eql(u8, entry.name, "flexlink") and !std.mem.startsWith(u8, entry.name, "zcaml-cc-")) continue;
+            var script: std.ArrayList(u8) = .empty;
+            try script.appendSlice(arena, "#!/bin/sh\nexec");
+            for (host.wrap.prefix_argv) |a| try script.print(arena, " '{s}'", .{a});
+            try script.print(arena, " '{s}/{s}' \"$@\"\n", .{ bin_dir, entry.name });
+            const shim_path = try std.fs.path.join(arena, &.{ shim_dir, entry.name });
+            try Dir.cwd().writeFile(io, .{ .sub_path = shim_path, .data = script.items, .flags = .{ .permissions = .executable_file } });
+        }
         new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ shim_dir, path_sep, new_path });
     }
     try host.wrap.env.put("PATH", new_path);
