@@ -17,6 +17,14 @@
             .hash = "zstd-1.5.7-2-KEItkAMwAADNhCbGaImKrjXjnSA51jcqEbGCA3RasVZ9",
             .lazy = true,
         },
+        // The macOS SDK's frameworks, headers and libraries, which Zig doesn't ship, for
+        // macOS targets anywhere (`build/ocaml/macos_sdk.zig`). Keep in sync with
+        // `scripts/add-macos-sdk.sh`.
+        .xcode_frameworks = .{
+            .url = "https://code.hexops.org/hexops/xcode-frameworks/archive/62f660e82e4eddb5007cb4cf06a6d3d31237f05e.tar.gz",
+            .hash = "N-V-__8AAMikhQn34xNqoyA1eVvR_yKstHGl2FkIbzSHY0Ub",
+            .lazy = true,
+        },
         .dune = .{
             .url = "git+https://github.com/ocaml/dune.git#ce734ac25ffb06994a4530426bb06ee8cda19e50",
             .hash = "N-V-__8AAKGZ4wA_nr6n59UoO6EvD2KC10kWgAm9zkvU2glL",

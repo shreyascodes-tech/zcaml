@@ -38,7 +38,8 @@ pub fn build(b: *std.Build) !void {
         const dune_toolchains = b.option([]const u8, "dune-toolchains", "bootstrap dune with the toolchains installed in this zig-out/<version> directory, instead of building them");
         if (dune_toolchains) |root| {
             const dep = b.lazyDependency("dune", .{}) orelse return;
-            addDune(b, dune_step, .init(b, dep), .{ .installed = root }, dune_targets orelse &.{});
+            const macos_sdk = duneMacosSdk(b, dune_targets orelse &.{}) catch return;
+            addDune(b, dune_step, .init(b, dep, macos_sdk), .{ .installed = root }, dune_targets orelse &.{});
             return;
         }
 
@@ -81,7 +82,8 @@ pub fn build(b: *std.Build) !void {
             toolchain.addInstall(b.getInstallStep(), sub_path);
 
             const targets: []const []const u8 = dune_targets orelse if (target_opt) |t| &.{t} else &.{};
-            addDune(b, dune_step, .init(b, dune_dep.?), .{ .built = &ocaml }, targets);
+            const macos_sdk = duneMacosSdk(b, targets) catch return;
+            addDune(b, dune_step, .init(b, dune_dep.?, macos_sdk), .{ .built = &ocaml }, targets);
         } else {
             b.getInstallStep().dependOn(&b.addFail("missing -Docaml-host (or run `zig build -Docaml matrix`)").step);
             dune_step.dependOn(&b.addFail("missing -Docaml-host=native or -Ddune-toolchains").step);
@@ -121,6 +123,17 @@ fn addDune(b: *std.Build, step: *std.Build.Step, dune: Dune, toolchains: DuneToo
         if (std.mem.eql(u8, name, native_name)) continue;
         installDune(b, step, dune, native_tc, toolchains.get(b, native, target), name, target.result.os.tag);
     }
+}
+
+/// The macOS SDK, if dune is bootstrapped for macOS (the build machine or `targets`).
+/// `error.Fetching` until Zig has fetched it and rerun the build script.
+fn duneMacosSdk(b: *std.Build, targets: []const []const u8) error{Fetching}!?std.Build.LazyPath {
+    const macos = for (targets) |t| {
+        if (Ocaml.resolveTarget(b, t).result.os.tag == .macos) break true;
+    } else b.graph.host.result.os.tag == .macos;
+    if (!macos) return null;
+    const dep = b.lazyDependency("xcode_frameworks", .{}) orelse return error.Fetching;
+    return Ocaml.MacosSdk.layout(b, dep);
 }
 
 /// Where `addDune` gets its toolchains: built here, or installed (`zig-out/<version>`).

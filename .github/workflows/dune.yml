@@ -6,12 +6,12 @@ name: Dune
 # The dune built is the one pinned in build.zig.zon; the tag has to name its
 # version (checked against the build). Never move an existing tag.
 #
-# Dune is one binary per host, for any OCaml version. It is bootstrapped with the
-# toolchains of a published OCaml release (the latest by default): Linux and
-# Windows ones from the x86_64-linux-gnu-hosted toolchains, macOS ones on macOS,
-# for the SDK's frameworks. Each binary is then smoke-tested where it was built:
-# the macOS ones natively and under Rosetta, the Linux ones in distro containers
-# (other architectures through qemu), the Windows one under Wine.
+# Dune is one binary per host, for any OCaml version. All of them are bootstrapped
+# on Linux, with the x86_64-linux-gnu-hosted toolchains of a published OCaml
+# release (the latest by default) and, for macOS, the pinned macOS SDK
+# (build.zig.zon's `xcode_frameworks`). Then they are smoke-tested: the Linux ones
+# in distro containers (other architectures through qemu), the Windows one under
+# Wine, the macOS ones on macOS, natively and under Rosetta.
 
 on:
   push:
@@ -57,25 +57,17 @@ jobs:
           echo "Bootstrapping with $tag"
 
   build:
-    name: Bootstrap dune on ${{ matrix.native }}
+    name: Bootstrap dune
     needs: resolve
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - native: x86_64-linux-gnu
-            runs-on: depot-ubuntu-24.04-4
-            hosts: x86_64-linux-gnu aarch64-linux-gnu x86_64-linux-musl aarch64-linux-musl x86_64-windows-gnu
-          - native: aarch64-macos-none
-            runs-on: depot-macos-15
-            hosts: aarch64-macos-none x86_64-macos-none
-    runs-on: ${{ matrix.runs-on }}
+    runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 30
     env:
       OCAML_TAG: ${{ needs.resolve.outputs.ocaml_tag }}
       OCAML_VERSION: ${{ needs.resolve.outputs.ocaml_version }}
-      NATIVE: ${{ matrix.native }}
-      HOSTS: ${{ matrix.hosts }}
+      NATIVE: x86_64-linux-gnu
+      HOSTS: >-
+        x86_64-linux-gnu aarch64-linux-gnu x86_64-linux-musl aarch64-linux-musl
+        x86_64-windows-gnu aarch64-macos-none x86_64-macos-none
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -109,15 +101,7 @@ jobs:
           for h in $HOSTS; do targets+=("-Ddune-target=$h"); done
           zig build --summary failures -Docaml dune -Ddune-toolchains="$TOOLCHAINS" "${targets[@]}"
 
-      - name: Ensure Rosetta 2 is available
-        if: runner.os == 'macOS'
-        run: |
-          if ! /usr/bin/pgrep -q oahd; then
-            sudo softwareupdate --install-rosetta --agree-to-license || true
-          fi
-
       - name: Set up QEMU & Wine
-        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           docker run --rm --privileged tonistiigi/binfmt --install arm64 >/dev/null
@@ -140,8 +124,7 @@ jobs:
               x86_64-linux-musl) in_docker linux/amd64 alpine:3.22 "apk add --no-cache bash >/dev/null" "$h" ;;
               aarch64-linux-musl) in_docker linux/arm64 alpine:3.22 "apk add --no-cache bash >/dev/null" "$h" ;;
               x86_64-windows-gnu) WINEDEBUG=-all scripts/test-dune.sh "zig-out/dune/$h/bin/dune.exe" "$version" wine ;;
-              aarch64-macos-none) scripts/test-dune.sh "zig-out/dune/$h/bin/dune" "$version" ;;
-              x86_64-macos-none) scripts/test-dune.sh "zig-out/dune/$h/bin/dune" "$version" arch -x86_64 ;;
+              *-macos-none) ;; # test-macos
               *) echo "error: no way to run dune for $h" >&2; exit 1 ;;
             esac
           done
@@ -152,21 +135,57 @@ jobs:
           version="$(zig-out/dune/$NATIVE/bin/dune --version)"
           mkdir archives
           for h in $HOSTS; do
-            # Not `tar -I`: macOS's bsdtar has no such option.
-            tar -cf - -C "zig-out/dune/$h" . | zstd -19 -q -o "archives/dune-$version-$h.tar.zst"
+            tar --sort=name -I 'zstd -19' -cf "archives/dune-$version-$h.tar.zst" -C "zig-out/dune/$h" .
           done
           ls -l archives
 
       - name: Upload archives
         uses: actions/upload-artifact@v4
         with:
-          name: dune-${{ matrix.native }}
+          name: dune
           path: archives/*.tar.zst
           compression-level: 0
 
+  test-macos:
+    name: Run dune on macOS
+    needs: build
+    runs-on: depot-macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Rosetta 2 is available
+        run: |
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+          fi
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          name: dune
+          path: archives
+
+      - name: Run dune (native + Rosetta 2)
+        run: |
+          set -euo pipefail
+          for h in aarch64-macos-none x86_64-macos-none; do
+            archive="$(ls archives/dune-*-$h.tar.zst)"
+            version="$(basename "$archive" "-$h.tar.zst")"
+            mkdir -p "dune-$h"
+            zstd -d -q -c "$archive" | tar -xf - -C "dune-$h"
+            # macOS's bash 3.2: no empty arrays under `set -u`.
+            if [[ $h == x86_64-* ]]; then
+              scripts/test-dune.sh "dune-$h/bin/dune" "${version#dune-}" arch -x86_64
+            else
+              scripts/test-dune.sh "dune-$h/bin/dune" "${version#dune-}"
+            fi
+          done
+
   publish:
     name: Publish dune
-    needs: [resolve, build]
+    needs: [resolve, build, test-macos]
     if: startsWith(github.ref, 'refs/tags/dune-v')
     runs-on: depot-ubuntu-24.04-2
     timeout-minutes: 10
@@ -174,9 +193,8 @@ jobs:
       - name: Download archives
         uses: actions/download-artifact@v4
         with:
-          pattern: dune-*
+          name: dune
           path: archives
-          merge-multiple: true
 
       - name: Create GitHub Release and attach the archives
         env:

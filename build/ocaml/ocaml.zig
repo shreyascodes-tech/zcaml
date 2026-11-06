@@ -35,6 +35,7 @@ pub const Versions = @import("versions.zig");
 pub const Deps = Source.Deps;
 pub const Version = Versions.Version;
 pub const resolveTarget = Platform.resolveTarget;
+pub const MacosSdk = @import("macos_sdk.zig");
 
 const Ocaml = @This();
 

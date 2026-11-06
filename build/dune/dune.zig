@@ -2,7 +2,7 @@
 //! target with a zcaml toolchain running on the build machine.
 //!
 //! ```zig
-//! const dune: Dune = .init(b, b.dependency("dune", .{}));
+//! const dune: Dune = .init(b, b.dependency("dune", .{}), macos_sdk);
 //! const exe = dune.bootstrap(native_toolchain.directory(), aarch64_toolchain.directory(), .linux);
 //! ```
 const std = @import("std");
@@ -12,9 +12,11 @@ const Dune = @This();
 
 b: *std.Build,
 src: LazyPath,
+/// For macOS targets, which link Apple's frameworks (`Ocaml.MacosSdk`).
+macos_sdk: ?LazyPath,
 
-pub fn init(b: *std.Build, dep: *std.Build.Dependency) Dune {
-    return .{ .b = b, .src = dep.path("") };
+pub fn init(b: *std.Build, dep: *std.Build.Dependency, macos_sdk: ?LazyPath) Dune {
+    return .{ .b = b, .src = dep.path(""), .macos_sdk = macos_sdk };
 }
 
 /// `dune(.exe)` for `target`, with `toolchain`, a toolchain installation for it
@@ -28,7 +30,9 @@ pub fn bootstrap(self: Dune, host_toolchain: LazyPath, toolchain: LazyPath, targ
     run.addDirectoryArg(host_toolchain);
     run.addDirectoryArg(toolchain);
     run.addArg(@tagName(target));
-    return run.addOutputFileArg(if (target == .windows) "dune.exe" else "dune");
+    const out = run.addOutputFileArg(if (target == .windows) "dune.exe" else "dune");
+    if (target == .macos) run.addDirectoryArg(self.macos_sdk orelse @panic("dune for macOS needs the macOS SDK"));
+    return out;
 }
 
 fn toolExe(b: *std.Build) *std.Build.Step.Compile {

@@ -1,15 +1,18 @@
 //! Bootstraps dune for a target: `boot/bootstrap.ml`'s two steps, run directly.
 //!
 //! ```text
-//! tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <out-file>
+//! tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <out-file> [<macos-sdk>]
 //! ```
+//!
+//! For macOS, `zcaml-cc` gets the SDK (dune's file watcher uses `CoreServices`)
+//! from `ZCAML_MACOS_SDK`.
 //!
 //! `boot/duneboot.ml` builds `_boot/dune.exe`, the binary dune releases, with the
 //! first `ocamlc`/`ocamlopt` on `PATH`: the target toolchain's. It runs in the host
 //! toolchain's toplevel, which `bootstrap.ml` would look up on `PATH` too, so this
 //! does what it does with the host's `ocamllex` and `ocaml`.
 //!
-//! The bootstrap takes no compiler flags, but `ocamlopt` reads `OCAMLPARAM` (`ocamlFlags`).
+//! The bootstrap takes no compiler flags, but `ocamlopt` reads `OCAMLPARAM` (`strip_flags`).
 //!
 //! The bootstrap writes into the source tree: it runs in a copy, next to `<out-file>`.
 //! `zig` must be on `PATH`, for the toolchains' `zig cc`.
@@ -26,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
 
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 6) fatal("usage: tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <out-file>", .{});
+    if (args.len != 6 and args.len != 7) fatal("usage: tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <out-file> [<macos-sdk>]", .{});
     // Absolute: the commands run in `work`.
     const cwd = try std.process.currentPathAlloc(io, arena);
     const src = try path.resolve(arena, &.{ cwd, args[1] });
@@ -47,6 +50,7 @@ pub fn main(init: std.process.Init) !void {
         host_bin,
         init.environ_map.get("PATH") orelse "",
     }));
+    if (args.len == 7) try env.put("ZCAML_MACOS_SDK", try path.resolve(arena, &.{ cwd, args[6] }));
 
     try run(io, arena, work, &env, &.{
         try path.join(arena, &.{ host_bin, "ocamllex" ++ exe_ext }),
@@ -60,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
     for ([_][]const u8{ "pps", "types", "libs" }) |m| try script.print(arena, "#mod_use \"{s}/boot/{s}.ml\";;\n", .{ work, m });
     try script.print(arena, "#use \"{s}/boot/duneboot.ml\";;\n", .{work});
     try Dir.cwd().writeFile(io, .{ .sub_path = try path.join(arena, &.{ work, "boot", "main.top" }), .data = script.items });
-    if (try ocamlFlags(io, arena, os)) |flags| try env.put("OCAMLPARAM", flags);
+    if (os != .windows) try env.put("OCAMLPARAM", strip_flags);
     try run(io, arena, work, &env, &.{
         try path.join(arena, &.{ host_bin, "ocaml" ++ exe_ext }),
         "-I",
@@ -91,30 +95,11 @@ fn setVersion(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
     try Dir.cwd().writeFile(io, .{ .sub_path = project_path, .data = try std.fmt.allocPrint(arena, "{s}\n(version {s})\n", .{ project, version }) });
 }
 
-/// `OCAMLPARAM` for the bootstrap's `ocamlopt` runs, if any.
-///
-/// - `-s`: a stripped binary, ~25% smaller; OCaml backtraces need neither the
-///   symbols nor DWARF. `-s` does nothing in compiles. Not on Windows, where the
-///   linker is flexlink, without `-s`, and there is nothing to strip.
-/// - macOS: the SDK's frameworks, for the file watcher's `CoreFoundation` and
-///   `CoreServices`, which Zig doesn't ship: macOS dune is built on macOS. And
-///   the SDK's headers after Zig's, for what Zig's lack: those the frameworks
-///   include (`libDER/`), and the vendored `spawn`'s `sys/syscall.h`. And its
-///   libraries, for those the frameworks link (`/usr/lib/libobjc.A.dylib`, only
-///   in the dyld cache on macOS itself, but a `.tbd` in the SDK).
-fn ocamlFlags(io: Io, arena: std.mem.Allocator, os: std.Target.Os.Tag) !?[]const u8 {
-    if (os == .windows) return null;
-    var flags: std.ArrayList(u8) = .empty;
-    try flags.appendSlice(arena, "_,ccopt=-s");
-    if (os == .macos) {
-        if (builtin.os.tag != .macos) fatal("dune for macOS needs the macOS SDK's frameworks: bootstrap it on macOS", .{});
-        const sdk = try std.process.run(arena, io, .{ .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" } });
-        if (!sdk.term.success()) fatal("xcrun --show-sdk-path failed: {s}", .{sdk.stderr});
-        const sdk_path = std.mem.trimEnd(u8, sdk.stdout, "\r\n");
-        try flags.print(arena, ",ccopt=-F{s}/System/Library/Frameworks,ccopt=-idirafter{s}/usr/include,ccopt=-L{s}/usr/lib", .{ sdk_path, sdk_path, sdk_path });
-    }
-    return flags.items;
-}
+/// `OCAMLPARAM` for the bootstrap's `ocamlopt` runs: a stripped binary, ~25% smaller.
+/// OCaml backtraces need neither the symbols nor DWARF, and `-s` does nothing in
+/// compiles. Not on Windows, where the linker is flexlink, without `-s`, and there is
+/// nothing to strip.
+const strip_flags = "_,ccopt=-s";
 
 fn copyTree(io: Io, arena: std.mem.Allocator, src: []const u8, dest: []const u8) !void {
     var src_dir = try Dir.cwd().openDir(io, src, .{ .iterate = true });
