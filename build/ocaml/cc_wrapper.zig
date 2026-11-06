@@ -8,6 +8,10 @@
 //!
 //! The `zig` run is `$ZIG` if set, otherwise `zig` from `PATH`.
 //!
+//! Compiles in a dune-configurator probe directory get a local zig cache there
+//! (`isConfiguratorProbe`): the probe paths are random, so their entries in the
+//! global cache could never be reused.
+//!
 //! It runs for every C compilation, so it is kept small: libc's `execvp` on POSIX,
 //! `CreateProcessW` on Windows, and nothing of `std.Io`, panics or stack traces.
 const std = @import("std");
@@ -28,6 +32,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
 const posix = struct {
     extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
     /// The target flags, NUL-terminated.
     const target_args = blk: {
@@ -39,6 +44,11 @@ const posix = struct {
 
     fn run(args: []const [*:0]const u8) u8 {
         const zig = std.c.getenv("ZIG") orelse "zig";
+        var cwd_buf: [4096]u8 = undefined;
+        if (std.c.getcwd(&cwd_buf, cwd_buf.len)) |cwd| {
+            if (isConfiguratorProbe(u8, std.mem.span(@as([*:0]u8, @ptrCast(cwd)))))
+                _ = setenv("ZIG_LOCAL_CACHE_DIR", ".zig-cache", 0);
+        }
 
         // zig cc <target args> <our args, minus the program name>
         const ours = args[@min(args.len, 1)..];
@@ -69,6 +79,8 @@ const windows = struct {
     extern "kernel32" fn GetStdHandle(which: w.DWORD) callconv(.winapi) ?w.HANDLE;
     extern "kernel32" fn WriteFile(file: w.HANDLE, buf: [*]const u8, len: w.DWORD, written: ?*w.DWORD, overlapped: ?*anyopaque) callconv(.winapi) w.BOOL;
     extern "kernel32" fn ExitProcess(code: w.UINT) callconv(.winapi) noreturn;
+    extern "kernel32" fn GetCurrentDirectoryW(len: w.DWORD, buf: [*]u16) callconv(.winapi) w.DWORD;
+    extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: [*:0]const u16) callconv(.winapi) w.BOOL;
     const INFINITE = 0xFFFFFFFF;
     const STD_ERROR_HANDLE: w.DWORD = @bitCast(@as(i32, -12));
 
@@ -83,9 +95,18 @@ const windows = struct {
 
     /// The longest command line `CreateProcessW` takes.
     var cmd_buf: [32768]u16 = undefined;
+    /// Static: a stack buffer this big needs compiler_rt's `__chkstk`.
+    var cwd_buf: [w.PATH_MAX_WIDE]u16 = undefined;
 
     /// Runs `"<zig>" cc <target args>` followed by our command line, minus the program name.
     fn run(cmdline: []const u16) u8 {
+        // The child inherits our environment. First: setting a variable can move the
+        // environment block, which `getenv`'s results point into.
+        if (getenv("ZIG_LOCAL_CACHE_DIR") == null) {
+            const n = GetCurrentDirectoryW(cwd_buf.len, &cwd_buf);
+            if (n > 0 and n < cwd_buf.len and isConfiguratorProbe(u16, cwd_buf[0..n]))
+                _ = SetEnvironmentVariableW(L("ZIG_LOCAL_CACHE_DIR"), L(".zig-cache"));
+        }
         const zig = getenv("ZIG") orelse L("zig");
 
         var len: usize = 0;
@@ -162,3 +183,21 @@ const windows = struct {
         return dest;
     }
 };
+
+/// Whether `cwd` is `<tmp>/ocaml-configurator<random>/c-test-<n>`, where dune-configurator
+/// compiles its probes (`otherlibs/configurator/src/v1.ml`), and removes it all on exit.
+fn isConfiguratorProbe(comptime T: type, cwd: []const T) bool {
+    const seps = if (builtin.os.tag == .windows) &[_]T{ '/', '\\' } else &[_]T{'/'};
+    const dir = std.mem.trimEnd(T, cwd, seps);
+    const probe_start = (std.mem.findLastAny(T, dir, seps) orelse return false) + 1;
+    const parent = dir[0 .. probe_start - 1];
+    const parent_start = if (std.mem.findLastAny(T, parent, seps)) |i| i + 1 else 0;
+    return startsWith(T, dir[probe_start..], "c-test-") and
+        startsWith(T, parent[parent_start..], "ocaml-configurator");
+}
+
+fn startsWith(comptime T: type, s: []const T, comptime prefix: []const u8) bool {
+    if (s.len < prefix.len) return false;
+    for (s[0..prefix.len], prefix) |a, b| if (a != b) return false;
+    return true;
+}
