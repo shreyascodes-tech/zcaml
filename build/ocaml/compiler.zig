@@ -539,7 +539,7 @@ pub fn launchFlags(b: *std.Build, host: Platform) []const []const u8 {
         "-set-runtime-default",
         "standard_library_default=" ++ configure.stdlib_dir_from_bin,
         "-launch-method",
-        if (host.is_windows) "exe" else "sh",
+        if (host.is_windows) "exe" else configure.launcher_sh,
         "-runtime-search",
         "enable",
     }) catch @panic("OOM");

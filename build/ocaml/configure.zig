@@ -8,6 +8,11 @@ const Var = Source.Var;
 /// Where relocatable installs find the stdlib, relative to `bin/`.
 pub const stdlib_dir_from_bin = "../lib/ocaml";
 
+/// The shell of bytecode programs' `#!` launcher. Not `sh`, which bakes in what
+/// `command -p -v sh` finds on the linking machine: `/usr/bin/sh` on usrmerged
+/// Linux, which macOS doesn't have. `/bin/sh` is everywhere.
+pub const launcher_sh = "/bin/sh";
+
 /// `runtime/caml/m.h`: machine description.
 pub fn machineH(src: *const Source, p: Platform) []const u8 {
     const has_code32 = (p.arch == .amd64 and (p.is_linux or p.is_macos)) or
@@ -430,7 +435,7 @@ pub fn compilerConfigMl(src: *const Source, config_common: []const u8, host: Pla
         .{ .name = "tsan", .value = "false" },
         .{ .name = "shebangscripts", .value = boolStr(!host.is_windows) },
         .{ .name = "suffixing", .value = "false" },
-        .{ .name = "launch_method_target", .value = if (target.is_windows) "exe" else "sh" },
+        .{ .name = "launch_method_target", .value = if (target.is_windows) "exe" else launcher_sh },
         .{ .name = "runtime_search_target", .value = "fallback" },
     });
     return b.fmt("{s}\n{s}", .{ generated, config_common });
