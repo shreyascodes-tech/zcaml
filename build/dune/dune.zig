@@ -3,7 +3,7 @@
 //!
 //! ```zig
 //! const dune: Dune = .init(b, b.dependency("dune", .{}));
-//! const exe = dune.bootstrap(native_toolchain.directory(), aarch64_toolchain.directory(), false);
+//! const exe = dune.bootstrap(native_toolchain.directory(), aarch64_toolchain.directory(), .linux);
 //! ```
 const std = @import("std");
 const LazyPath = std.Build.LazyPath;
@@ -17,9 +17,9 @@ pub fn init(b: *std.Build, dep: *std.Build.Dependency) Dune {
     return .{ .b = b, .src = dep.path("") };
 }
 
-/// `dune(.exe)` for the target of `toolchain`, a toolchain installation running
-/// here, like `host_toolchain`: the native one, which runs the bootstrap.
-pub fn bootstrap(self: Dune, host_toolchain: LazyPath, toolchain: LazyPath, target_is_windows: bool) LazyPath {
+/// `dune(.exe)` for `target`, with `toolchain`, a toolchain installation for it
+/// running here, like `host_toolchain`: the native one, which runs the bootstrap.
+pub fn bootstrap(self: Dune, host_toolchain: LazyPath, toolchain: LazyPath, target: std.Target.Os.Tag) LazyPath {
     const b = self.b;
     const run = b.addRunArtifact(toolExe(b));
     run.setName("bootstrap dune");
@@ -27,7 +27,8 @@ pub fn bootstrap(self: Dune, host_toolchain: LazyPath, toolchain: LazyPath, targ
     run.addDirectoryArg(self.src);
     run.addDirectoryArg(host_toolchain);
     run.addDirectoryArg(toolchain);
-    return run.addOutputFileArg(if (target_is_windows) "dune.exe" else "dune");
+    run.addArg(@tagName(target));
+    return run.addOutputFileArg(if (target == .windows) "dune.exe" else "dune");
 }
 
 fn toolExe(b: *std.Build) *std.Build.Step.Compile {
