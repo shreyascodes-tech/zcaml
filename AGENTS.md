@@ -99,4 +99,14 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
+## Code layout
+
+Order functions and modules from most to least important, so a file reads top-down:
+
+- The public interface comes first.
+- Option and result structs go right above the function that uses them.
+- Functions follow the call graph: if `a` calls `b` and `b` calls `c`, the order is `a`, `b`, `c` (unless one of them is public, which moves it up).
+
+This is a judgement call, not a strict rule. Put things in another order when that is easier to read and understand.
+
 NEVER commit without explicit user confirmation.
