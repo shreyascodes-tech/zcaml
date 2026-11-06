@@ -265,6 +265,9 @@ pub const Ocamlopt = struct {
     /// Runs a bytecode `exe`; `null` when `exe` is native.
     ocamlrun: ?*std.Build.Step.Compile = null,
     exe: LazyPath,
+    /// Holds the build machine's `zcaml-cc-<target>`, which `Config`'s commands
+    /// (assembling, linking) run: put on `PATH` by `with_path.zig`.
+    cc_dir: LazyPath,
     stdlib_dir: ?LazyPath,
     flexlink: ?Flexlink = null,
     prefix_map: ?[]const u8 = null,
@@ -425,7 +428,10 @@ pub const Ocamlopt = struct {
     }
 
     fn cmd(self: Ocamlopt, opts: Options) *std.Build.Step.Run {
-        const run = if (self.ocamlrun) |orun| self.b.addRunArtifact(orun) else std.Build.Step.Run.create(self.b, "run ocamlopt");
+        const run = self.b.addRunArtifact(withPathExe(self.b));
+        run.setName("run ocamlopt");
+        run.addDirectoryArg(self.cc_dir);
+        if (self.ocamlrun) |orun| run.addArtifactArg(orun);
         run.addFileArg(self.exe);
         setEnv(self.b, run, self.prefix_map);
         if (opts.rel_src != null) if (self.cwd) |cwd| run.setCwd(cwd);
@@ -448,11 +454,15 @@ pub const Flexlink = struct {
     exe: LazyPath,
     support_dir: LazyPath,
     flags: []const []const u8,
+    /// Holds the build machine's `zcaml-cc-<target>`, the C compiler flexlink runs.
+    cc_dir: LazyPath,
 
     const Mode = enum { exe, dll };
 
     pub fn run(self: Flexlink, b: *std.Build) *std.Build.Step.Run {
-        const run_step = std.Build.Step.Run.create(b, "run flexlink");
+        const run_step = b.addRunArtifact(withPathExe(b));
+        run_step.setName("run flexlink");
+        run_step.addDirectoryArg(self.cc_dir);
         run_step.addFileArg(self.exe);
         setEnv(b, run_step, null);
         run_step.addArgs(self.flags);
@@ -474,6 +484,24 @@ pub const Flexlink = struct {
         run_step.addDirectoryArg(self.support_dir);
     }
 };
+
+var with_path_exe: ?*std.Build.Step.Compile = null;
+
+fn withPathExe(b: *std.Build) *std.Build.Step.Compile {
+    if (with_path_exe) |exe| return exe;
+    const exe = b.addExecutable(.{
+        .name = "with-path",
+        // Reproducible: it is in the cache key of every `ocamlopt` step (see `tools.zig`).
+        .use_llvm = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/ocaml/tools/with_path.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    with_path_exe = exe;
+    return exe;
+}
 
 pub fn concat(b: *std.Build, a: []const []const u8, c: []const []const u8) []const []const u8 {
     return std.mem.concat(b.allocator, []const u8, &.{ a, c }) catch @panic("OOM");

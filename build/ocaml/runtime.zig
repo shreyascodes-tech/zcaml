@@ -63,6 +63,8 @@ pub const Options = struct {
     variants: bool = false,
     /// Windows: without it the runtime has no dynamic linking support.
     flexlink_exe: ?std.Build.LazyPath = null,
+    /// With `flexlink_exe`: where the build machine's `zcaml-cc-<platform>` is.
+    cc_dir: ?std.Build.LazyPath = null,
 };
 
 pub const Artifacts = struct {
@@ -155,7 +157,12 @@ pub fn build(src: *const Source, common: Common, options: Options) Artifacts {
         runtime_cflags;
 
     if (p.is_windows) if (options.flexlink_exe) |exe| {
-        self.flexlink = .{ .exe = exe, .support_dir = flexdll.supportDir(b, src.deps.flexdll, p), .flags = p.flexlinkFlags(b) };
+        self.flexlink = .{
+            .exe = exe,
+            .support_dir = flexdll.supportDir(b, src.deps.flexdll, p),
+            .flags = p.flexlinkFlags(b),
+            .cc_dir = options.cc_dir orelse @panic("flexlink needs the C compiler"),
+        };
     };
 
     self.ocamlyacc = b.addExecutable(.{

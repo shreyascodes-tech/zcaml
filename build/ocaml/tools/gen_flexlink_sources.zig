@@ -1,5 +1,5 @@
 //! Generated and patched flexlink sources (what flexdll's Makefile would
-//! produce), set up to use `zig cc` as the mingw C toolchain.
+//! produce), set up to use `zig cc` (through `zcaml-cc-<target>`) as the mingw C toolchain.
 const std = @import("std");
 const utils = @import("utils.zig");
 const InputFile = utils.InputFile;
@@ -42,8 +42,8 @@ pub fn run(self: *GenFlexlinkSources, init: std.process.Init) !void {
         \\let msvc = "cl.exe"
         \\let msvc64 = "cl.exe"
         \\let cygwin64 = "x86_64-pc-cygwin-gcc"
-        \\let mingw = "zig cc -target x86-windows-gnu -fno-sanitize=undefined"
-        \\let mingw64 = "zig cc -target x86_64-windows-gnu -fno-sanitize=undefined"
+        \\let mingw = "zcaml-cc-x86-w64-mingw32"
+        \\let mingw64 = "zcaml-cc-x86_64-w64-mingw32"
         \\let gnat = "gcc"
         \\
     , .{version}));

@@ -8,6 +8,10 @@
 //!
 //! The `zig` run is `$ZIG` if set, otherwise `zig` from `PATH`.
 //!
+//! For macOS targets, it adds the macOS SDK's frameworks, headers (after Zig's own)
+//! and libraries, which Zig doesn't ship, if there is one (`macosSdk`): Xcode's on
+//! macOS, or one installed next to the toolchain (`scripts/add-macos-sdk.sh`).
+//!
 //! Compiles in a dune-configurator probe directory get a local zig cache there
 //! (`isConfiguratorProbe`): the probe paths are random, so their entries in the
 //! global cache could never be reused.
@@ -16,7 +20,7 @@
 //! `CreateProcessW` on Windows, and nothing of `std.Io`, panics or stack traces.
 const std = @import("std");
 const builtin = @import("builtin");
-/// `args`: the target's `zig cc` flags.
+/// `args`: the target's `zig cc` flags. `macos_sdk`: whether the target is macOS.
 const options = @import("options");
 
 pub const panic = std.debug.no_panic;
@@ -33,6 +37,9 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 const posix = struct {
     extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn popen(command: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
+    extern "c" fn fgets(buf: [*]u8, len: c_int, stream: *anyopaque) ?[*:0]u8;
+    extern "c" fn pclose(stream: *anyopaque) c_int;
 
     /// The target flags, NUL-terminated.
     const target_args = blk: {
@@ -50,14 +57,20 @@ const posix = struct {
                 _ = setenv("ZIG_LOCAL_CACHE_DIR", ".zig-cache", 0);
         }
 
-        // zig cc <target args> <our args, minus the program name>
+        var sdk_buf: [sdk_dirs.len][*:0]const u8 = undefined;
+        const sdk_args: []const [*:0]const u8 = if (options.macos_sdk) sdkArgs(&sdk_buf) else &.{};
+
+        // zig cc <target args> <SDK args> <our args, minus the program name>
         const ours = args[@min(args.len, 1)..];
-        const len = 2 + target_args.len + ours.len;
+        const len = 2 + target_args.len + sdk_args.len + ours.len;
         const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
         const argv = ptr[0..len :null];
         argv[0..2].* = .{ zig, "cc" };
-        @memcpy(argv[2..][0..target_args.len], &target_args);
-        @memcpy(argv[2 + target_args.len ..], ours);
+        var i: usize = 2;
+        for ([_][]const [*:0]const u8{ &target_args, sdk_args, ours }) |part| {
+            @memcpy(argv[i..][0..part.len], part);
+            i += part.len;
+        }
         argv[len] = null;
 
         _ = execvp(zig, argv);
@@ -67,6 +80,70 @@ const posix = struct {
     fn cannotRun(zig: [*:0]const u8) u8 {
         for ([_][]const u8{ "zcaml-cc: could not run ", std.mem.span(zig), "\n" }) |s| _ = std.c.write(2, s.ptr, s.len);
         return 127;
+    }
+
+    /// `sdk_dirs`' flags for the macOS SDK, if there is one.
+    fn sdkArgs(buf: *[sdk_dirs.len][*:0]const u8) []const [*:0]const u8 {
+        const root = macosSdk() orelse return &.{};
+        for (buf, sdk_dirs) |*arg, dir| arg.* = concat(&.{ dir.flag, root, dir.path }) orelse return &.{};
+        return buf;
+    }
+
+    /// `$ZCAML_MACOS_SDK`, or on macOS `$SDKROOT`; else the one installed with the
+    /// toolchain; else on macOS Xcode's.
+    fn macosSdk() ?[]const u8 {
+        if (std.c.getenv("ZCAML_MACOS_SDK")) |sdk| return std.mem.span(sdk);
+        if (builtin.os.tag == .macos) if (std.c.getenv("SDKROOT")) |sdk| return std.mem.span(sdk);
+        if (installedSdk()) |sdk| return sdk;
+        if (builtin.os.tag == .macos) return xcrunSdk();
+        return null;
+    }
+
+    var path_buf: [4096]u8 = undefined;
+
+    fn installedSdk() ?[]const u8 {
+        const exe = selfExe() orelse return null;
+        const bin = exe[0 .. std.mem.findScalarLast(u8, exe, '/') orelse return null];
+        const sdk = std.mem.span(concat(&.{ bin, installed_sdk }) orelse return null);
+        const probe = concat(&.{ sdk, sdk_dirs[0].path }) orelse return null;
+        return if (std.c.access(probe, 0) == 0) sdk else null;
+    }
+
+    fn selfExe() ?[]const u8 {
+        switch (builtin.os.tag) {
+            .linux => {
+                const n = std.c.readlink("/proc/self/exe", &path_buf, path_buf.len);
+                return if (n > 0 and n < path_buf.len) path_buf[0..@intCast(n)] else null;
+            },
+            .macos => {
+                var size: u32 = path_buf.len;
+                if (std.c._NSGetExecutablePath(&path_buf, &size) != 0) return null;
+                return std.mem.sliceTo(&path_buf, 0);
+            },
+            else => return null,
+        }
+    }
+
+    fn xcrunSdk() ?[]const u8 {
+        const out = popen("xcrun --sdk macosx --show-sdk-path 2>/dev/null", "r") orelse return null;
+        defer _ = pclose(out);
+        const line = fgets(&path_buf, path_buf.len, out) orelse return null;
+        const sdk = std.mem.trimEnd(u8, std.mem.span(line), "\r\n");
+        return if (sdk.len > 0) sdk else null;
+    }
+
+    /// `parts`, joined and NUL-terminated, in memory never freed: we `exec` soon.
+    fn concat(parts: []const []const u8) ?[*:0]u8 {
+        var len: usize = 0;
+        for (parts) |part| len += part.len;
+        const buf: [*]u8 = @ptrCast(std.c.malloc(len + 1) orelse return null);
+        var i: usize = 0;
+        for (parts) |part| {
+            @memcpy(buf[i..][0..part.len], part);
+            i += part.len;
+        }
+        buf[len] = 0;
+        return buf[0..len :0];
     }
 };
 
@@ -81,7 +158,10 @@ const windows = struct {
     extern "kernel32" fn ExitProcess(code: w.UINT) callconv(.winapi) noreturn;
     extern "kernel32" fn GetCurrentDirectoryW(len: w.DWORD, buf: [*]u16) callconv(.winapi) w.DWORD;
     extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: [*:0]const u16) callconv(.winapi) w.BOOL;
+    extern "kernel32" fn GetModuleFileNameW(module: ?w.HMODULE, buf: [*]u16, len: w.DWORD) callconv(.winapi) w.DWORD;
+    extern "kernel32" fn GetFileAttributesW(path: [*:0]const u16) callconv(.winapi) w.DWORD;
     const INFINITE = 0xFFFFFFFF;
+    const INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
     const STD_ERROR_HANDLE: w.DWORD = @bitCast(@as(i32, -12));
 
     const L = std.unicode.utf8ToUtf16LeStringLiteral;
@@ -97,8 +177,15 @@ const windows = struct {
     var cmd_buf: [32768]u16 = undefined;
     /// Static: a stack buffer this big needs compiler_rt's `__chkstk`.
     var cwd_buf: [w.PATH_MAX_WIDE]u16 = undefined;
+    var sdk_buf: [w.PATH_MAX_WIDE]u16 = undefined;
 
-    /// Runs `"<zig>" cc <target args>` followed by our command line, minus the program name.
+    const sdk_dirs_w = blk: {
+        var dirs: [sdk_dirs.len]struct { flag: []const u16, path: []const u16 } = undefined;
+        for (&dirs, sdk_dirs) |*d, dir| d.* = .{ .flag = L(dir.flag), .path = L(dir.path) };
+        break :blk dirs;
+    };
+
+    /// Runs `"<zig>" cc <target args> <SDK args>` followed by our command line, minus the program name.
     fn run(cmdline: []const u16) u8 {
         // The child inherits our environment. First: setting a variable can move the
         // environment block, which `getenv`'s results point into.
@@ -110,11 +197,11 @@ const windows = struct {
         const zig = getenv("ZIG") orelse L("zig");
 
         var len: usize = 0;
-        for ([_][]const u16{ L("\""), zig, cc_and_target_args, skipProgramName(cmdline) }) |part| {
-            if (len + part.len >= cmd_buf.len) return cannotRun();
-            @memcpy(cmd_buf[len..][0..part.len], part);
-            len += part.len;
-        }
+        for ([_][]const u16{ L("\""), zig, cc_and_target_args }) |part| if (!append(&len, part)) return cannotRun();
+        if (options.macos_sdk) if (macosSdk()) |root| for (sdk_dirs_w) |dir| {
+            for ([_][]const u16{ L(" \""), dir.flag, root, dir.path, L("\"") }) |part| if (!append(&len, part)) return cannotRun();
+        };
+        if (!append(&len, skipProgramName(cmdline))) return cannotRun();
         cmd_buf[len] = 0;
 
         var startup: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
@@ -128,6 +215,30 @@ const windows = struct {
         _ = WaitForSingleObject(child.hProcess, INFINITE);
         _ = GetExitCodeProcess(child.hProcess, &code);
         ExitProcess(code);
+    }
+
+    fn append(len: *usize, part: []const u16) bool {
+        if (len.* + part.len >= cmd_buf.len) return false;
+        @memcpy(cmd_buf[len.*..][0..part.len], part);
+        len.* += part.len;
+        return true;
+    }
+
+    /// `$ZCAML_MACOS_SDK`, else the one installed with the toolchain.
+    fn macosSdk() ?[]const u16 {
+        if (getenv("ZCAML_MACOS_SDK")) |sdk| return sdk;
+        const n = GetModuleFileNameW(null, &sdk_buf, sdk_buf.len);
+        if (n == 0 or n >= sdk_buf.len) return null;
+        const bin = std.mem.findLastAny(u16, sdk_buf[0..n], L("\\/")) orelse return null;
+        const suffix = L(installed_sdk);
+        const probe = sdk_dirs_w[0].path;
+        if (bin + suffix.len + probe.len >= sdk_buf.len) return null;
+        @memcpy(sdk_buf[bin..][0..suffix.len], suffix);
+        const sdk = sdk_buf[0 .. bin + suffix.len];
+        @memcpy(cwd_buf[0..sdk.len], sdk);
+        @memcpy(cwd_buf[sdk.len..][0..probe.len], probe);
+        cwd_buf[sdk.len + probe.len] = 0;
+        return if (GetFileAttributesW(@ptrCast(&cwd_buf)) != INVALID_FILE_ATTRIBUTES) sdk else null;
     }
 
     /// The program name ends at the closing quote if quoted (no escapes there), else at the first blank.
@@ -183,6 +294,17 @@ const windows = struct {
         return dest;
     }
 };
+
+/// The macOS SDK's directories, relative to its root, and the flags passing them.
+const sdk_dirs = [_]struct { flag: []const u8, path: []const u8 }{
+    .{ .flag = "-F", .path = "/System/Library/Frameworks" },
+    // After Zig's own libc headers: only what those lack.
+    .{ .flag = "-idirafter", .path = "/usr/include" },
+    .{ .flag = "-L", .path = "/usr/lib" },
+};
+
+/// The SDK installed with the toolchain, relative to `bin/`.
+const installed_sdk = "/../lib/zcaml/macos-sdk";
 
 /// Whether `cwd` is `<tmp>/ocaml-configurator<random>/c-test-<n>`, where dune-configurator
 /// compiles its probes (`otherlibs/configurator/src/v1.ml`), and removes it all on exit.

@@ -67,6 +67,7 @@ odoc_byte: ?extras.OcamldocByte = null,
 odoc_nats: SMap(extras.OcamldocNative) = .empty,
 flexlink_byte: ?flexdll.Byte = null,
 flexlink_opts: SMap(LazyPath) = .empty,
+cc_wrappers: SMap(*std.Build.Step.Compile) = .empty,
 toolchains: SMap(Toolchain) = .empty,
 
 pub const Options = struct {
@@ -145,7 +146,7 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
         .src = self.src,
         .ld_conf = self.ld_conf,
         .makefile_config = b.addWriteFiles().add("Makefile.config", configure.makefileConfig(self.src, host, target)),
-        .cc_wrapper = buildCcWrapper(b, host, target),
+        .cc_wrapper = self.getCcWrapper(host, target),
         .host_rt = self.getRuntime(host),
         .target_rt = self.getRuntime(target),
         .stdlib = self.getStdlib(target),
@@ -163,13 +164,23 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     return tc;
 }
 
-/// The toolchain's C compiler (`c_compiler`): see `cc_wrapper.zig`.
+/// The C compiler for `target` running on `host`: see `cc_wrapper.zig`. Installed
+/// with the toolchain, and run during the build too, by the compilers (`rawOcamlopt`).
+fn getCcWrapper(self: *Ocaml, host: Platform, target: Platform) *std.Build.Step.Compile {
+    const key = self.pairKey(host, target);
+    if (self.cc_wrappers.get(key)) |exe| return exe;
+    const exe = buildCcWrapper(self.src.b, host, target);
+    self.cc_wrappers.put(self.src.b.allocator, key, exe) catch @panic("OOM");
+    return exe;
+}
+
 fn buildCcWrapper(b: *std.Build, host: Platform, target: Platform) *std.Build.Step.Compile {
     const args = configure.ccWrapperArgs(b, target);
     // The Windows command line is built by plain concatenation.
     for (args) |arg| if (std.mem.findAny(u8, arg, " \t\"") != null) std.debug.panic("cc wrapper argument needs quoting: {s}", .{arg});
     const options = b.addOptions();
     options.addOption([]const []const u8, "args", args);
+    options.addOption(bool, "macos_sdk", target.is_macos);
 
     // Small: it runs for every C compilation.
     const is_windows = host.resolved.result.os.tag == .windows;
@@ -364,6 +375,7 @@ fn getRuntime(self: *Ocaml, p: Platform) runtime.Artifacts {
         .platform = p,
         .variants = self.opts.runtime_variants,
         .flexlink_exe = if (p.is_windows) self.buildPlatformFlexlink() else null,
+        .cc_dir = if (p.is_windows) self.getCcWrapper(self.build_platform, p).getEmittedBinDirectory() else null,
     });
     self.runtimes.put(self.src.b.allocator, p.triplet, rt) catch @panic("OOM");
     return rt;
@@ -424,6 +436,7 @@ fn rawOcamlopt(self: *Ocaml, ocamlrun: ?*std.Build.Step.Compile, exe: LazyPath, 
         .b = self.src.b,
         .ocamlrun = ocamlrun,
         .exe = exe,
+        .cc_dir = self.getCcWrapper(self.build_platform, target).getEmittedBinDirectory(),
         .stdlib_dir = null,
         .flexlink = if (target.is_windows) self.getRuntime(target).flexlink.? else null,
         .prefix_map = self.src.prefixMap(),

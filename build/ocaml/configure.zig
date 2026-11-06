@@ -250,7 +250,7 @@ const CTools = struct {
     cppflags: []const u8,
     cclibs: []const u8,
     rpath: []const u8,
-    /// `c_compiler`: a single program, see `ccWrapperName`.
+    /// `c_compiler`: a single program, see `ccWrapperName`. The other commands run it too.
     cc: []const u8,
     asm_cmd: []const u8,
     packld: []const u8,
@@ -265,29 +265,30 @@ const CTools = struct {
         for (c.libs, 0..) |l, i| {
             cclibs.print(b.allocator, "{s}-l{s}", .{ if (i > 0) " " else "", l }) catch @panic("OOM");
         }
-        // Zig on PATH keeps installed compilers relocatable, without system cross-gcc.
-        const zig_cc = b.fmt("zig cc {s}", .{std.mem.join(b.allocator, " ", ccWrapperArgs(b, target)) catch @panic("OOM")});
+        // `zig cc` with the target's flags (and the macOS SDK), through `PATH`: installed
+        // compilers stay relocatable, without system cross-gcc.
+        const cc = ccWrapperName(b, target);
         const flexlink_flags = if (target.is_windows) std.mem.join(b.allocator, " ", target.flexlinkFlags(b)) catch @panic("OOM") else "";
         const mkdll = if (target.is_windows)
             b.fmt("flexlink {s}", .{flexlink_flags})
         else
-            b.fmt("{s} -shared{s}", .{ zig_cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
+            b.fmt("{s} -shared{s}", .{ cc, if (target.is_macos) " -undefined dynamic_lookup -Wl,-w" else "" });
         return .{
             .cflags = cflags,
             .cppflags = std.mem.join(b.allocator, " ", c.cppflags) catch @panic("OOM"),
             .cclibs = cclibs.items,
             .rpath = if (target.is_elf) "-Wl,-rpath," else "",
-            .cc = ccWrapperName(b, target),
+            .cc = cc,
             // `-g0`: no DWARF for the (temporary, randomly named) assembly file itself;
             // the `.loc` debug info `ocamlopt -g` emits is kept.
-            .asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -g0 -fdebug-compilation-dir=. -c", .{ zig_cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" }),
-            .packld = b.fmt("{s} -nostdlib -r -o ", .{zig_cc}),
+            .asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -g0 -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" }),
+            .packld = b.fmt("{s} -nostdlib -r -o ", .{cc}),
             .mkdll = mkdll,
             .mkmaindll = if (target.is_windows) b.fmt("flexlink -maindll {s}", .{flexlink_flags}) else mkdll,
             .mkexe = if (target.is_windows)
                 b.fmt("flexlink -exe {s} -link -municode", .{flexlink_flags})
             else
-                b.fmt("{s} {s}{s}", .{ zig_cc, cflags, if (target.is_elf) " -Wl,-E" else "" }),
+                b.fmt("{s} {s}{s}", .{ cc, cflags, if (target.is_elf) " -Wl,-E" else "" }),
         };
     }
 };
