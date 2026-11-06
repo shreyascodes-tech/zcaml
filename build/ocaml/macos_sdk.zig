@@ -14,10 +14,6 @@ pub fn layout(b: *std.Build, xcode_frameworks: *std.Build.Dependency) std.Build.
         .{ "Frameworks", "System/Library/Frameworks" },
         .{ "include", "usr/include" },
         .{ "lib", "usr/lib" },
-    }) |dirs| {
-        // The archive's top directory is kept (it is part of the package hash).
-        const src = xcode_frameworks.path(b.fmt("xcode-frameworks/{s}", .{dirs[0]}));
-        _ = wf.addCopyDirectory(src, dirs[1], .{});
-    }
+    }) |dirs| _ = wf.addCopyDirectory(xcode_frameworks.path(dirs[0]), dirs[1], .{});
     return wf.getDirectory();
 }
