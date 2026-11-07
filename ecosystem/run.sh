@@ -13,6 +13,7 @@
 #   TARGETS                    default: aarch64-linux-gnu x86_64-windows-gnu
 #   JOBS                       packages at a time, default: half the CPUs
 #   AARCH64_LINUX_GNU_SYSROOT  for qemu-aarch64, default: /usr/aarch64-linux-gnu
+#   OVERLAYS                   more opam repositories, ahead of dune's: `<name>=<url>`s
 #   `zig` on PATH, and qemu-aarch64 and wine for running the targets'.
 set -euo pipefail
 
@@ -53,9 +54,14 @@ export OCAMLFIND_CONF="$work/findlib.conf"
 export XDG_CACHE_HOME="$work/cache"
 export WINEPREFIX="$work/wine" WINEDEBUG=-all
 
-# dune's default repositories, at fixed commits: a run's results don't depend on
-# when it ran.
-cat >"$work/repositories.dune" <<'EOF'
+# $OVERLAYS, then dune's default repositories, at fixed commits: a run's results
+# don't depend on when it ran.
+overlays=""
+for overlay in ${OVERLAYS:-}; do
+  printf '(repository\n (name %s)\n (url %s))\n' "${overlay%%=*}" "${overlay#*=}"
+  overlays="$overlays ${overlay%%=*}"
+done >"$work/repositories.dune"
+cat >>"$work/repositories.dune" <<EOF
 (repository
  (name overlay-pinned)
  (url git+https://github.com/ocaml-dune/opam-overlays.git#99fc2e18c45b4761ed5f6d282910c03c97e32bce))
@@ -66,7 +72,7 @@ cat >"$work/repositories.dune" <<'EOF'
  (name upstream-pinned)
  (url git+https://github.com/ocaml/opam-repository.git#d74e2449deccd679e0a28814bfc75ba47656a7b2))
 (lock_dir
- (repositories overlay-pinned relocatable-pinned upstream-pinned)
+ (repositories$overlays overlay-pinned relocatable-pinned upstream-pinned)
  (solver_env (sys-ocaml-version 5.5.1))
  (constraints (ocaml-system (= 5.5.1))))
 EOF

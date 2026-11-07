@@ -29,6 +29,10 @@ on:
         description: "dune release (dune-v*) to build with; default: this checkout's"
         required: false
         type: string
+      overlays:
+        description: "More opam repositories, ahead of dune's: <name>=<url>s (ecosystem/run.sh's OVERLAYS)"
+        required: false
+        type: string
 
 env:
   ZIG_VERSION: "0.17.0"
@@ -45,6 +49,7 @@ jobs:
       DUNE_TAG: ${{ inputs.dune_tag }}
       TARGETS: ${{ inputs.targets || 'aarch64-linux-gnu x86_64-windows-gnu' }}
       PACKAGES: ${{ inputs.packages }}
+      OVERLAYS: ${{ inputs.overlays }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
