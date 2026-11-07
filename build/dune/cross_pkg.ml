@@ -1,8 +1,8 @@
 (* Cross-compiling a lock directory's packages, with [dune build -x <toolchain>].
 
    A context with a findlib toolchain takes its compiler from it, not from the
-   lock directory's [ocaml] (see [Context]), so its packages' builds compile for
-   the target. Each also depends on its dependencies' builds in the host
+   lock directory's [ocaml] (see [Context]), of the same release
+   ([check_compiler]), so its packages' builds compile for the target. Each also depends on its dependencies' builds in the host
    context, and gets in its environment:
 
    - [DUNE_PKG_CROSS_TARGET]: the toolchain, for the package's
@@ -60,6 +60,42 @@ let check_lock_dir context ~host =
           (Context_name.to_string context)
           (Context_name.to_string host)
       ]
+;;
+
+(* A cross context's compiler, [ocaml] (from its findlib toolchain), compiles the
+   same release as the host context's, the lock directory's [ocaml]: OCaml reads
+   only its own release's compiled interfaces and ppx ASTs. *)
+let check_compiler context ((ocaml : Ocaml_toolchain.t), _ as toolchain) =
+  let+ lock_dir = Lock_dir.get_exn context in
+  let release version =
+    let before c v =
+      match String.lsplit2 v ~on:c with
+      | Some (v, _) -> v
+      | None -> v
+    in
+    before '~' (before '+' version)
+  in
+  let compiler = release (Ocaml_config.version_string ocaml.ocaml_config) in
+  let locked =
+    Dune_pkg.Lock_dir.Packages.to_pkg_list lock_dir.packages
+    |> List.filter_map ~f:(fun (pkg : Dune_pkg.Lock_dir.Pkg.t) ->
+      Option.some_if
+        (Package.Name.equal pkg.info.name (Package.Name.of_string "ocaml"))
+        (Package_version.to_string pkg.info.version))
+  in
+  if (not (List.is_empty locked)) && not (List.mem locked compiler ~equal:String.equal)
+  then
+    User_error.raise
+      [ Pp.textf
+          "Context %S compiles with OCaml %s, from its toolchain, but its lock \
+           directory has OCaml %s."
+          (Context_name.to_string context)
+          compiler
+          (String.concat ~sep:", " locked)
+      ]
+      ~hints:
+        [ Pp.text "Lock a compiler of the same release, or use a toolchain of the lock's." ];
+  toolchain
 ;;
 
 (* [action], the build of a package in [context], whose dependencies' target

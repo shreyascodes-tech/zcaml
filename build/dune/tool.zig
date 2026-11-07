@@ -120,7 +120,8 @@ fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
         \\           | Lock _ ->
         \\             Pkg_rules.ocaml_toolchain builder.name
     ,
-        \\           | Lock _ when Option.is_some builder.findlib_toolchain -> toolchain `Lock
+        \\           | Lock _ when Option.is_some builder.findlib_toolchain ->
+        \\             toolchain `Lock >>= Cross_pkg.check_compiler builder.name
         \\           | Lock _ ->
         \\             Pkg_rules.ocaml_toolchain builder.name
     );
