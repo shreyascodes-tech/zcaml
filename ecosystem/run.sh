@@ -88,8 +88,8 @@ touch "$work/results.tsv"
 if [[ " $TARGETS " == *" x86_64-windows-gnu "* ]]; then wineboot -i >/dev/null 2>&1; fi
 
 # The first one alone: it fetches the repositories, which concurrent dunes wait for.
-head -n 1 "$work/selected.txt" | xargs -L 1 "$here/probe.sh" "$work"
-tail -n +2 "$work/selected.txt" | xargs -P "$jobs" -L 1 "$here/probe.sh" "$work"
+head -n 1 "$work/selected.txt" | xargs -r -L 1 "$here/probe.sh" "$work"
+tail -n +2 "$work/selected.txt" | xargs -r -P "$jobs" -L 1 "$here/probe.sh" "$work"
 
 "$here/report.sh" "$work" >"$work/report.md"
 echo "$work/report.md"
