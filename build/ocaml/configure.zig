@@ -236,8 +236,11 @@ pub fn ccWrapperName(b: *std.Build, target: Platform) []const u8 {
 }
 
 /// What the C compiler wrapper passes `zig cc` before its own arguments.
+/// The target as asked for, not as resolved: `zig cc` resolves it the same, but
+/// passes queries (`-dumpversion`, `-print-*`, `-E -`) to clang as is, which
+/// rejects resolved glibc versions (`x86_64-linux.5.10...7.2-gnu.2.31`).
 pub fn ccWrapperArgs(b: *std.Build, target: Platform) []const []const u8 {
-    const triple = target.resolved.result.zigTriple(b.allocator) catch @panic("OOM");
+    const triple = target.resolved.query.zigTriple(b.allocator) catch @panic("OOM");
     var args: std.ArrayList([]const u8) = .empty;
     args.appendSlice(b.allocator, &.{ "-target", triple, "-fno-sanitize=undefined" }) catch @panic("OOM");
     if (target.resolved.result.abi.isMusl()) args.append(b.allocator, "-dynamic") catch @panic("OOM");
