@@ -28,7 +28,7 @@ Nothing here is specific to zcaml: native builds are as upstream's.
 | `zarith.1.14+zcaml` | [mirage's dune port](https://github.com/mirage/Zarith), with `gmp` (`zarith-static.patch`) | upstream needs the system's GMP (`conf-gmp`), which a cross build has none of |
 | `re2.v0.17.0+zcaml` | builds its vendored RE2 with the toolchain's C compiler (`re2-cc.patch`) | upstream builds it with the build machine's `g++`; and lld, unlike GNU ld, fails on the version script's libstdc++ names (`--undefined-version`) |
 | `ocaml_intrinsics.v0.17.0+zcaml` | a probe for aarch64's CRC instructions that can pass (`ocaml_intrinsics-crc.patch`) | it tries `__crc32ud`, which no compiler has, so builds for aarch64 without `+crc` and `crc_stubs.c` fails (`Target not supported`); `-mcpu=generic+crc` rather than `-march=armv8-a+crc`, which gcc and clang take but `zig cc` doesn't |
-| `luv.0.5.14+zcaml` | the target's, not the build machine's, OCaml configuration for libuv (`luv-cross.patch`) | upstream asks `ocamlc -config` on `PATH` for `configure --host` and for Windows' libraries; and includes `WinSDKVer.h`, which is `winsdkver.h` (only Windows' file systems don't care) |
+| `luv.0.5.14+zcaml` | the target's, not the build machine's, OCaml configuration for libuv (`luv-cross.patch`) | upstream asks `ocamlc -config` on `PATH` for `configure --host` and for Windows' libraries; includes `WinSDKVer.h`, which is `winsdkver.h` (only Windows' file systems don't care); and needs libuv's DLL, which libtool doesn't build without mingw's binutils (an empty one, then: only bytecode would load it) |
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.
