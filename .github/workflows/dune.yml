@@ -1,8 +1,8 @@
 name: Dune
 
 # Release tags: dune-v<upstream-version>-zcaml.<revision>, the version
-# `dune --version` prints (`3.24.2+zcaml.2`), with `-` for `+`, which URLs mangle.
-#   dune-v3.24.2-zcaml.2 -> dune 3.24.2 with zcaml's changes, revision 2
+# `dune --version` prints (`3.24.2+zcaml.3`), with `-` for `+`, which URLs mangle.
+#   dune-v3.24.2-zcaml.3 -> dune 3.24.2 with zcaml's changes, revision 3
 # The dune built is the one pinned in build.zig.zon, with the revision in
 # build/dune/tool.zig; the tag has to name its version (checked against the
 # build). Never move an existing tag.
