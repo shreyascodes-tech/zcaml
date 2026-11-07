@@ -1,0 +1,33 @@
+diff -ru a/src/c/dune b/src/c/dune
+--- a/src/c/dune	2026-11-08 04:22:32.443160873 +0530
++++ b/src/c/dune	2026-11-08 04:22:32.458575620 +0530
+@@ -82,7 +82,7 @@
+   (bash "cp -r vendor/configure/* vendor/libuv/")
+   (chdir vendor/libuv (progn
+    (bash
+-    "sh configure --host `ocamlc -config | awk '/^host:/ {print $NF}'` \
++    "sh configure --host %{ocaml-config:target} \
+       'CC=%{cc}' CFLAGS=-DNDEBUG --silent --enable-silent-rules")
+    (ignore-outputs (bash
+     "$([ '%{os_type}' = Unix ] && echo %{make} || echo make) V=0 -j 4 \
+@@ -99,7 +99,7 @@
+ (rule
+  (targets extra_libs.sexp)
+  (action (ignore-outputs (bash "\
+-   if ocamlc -config | grep mingw; then \
++   if echo %{ocaml-config:system} | grep mingw; then \
+      echo '(-ldbghelp -liphlpapi -lole32 -lpsapi -luserenv)' > extra_libs.sexp; \
+    else \
+      echo '()' > extra_libs.sexp; \
+diff -ru a/src/c/windows_version.h b/src/c/windows_version.h
+--- a/src/c/windows_version.h	2026-11-08 04:22:32.443160873 +0530
++++ b/src/c/windows_version.h	2026-11-08 04:22:32.457394156 +0530
+@@ -9,7 +9,7 @@
+ #define LUV_WINDOWS_VERSION_H_
+ 
+ #ifdef _WIN32
+-#include <WinSDKVer.h>
++#include <winsdkver.h>
+ #define WINVER _WIN32_WINNT_VISTA
+ #define _WIN32_WINNT _WIN32_WINNT_VISTA
+ #include <sdkddkver.h>
