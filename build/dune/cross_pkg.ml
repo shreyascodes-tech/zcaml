@@ -84,3 +84,19 @@ let build_action context ~deps_target_dirs (action : _ Action_builder.With_targe
   in
   { action with build }
 ;;
+
+(* The subdirectories of [_build/_private] ([dir]) that are package builds:
+   [contexts]', and inactive [-x] contexts' ([<context>.<toolchain>]), kept so
+   that building for another target doesn't throw them away. *)
+let private_dirs ~dir contexts =
+  let names = List.map contexts ~f:Context_name.to_string in
+  let is_cross_of name context = String.starts_with name ~prefix:(context ^ ".") in
+  let inactive =
+    match Path.Untracked.readdir_unsorted (Path.build dir) with
+    | Error _ -> []
+    | Ok entries ->
+      List.filter entries ~f:(fun entry ->
+        List.exists names ~f:(is_cross_of (Filename.to_string entry)))
+  in
+  Subdir_set.of_list (List.map names ~f:Filename.of_string_exn @ inactive)
+;;

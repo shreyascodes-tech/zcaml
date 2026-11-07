@@ -106,13 +106,13 @@ fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
         .sub_path = try path.join(arena, &.{ work, "src", "dune_rules", "cross_pkg.ml" }),
         .data = @embedFile("cross_pkg.ml"),
     });
-    // Keep inactive contexts' package builds (`-x` ones), as `dune clean` removes them.
+    // Inactive `-x` contexts' package builds stay, as dune keeps active ones.
     try replaceOnce(io, arena, work, "src/dune_rules/gen_rules.ml",
         \\        (Subdir_set.of_list
         \\           (List.rev_map contexts ~f:(fun context_name ->
         \\              Filename.of_string_exn (Context_name.to_string context_name))))
     ,
-        \\        (let _ = contexts in Subdir_set.all)
+        \\        (Cross_pkg.private_dirs ~dir contexts)
     );
     // A context with a findlib toolchain compiles with it, not the lock directory's
     // `ocaml`: as a lock directory without one does.
