@@ -81,6 +81,10 @@ pub fn main(init: std.process.Init) !void {
     try Dir.copyFile(Dir.cwd(), try path.join(arena, &.{ work, "_boot", "dune.exe" }), Dir.cwd(), out, io, .{});
 }
 
+/// zcaml's revision of the pinned dune, in its version (`3.24.2+zcaml.2`): one more
+/// for each release of the same dune. The release tag says it (`dune-v3.24.2-zcaml.2`).
+const revision = 2;
+
 /// What `dune subst` does for releases, so `dune --version` isn't `n/a`: the bootstrap
 /// takes the version from `(version <v>)` in `dune-project`. The source is a release
 /// commit, whose `CHANGES.md` starts with its version: `3.24.2 (2026-08-03)`.
@@ -96,7 +100,7 @@ fn setVersion(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
 
     const project_path = try path.join(arena, &.{ work, "dune-project" });
     const project = try Dir.cwd().readFileAlloc(io, project_path, arena, .unlimited);
-    try Dir.cwd().writeFile(io, .{ .sub_path = project_path, .data = try std.fmt.allocPrint(arena, "{s}\n(version {s})\n", .{ project, version }) });
+    try Dir.cwd().writeFile(io, .{ .sub_path = project_path, .data = try std.fmt.allocPrint(arena, "{s}\n(version {s}+zcaml.{d})\n", .{ project, version, revision }) });
 }
 
 /// Cross-compiling a lock directory's packages with `-x` (`cross_pkg.ml`): the only
@@ -113,6 +117,14 @@ fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
         \\              Filename.of_string_exn (Context_name.to_string context_name))))
     ,
         \\        (Cross_pkg.private_dirs ~dir contexts)
+    );
+    // Internal errors may be ours.
+    try replaceOnce(io, arena, work, "src/dune_util/report_error.ml",
+        \\"Internal error! Please report to https://github.com/ocaml/dune/issues, \
+    ,
+        \\"Internal error! This is zcaml's dune, with changes: please report to \
+        \\                https://github.com/shreyascodes-tech/zcaml/issues (or \
+        \\                https://github.com/ocaml/dune/issues, if upstream dune fails too), \
     );
     // A context with a findlib toolchain compiles with it, not the lock directory's
     // `ocaml`: as a lock directory without one does.

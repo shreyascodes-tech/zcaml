@@ -1,10 +1,11 @@
 name: Dune
 
-# Release tags: dune-v<upstream-version>[-<zcaml-revision>], like the toolchains'.
-#   dune-v3.24.2     -> dune 3.24.2, zcaml revision 1 (implicit)
-#   dune-v3.24.2-2   -> dune 3.24.2, zcaml revision 2 (same upstream, new build)
-# The dune built is the one pinned in build.zig.zon; the tag has to name its
-# version (checked against the build). Never move an existing tag.
+# Release tags: dune-v<upstream-version>-zcaml.<revision>, the version
+# `dune --version` prints (`3.24.2+zcaml.2`), with `-` for `+`, which URLs mangle.
+#   dune-v3.24.2-zcaml.2 -> dune 3.24.2 with zcaml's changes, revision 2
+# The dune built is the one pinned in build.zig.zon, with the revision in
+# build/dune/tool.zig; the tag has to name its version (checked against the
+# build). Never move an existing tag.
 #
 # Dune is one binary per host, for any OCaml version. All of them are bootstrapped
 # on Linux, with the x86_64-linux-gnu-hosted toolchains of a published OCaml
@@ -133,6 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(zig-out/dune/$NATIVE/bin/dune --version)"
+          version="${version/+/-}"
           mkdir archives
           for h in $HOSTS; do
             tar --sort=name -I 'zstd -19' -cf "archives/dune-$version-$h.tar.zst" -C "zig-out/dune/$h" .
@@ -173,13 +175,15 @@ jobs:
           for h in aarch64-macos-none x86_64-macos-none; do
             archive="$(ls archives/dune-*-$h.tar.zst)"
             version="$(basename "$archive" "-$h.tar.zst")"
+            version="${version#dune-}"
+            version="${version/-zcaml/+zcaml}"
             mkdir -p "dune-$h"
             zstd -d -q -c "$archive" | tar -xf - -C "dune-$h"
             # macOS's bash 3.2: no empty arrays under `set -u`.
             if [[ $h == x86_64-* ]]; then
-              scripts/test-dune.sh "dune-$h/bin/dune" "${version#dune-}" arch -x86_64
+              scripts/test-dune.sh "dune-$h/bin/dune" "$version" arch -x86_64
             else
-              scripts/test-dune.sh "dune-$h/bin/dune" "${version#dune-}"
+              scripts/test-dune.sh "dune-$h/bin/dune" "$version"
             fi
           done
 
@@ -204,16 +208,17 @@ jobs:
           OCAML_TAG: ${{ needs.resolve.outputs.ocaml_tag }}
         run: |
           set -euo pipefail
-          if [[ ! "$TAG_NAME" =~ ^dune-v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+)?$ ]]; then
-            echo "error: tag '$TAG_NAME' does not match dune-vX.Y.Z[-N]" >&2
+          if [[ ! "$TAG_NAME" =~ ^dune-v(([0-9]+\.[0-9]+\.[0-9]+)-zcaml\.([0-9]+))$ ]]; then
+            echo "error: tag '$TAG_NAME' does not match dune-vX.Y.Z-zcaml.N" >&2
             exit 1
           fi
           version="${BASH_REMATCH[1]}"
-          revision="${BASH_REMATCH[2]#-}"
+          upstream="${BASH_REMATCH[2]}"
+          revision="${BASH_REMATCH[3]}"
           files=(archives/*.tar.zst)
           for f in "${files[@]}"; do
             if [[ "$(basename "$f")" != "dune-$version-"* ]]; then
-              echo "error: $f is not dune $version: build.zig.zon pins another dune than '$TAG_NAME' names" >&2
+              echo "error: $f is not dune $version: build.zig.zon or build/dune/tool.zig pin another dune than '$TAG_NAME' names" >&2
               exit 1
             fi
           done
@@ -221,6 +226,6 @@ jobs:
             gh release upload "$TAG_NAME" "${files[@]}" --clobber
           else
             gh release create "$TAG_NAME" "${files[@]}" \
-              --title "dune $version (zcaml build ${revision:-1})" \
-              --notes "dune $version for every zcaml host, bootstrapped with the $OCAML_TAG toolchains. One binary per host: it works with any OCaml version."
+              --title "dune $upstream+zcaml.$revision" \
+              --notes "dune $upstream with zcaml's changes (cross-compiling dune pkg's packages with -x), for every zcaml host, bootstrapped with the $OCAML_TAG toolchains. One binary per host: it works with any OCaml version."
           fi
