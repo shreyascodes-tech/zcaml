@@ -25,10 +25,13 @@ fn main(argc: c_int, argv: CArgv, envp: CArgv) callconv(.c) c_int {
     caml_do_exit(0);
 }
 
-/// `dune build`, in a cross context's package build.
+/// `dune build` or `dune exec`, in a cross context's package build.
 fn isCrossBuild(argc: c_int, argv: CArgv) bool {
     inline for (cross.markers) |name| if (getenv(name) == null) return false;
-    return argc >= 2 and std.mem.eql(Char, std.mem.span(argv[1].?), literal("build"));
+    if (argc < 2) return false;
+    const command = std.mem.span(argv[1].?);
+    inline for (cross.commands) |c| if (std.mem.eql(Char, command, literal(c))) return true;
+    return false;
 }
 
 fn getenv(comptime name: [:0]const u8) ?[*:0]const Char {

@@ -6,6 +6,9 @@
 //! drivers, ...).
 //!
 //! Supported: `-p` with options, and `@install`. Anything else fails, saying so.
+//!
+//! A package's `dune exec` (lwt's configuration program, ...) runs on the build
+//! machine: it's stock dune's, with the host context's libraries.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -17,6 +20,7 @@ const marker = "DUNE_PKG_CROSS_TARGET";
 const host_marker = "DUNE_PKG_CROSS_HOST";
 /// All set only in a cross context's package build: one of dune's actions.
 pub const markers = [_][:0]const u8{ marker, host_marker, "INSIDE_DUNE" };
+pub const commands = [_][:0]const u8{ "build", "exec" };
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -24,27 +28,34 @@ pub fn main(init: std.process.Init) !void {
     const env = init.environ_map;
 
     const args = try init.minimal.args.toSlice(arena);
-    const command: Command = try .parse(arena, args[2..]);
-    const toolchain = env.get(marker).?;
-    const host = env.get(host_marker).?;
+    // Copies: `env` frees them, as they're removed from it.
+    const toolchain = try arena.dupe(u8, env.get(marker).?);
+    const host = try arena.dupe(u8, env.get(host_marker).?);
+    const ocamlpath = try arena.dupe(u8, env.get("OCAMLPATH") orelse "");
     inline for (&.{ "DUNE_WORKSPACE", "DUNE_BUILD_DIR" }) |name| {
         if (env.get(name) != null) fatal("cross-compiling a package: {s} isn't supported", .{name});
     }
 
     const cwd = try std.process.currentPathAlloc(io, arena);
+    const libs: Libraries = try .split(io, arena, ocamlpath, host);
+    // A context's `OCAMLPATH` is the workspace's only if the environment has none.
+    inline for (&.{ "OCAMLPATH", marker, host_marker, "DUNE_CROSS_TARGET" }) |name| _ = env.swapRemove(name);
+    const dune: Dune = .{ .io = io, .exe = try std.process.executablePathAlloc(io, arena), .cwd = cwd, .env = env };
+
+    if (std.mem.eql(u8, args[1], "exec")) {
+        try env.put("OCAMLPATH", try std.mem.join(arena, &.{path.delimiter}, libs.host));
+        return dune.run(arena, &.{args[1..]});
+    }
+
+    const command: Command = try .parse(arena, args[2..]);
     const context = try std.fmt.allocPrint(arena, "default.{s}", .{toolchain});
     const workspace = try path.join(arena, &.{ cwd, ".dune-cross-workspace" });
-    const libs: Libraries = try .split(io, arena, env.get("OCAMLPATH") orelse "", host);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = workspace, .data = try std.fmt.allocPrint(arena,
         \\(lang dune 3.0)
         \\(context (default{f}))
         \\(context (default (name {f}) (host default) (toolchain {f}){f}))
         \\
     , .{ ocamlPath(libs.host), quoted(context), quoted(toolchain), ocamlPath(libs.target) }) });
-
-    // A context's `OCAMLPATH` is the workspace's only if the environment has none.
-    inline for (&.{ "OCAMLPATH", marker, host_marker, "DUNE_CROSS_TARGET" }) |name| _ = env.swapRemove(name);
-    const dune: Dune = .{ .io = io, .exe = try std.process.executablePathAlloc(io, arena), .cwd = cwd, .env = env };
 
     const describe = try dune.output(arena, &.{
         &.{ "describe", "package-entries" },
@@ -57,9 +68,13 @@ pub fn main(init: std.process.Init) !void {
     for (packages) |p| for (p.entries) |e| try targets.append(arena, e.src);
     if (targets.items.len > 0) try dune.run(arena, &.{ &.{"build"}, command.options, &.{ "--workspace", workspace }, targets.items });
 
+    // Where dune's own are: `_build/default` (`dune install` reads them there), and
+    // the source tree, unless they aren't promoted.
     for (packages) |p| {
+        const data = try std.fmt.allocPrint(arena, "{f}", .{p});
         const file = try std.fmt.allocPrint(arena, "{s}.install", .{p.name});
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = try std.fmt.allocPrint(arena, "{f}", .{p}) });
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = try path.join(arena, &.{ "_build", "default", file }), .data = data });
+        if (command.promote_install_files) try Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = data });
     }
 }
 
@@ -67,6 +82,9 @@ pub fn main(init: std.process.Init) !void {
 const Command = struct {
     /// To pass on, without targets.
     options: []const []const u8,
+    /// `--promote-install-files[=<bool>]`, which `-p` turns on: `<package>.install`s
+    /// in the source tree.
+    promote_install_files: bool,
 
     /// Options whose value can be the next argument. One that isn't here would
     /// take its value for a target, and fail.
@@ -82,6 +100,7 @@ const Command = struct {
     fn parse(arena: Allocator, args: []const []const u8) !Command {
         var options: std.ArrayList([]const u8) = .empty;
         var has_packages = false;
+        var promote_install_files = true;
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
@@ -92,6 +111,7 @@ const Command = struct {
             const name = optionName(arg);
             if (isOneOf(name, &unsupported)) fatal("cross-compiling a package: `dune build {s}` isn't supported", .{name});
             if (isOneOf(name, &.{ "-p", "--for-release-of-packages" })) has_packages = true;
+            if (std.mem.eql(u8, name, "--promote-install-files")) promote_install_files = parseBool(arg[name.len..]);
             try options.append(arena, arg);
             if (name.len == arg.len and isOneOf(name, &with_value)) {
                 i += 1;
@@ -100,7 +120,14 @@ const Command = struct {
             }
         }
         if (!has_packages) fatal("cross-compiling a package: `dune build` without -p isn't supported", .{});
-        return .{ .options = options.items };
+        return .{ .options = options.items, .promote_install_files = promote_install_files };
+    }
+
+    /// An optional value: `=<bool>`, or nothing, `true`.
+    fn parseBool(value: []const u8) bool {
+        if (value.len == 0 or std.mem.eql(u8, value, "=true")) return true;
+        if (std.mem.eql(u8, value, "=false")) return false;
+        fatal("`dune build --promote-install-files{s}`: not a bool", .{value});
     }
 
     /// `--name` of `--name=value`, `-x` of `-xvalue`.
