@@ -1,7 +1,10 @@
 # The packages run.sh builds, by how they build: commonly used ones, and enough of
 # each kind to see what does and doesn't cross-compile.
 #
-#   <package> [<library> | pps:<ppx>]...    default: the library <package>
+#   <package> [<library> | pps:<ppx> | !<target>]...
+#
+# The libraries default to <package>. A !<target> is one the package doesn't
+# support (its docs, or code for one OS only): not built for.
 #
 # Not libraries that need an optional dependency (fmt.cli, cmdliner's), as
 # `(depends <package>)` doesn't install those.
@@ -85,8 +88,8 @@ tls
 integers
 stdint
 spawn
-core
-core_unix core_unix
+core core !x86_64-windows-gnu
+core_unix core_unix !x86_64-windows-gnu
 lwt lwt lwt.unix
 eio_main
 notty notty notty.unix
@@ -94,8 +97,8 @@ ocaml_intrinsics
 memtrace
 extunix
 cohttp-lwt-unix
-async
-re2
+async async !x86_64-windows-gnu
+re2 re2 !x86_64-windows-gnu
 luv
 
 # topkg, ocamlbuild or findlib

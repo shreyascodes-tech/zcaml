@@ -3,10 +3,11 @@
 # project depending on it would: an executable linking its libraries (all of their
 # modules: -linkall), run on the target. `run.sh` sets up the environment.
 #
-#   ecosystem/probe.sh <work-dir> <package> [<library> | pps:<ppx>]...
+#   ecosystem/probe.sh <work-dir> <package> [<library> | pps:<ppx> | !<target>]...
 #
-# Appends `<package> <stage> ok|fail` lines to <work-dir>/results.tsv, stages:
-# lock, native, then build:<target> and run:<target> for each of $TARGETS. The
+# Appends `<package> <stage> ok|fail|skip` lines to <work-dir>/results.tsv, stages:
+# lock, native, then build:<target> and run:<target> for each of $TARGETS, but
+# `build:<target> skip` for a !<target>, which the package doesn't support. The
 # first failure stops the package (a target's build failure, only that target),
 # its log is <work-dir>/<package>/<stage, with - for :>.log.
 set -uo pipefail
@@ -16,12 +17,15 @@ package="$2"
 shift 2
 libraries=()
 ppxs=()
-for spec in "${@:-$package}"; do
+unsupported=" "
+for spec in "$@"; do
   case "$spec" in
     pps:*) ppxs+=("${spec#pps:}") ;;
+    !*) unsupported="$unsupported${spec#!} " ;;
     *) libraries+=("$spec") ;;
   esac
 done
+[[ ${#libraries[@]} -gt 0 ]] || libraries=("$package")
 
 dir="$work/$package"
 rm -rf "$dir"
@@ -77,6 +81,10 @@ export -f run
 stage lock dune pkg lock || exit 0
 stage native dune build ./bin/main.exe || exit 0
 for target in $TARGETS; do
+  if [[ "$unsupported" == *" $target "* ]]; then
+    printf '%s\t%s\t%s\n' "$package" "build:$target" skip | tee -a "$work/results.tsv"
+    continue
+  fi
   exe="_build/default.${target//-/_}/bin/main.exe" # run.sh's toolchain names
   stage "build:$target" dune build -x "${target//-/_}" "./$exe" || continue
   read -ra runner <<<"$(runner "$target")"

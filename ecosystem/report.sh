@@ -7,14 +7,14 @@ set -euo pipefail
 work="$1"
 results="$work/results.tsv"
 
-# <package>'s <stage> result: ok, fail, or nothing (not reached).
+# <package>'s <stage> result: ok, fail, skip, or nothing (not reached).
 result() {
   awk -F '\t' -v p="$1" -v s="$2" '$1 == p && $2 == s { print $3 }' "$results"
 }
 
-# How many packages' <stage> was ok.
+# How many packages' <stage> was <result>, default ok.
 count() {
-  awk -F '\t' -v s="$1" '$2 == s && $3 == "ok"' "$results" | wc -l
+  awk -F '\t' -v s="$1" -v r="${2:-ok}" '$2 == s && $3 == r' "$results" | wc -l
 }
 
 packages=()
@@ -23,7 +23,8 @@ while read -r name _; do packages+=("$name"); done <"$work/selected.txt"
 echo "## Cross-compiling opam packages with dune pkg"
 echo
 echo "Each package's libraries, linked (\`-linkall\`) into an executable that runs on the"
-echo "target. ✅ built and ran, ⚠️ built but didn't run, ❌ failed; · not reached."
+echo "target. ✅ built and ran, ⚠️ built but didn't run, ❌ failed; · not reached, — not"
+echo "supported on the target (\`!<target>\` in packages.txt)."
 echo
 echo "| | packages |"
 echo "|---|---|"
@@ -33,6 +34,7 @@ echo "| built natively | $(count native) |"
 for target in $TARGETS; do
   echo "| built for $target | $(count "build:$target") |"
   echo "| ran on $target | $(count "run:$target") |"
+  echo "| not supported on $target | $(count "build:$target" skip) |"
 done
 echo
 
@@ -57,6 +59,7 @@ for package in "${packages[@]}"; do
     case "$(result "$package" "build:$target")/$(result "$package" "run:$target")" in
       ok/ok) row="$row ✅ |" ;;
       ok/fail) row="$row ⚠️ |" ;;
+      skip/*) row="$row — |" ;;
       fail/*) row="$row ❌ |" ;;
       *) row="$row · |" ;;
     esac
