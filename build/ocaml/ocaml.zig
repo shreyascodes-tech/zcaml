@@ -165,6 +165,14 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
     return tc;
 }
 
+/// The build's Zig programs, for the build machine: `zig build check`.
+pub fn addCheck(b: *std.Build, step: *std.Build.Step) void {
+    const native: Platform = .init(b, resolveTarget(b, "native"));
+    step.dependOn(&buildCcWrapper(b, native, native).step);
+    step.dependOn(&@import("tools.zig").toolsExe(b).step);
+    step.dependOn(&driver.withPathExe(b).step);
+}
+
 /// The C compiler for `target` running on `host`: see `cc_wrapper.zig`. Installed
 /// with the toolchain, and run during the build too, by the compilers (`rawOcamlopt`).
 fn getCcWrapper(self: *Ocaml, host: Platform, target: Platform) *std.Build.Step.Compile {

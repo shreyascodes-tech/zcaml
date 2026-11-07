@@ -487,7 +487,7 @@ pub const Flexlink = struct {
 
 var with_path_exe: ?*std.Build.Step.Compile = null;
 
-fn withPathExe(b: *std.Build) *std.Build.Step.Compile {
+pub fn withPathExe(b: *std.Build) *std.Build.Step.Compile {
     if (with_path_exe) |exe| return exe;
     const exe = b.addExecutable(.{
         .name = "with-path",

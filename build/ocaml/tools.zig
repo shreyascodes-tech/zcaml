@@ -38,7 +38,7 @@ pub fn run(b: *std.Build, comptime tag: Tag, args: Args(tag)) struct { Args(tag)
 
 var tools_exe: ?*std.Build.Step.Compile = null;
 
-fn toolsExe(b: *std.Build) *std.Build.Step.Compile {
+pub fn toolsExe(b: *std.Build) *std.Build.Step.Compile {
     if (tools_exe) |exe| return exe;
     const exe = b.addExecutable(.{
         .name = "tools",

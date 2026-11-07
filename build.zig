@@ -4,6 +4,21 @@ const Tools = @import("build/ocaml/tools.zig");
 const Dune = @import("build/dune/dune.zig");
 
 pub fn build(b: *std.Build) !void {
+    const check_step = b.step("check", "compile the build's Zig programs, without installing them (for ZLS)");
+    Ocaml.addCheck(b, check_step);
+
+    const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
+    const update_src = b.addUpdateSourceFiles();
+    for (Ocaml.Versions.all) |ver| {
+        const dep = Ocaml.Versions.dependency(b, ver) orelse continue;
+        const gen, _ = Tools.run(b, .gen_manifests, .{
+            .ocaml_src_dir = .of(dep.path("")),
+            .out_file = .of(std.fs.path.basename(Ocaml.Versions.manifestPath(ver))),
+        });
+        update_src.addCopyFileToSource(gen.out_file.lazyPath(), Ocaml.Versions.manifestPath(ver));
+    }
+    gen_step.dependOn(&update_src.step);
+
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const version = b.option(Ocaml.Version, "ocaml-version", "ocaml version to build") orelse Ocaml.Versions.latest;
         const ocamldoc_opt = b.option(bool, "ocamldoc", "build and install ocamldoc");
@@ -96,18 +111,6 @@ pub fn build(b: *std.Build) !void {
         }
         return;
     }
-
-    const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
-    const update_src = b.addUpdateSourceFiles();
-    for (Ocaml.Versions.all) |ver| {
-        const dep = Ocaml.Versions.dependency(b, ver) orelse continue;
-        const gen, _ = Tools.run(b, .gen_manifests, .{
-            .ocaml_src_dir = .of(dep.path("")),
-            .out_file = .of(std.fs.path.basename(Ocaml.Versions.manifestPath(ver))),
-        });
-        update_src.addCopyFileToSource(gen.out_file.lazyPath(), Ocaml.Versions.manifestPath(ver));
-    }
-    gen_step.dependOn(&update_src.step);
 }
 
 /// Dune for every `targets` (and the build machine), bootstrapped with the native
