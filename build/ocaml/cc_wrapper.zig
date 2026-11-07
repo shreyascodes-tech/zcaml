@@ -1,9 +1,13 @@
 //! `zcaml-cc-<target>`: the C compiler of a toolchain (`ocamlc -config`'s `c_compiler`).
 //! `Config`'s other C commands (assembling, linking) run it too.
 //!
-//! Runs `zig cc` with the target's flags baked in, followed by its own arguments, or
-//! `zig c++` for C++ (`-x c++`, as dune compiles C++ stubs): only that gets
-//! libc++'s headers.
+//! Runs `zig cc` with the target's flags baked in, followed by its own arguments.
+//! Where `zig cc` isn't gcc (`Args`), it is made to be:
+//!
+//! - C++ (`-x c++`, as dune compiles C++ stubs, or a C++ source) runs `zig c++`:
+//!   only that gets libc++'s headers.
+//! - On Windows, `-c foo.c` writes `foo.o`, as mingw's gcc (and clang) do, and
+//!   OCaml's `ext_obj` says: not `foo.obj`.
 //! `c_compiler` has to be a single program: tools like dune split it into a program
 //! and flags and don't always pass the flags (and pass them twice when they do), so
 //! `zig cc -target ...` doesn't work there. The name is unique per target so the
@@ -30,7 +34,8 @@
 //! `CreateProcessW` on Windows, and nothing of `std.Io`, panics or stack traces.
 const std = @import("std");
 const builtin = @import("builtin");
-/// `args`: the target's `zig cc` flags. `macos_sdk`: whether the target is macOS.
+/// `args`: the target's `zig cc` flags. `macos_sdk`, `windows`: whether the target
+/// is macOS, Windows.
 const options = @import("options");
 
 pub const panic = std.debug.no_panic;
@@ -70,14 +75,19 @@ const posix = struct {
         var sdk_buf: [sdk_dirs.len][*:0]const u8 = undefined;
         const sdk_args: []const [*:0]const u8 = if (options.macos_sdk) sdkArgs(&sdk_buf) orelse return 1 else &.{};
 
-        // zig cc <target args> <SDK args> <our args, minus the program name>
+        // zig cc <target args> <SDK args> <our args, minus the program name> [-o <object>]
         const ours = args[@min(args.len, 1)..];
-        const len = 2 + target_args.len + sdk_args.len + ours.len;
+        var it: ArgvIterator = .{ .args = ours };
+        var source_buf: [4096]u8 = undefined;
+        var obj_buf: [4096]u8 = undefined;
+        const scan: Args(u8) = .scan(&it, &source_buf);
+        const obj_args: []const [*:0]const u8 = if (scan.defaultObject(&obj_buf)) |obj| &.{ "-o", obj } else &.{};
+        const len = 2 + target_args.len + sdk_args.len + ours.len + obj_args.len;
         const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
         const argv = ptr[0..len :null];
-        argv[0..2].* = .{ zig, if (isCxx(ours)) "c++" else "cc" };
+        argv[0..2].* = .{ zig, if (scan.cxx) "c++" else "cc" };
         var i: usize = 2;
-        for ([_][]const [*:0]const u8{ &target_args, sdk_args, ours }) |part| {
+        for ([_][]const [*:0]const u8{ &target_args, sdk_args, ours, obj_args }) |part| {
             @memcpy(argv[i..][0..part.len], part);
             i += part.len;
         }
@@ -87,15 +97,16 @@ const posix = struct {
         return cannotRun(zig);
     }
 
-    fn isCxx(args: []const [*:0]const u8) bool {
-        var prev: []const u8 = "";
-        for (args) |a| {
-            const arg = std.mem.span(a);
-            if (std.mem.eql(u8, arg, "-xc++") or (std.mem.eql(u8, prev, "-x") and std.mem.eql(u8, arg, "c++"))) return true;
-            prev = arg;
+    const ArgvIterator = struct {
+        args: []const [*:0]const u8,
+        i: usize = 0,
+
+        fn next(it: *ArgvIterator) ?[]const u8 {
+            if (it.i == it.args.len) return null;
+            defer it.i += 1;
+            return std.mem.span(it.args[it.i]);
         }
-        return false;
-    }
+    };
 
     fn cannotRun(zig: [*:0]const u8) u8 {
         printErr(&.{ "zcaml-cc: could not run ", std.mem.span(zig), "\n" });
@@ -234,6 +245,9 @@ const windows = struct {
     var path_buf: [w.PATH_MAX_WIDE]u16 = undefined;
     var sdk_buf: [w.PATH_MAX_WIDE]u16 = undefined;
     var pointer_buf: [4096]u8 = undefined;
+    var obj_buf: [w.PATH_MAX_WIDE]u16 = undefined;
+    var source_buf: [w.PATH_MAX_WIDE]u16 = undefined;
+    var arg_buf: [w.PATH_MAX_WIDE]u16 = undefined;
 
     /// Runs `"<zig>" cc <target args> <SDK args>` (or `c++`) followed by our command line, minus the program name.
     fn run(cmdline: []const u16) u8 {
@@ -247,7 +261,9 @@ const windows = struct {
         const zig = getenv("ZIG") orelse L("zig");
 
         const ours = skipProgramName(cmdline);
-        const command = if (isCxx(ours)) L("\" c++") else L("\" cc");
+        var it: CmdlineIterator = .{ .rest = ours };
+        const scan: Args(u16) = .scan(&it, &source_buf);
+        const command = if (scan.cxx) L("\" c++") else L("\" cc");
         var len: usize = 0;
         for ([_][]const u16{ L("\""), zig, command, target_args }) |part| if (!append(&len, part)) return cannotRun();
         if (options.macos_sdk) {
@@ -257,6 +273,9 @@ const windows = struct {
             };
         }
         if (!append(&len, ours)) return cannotRun();
+        if (scan.defaultObject(&obj_buf)) |obj| {
+            for ([_][]const u16{ L(" -o \""), obj, L("\"") }) |part| if (!append(&len, part)) return cannotRun();
+        }
         cmd_buf[len] = 0;
 
         var startup: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
@@ -324,10 +343,32 @@ const windows = struct {
         return sdk_buf[0..len];
     }
 
-    /// `-x c++` among the arguments, as dune passes it: unquoted.
-    fn isCxx(args: []const u16) bool {
-        return std.mem.find(u16, args, L(" -x c++")) != null or std.mem.find(u16, args, L(" -xc++")) != null;
-    }
+    /// A command line's arguments, split at blanks outside double quotes, which are
+    /// dropped (no escapes: `Args` only looks at flags and file names).
+    const CmdlineIterator = struct {
+        rest: []const u16,
+
+        fn next(it: *CmdlineIterator) ?[]const u16 {
+            it.rest = std.mem.trimStart(u16, it.rest, L(" \t"));
+            if (it.rest.len == 0) return null;
+            var n: usize = 0;
+            var quoted = false;
+            var i: usize = 0;
+            while (i < it.rest.len) : (i += 1) {
+                const c = it.rest[i];
+                if (c == '"') {
+                    quoted = !quoted;
+                } else if (!quoted and (c == ' ' or c == '\t')) {
+                    break;
+                } else if (n < arg_buf.len) {
+                    arg_buf[n] = c;
+                    n += 1;
+                }
+            }
+            it.rest = it.rest[i..];
+            return arg_buf[0..n];
+        }
+    };
 
     /// The program name ends at the closing quote if quoted (no escapes there), else at the first blank.
     fn skipProgramName(cmdline: []const u16) []const u16 {
@@ -400,6 +441,82 @@ const windows = struct {
         return dest;
     }
 };
+
+/// What of a command line `zig cc` takes differently from gcc.
+fn Args(comptime T: type) type {
+    return struct {
+        /// `-x c++`, or a C++ source.
+        cxx: bool = false,
+        /// `-c`, without `-o`, `-E` or `-S`, and of this one source: where gcc puts
+        /// the object.
+        compile: bool = false,
+        output: bool = false,
+        sources: usize = 0,
+        source: []const T = &.{},
+
+        const Self = @This();
+
+        /// Options whose value is the next argument (gcc's, that dune and build
+        /// systems pass): not a source.
+        const with_value = [_][]const u8{
+            "-o",  "-x",  "-I",  "-D",      "-U",       "-L",      "-include", "-isystem", "-idirafter", "-iquote",
+            "-MF", "-MT", "-MQ", "-target", "-Xlinker", "-Xclang", "-arch",    "-F",       "-framework", "-z",
+        };
+
+        /// The arguments of `it`, whose `next` may reuse its buffer: the source is
+        /// kept in `buf`.
+        fn scan(it: anytype, buf: []T) Self {
+            var self: Self = .{};
+            while (it.next()) |arg| {
+                if (arg.len > 1 and arg[0] == '-') {
+                    if (eql(T, arg, "-c")) self.compile = true;
+                    if (eql(T, arg, "-E") or eql(T, arg, "-S") or startsWith(T, arg, "-o")) self.output = true;
+                    if (eql(T, arg, "-xc++")) self.cxx = true;
+                    inline for (with_value) |flag| if (eql(T, arg, flag)) {
+                        const value = it.next() orelse return self;
+                        if (comptime std.mem.eql(u8, flag, "-o")) self.output = true;
+                        if (comptime std.mem.eql(u8, flag, "-x")) {
+                            if (eql(T, value, "c++")) self.cxx = true;
+                        }
+                        break;
+                    };
+                } else if (sourceKind(arg)) |kind| {
+                    if (kind == .cxx) self.cxx = true;
+                    self.sources += 1;
+                    const n = @min(arg.len, buf.len);
+                    @memcpy(buf[0..n], arg[0..n]);
+                    self.source = buf[0..n];
+                }
+            }
+            return self;
+        }
+
+        /// `-o`'s value for gcc's object name, `<source's basename, minus its
+        /// extension>.o`, in `buf`, NUL-terminated; `null` if `zig cc`'s is right.
+        fn defaultObject(self: Self, buf: []T) ?[:0]const T {
+            if (!options.windows or !self.compile or self.output or self.sources != 1) return null;
+            const seps = [_]T{ '/', '\\' };
+            const base = self.source[if (std.mem.findLastAny(T, self.source, &seps)) |i| i + 1 else 0..];
+            const stem = base[0 .. std.mem.findScalarLast(T, base, '.') orelse base.len];
+            if (stem.len + 3 > buf.len) return null;
+            @memcpy(buf[0..stem.len], stem);
+            buf[stem.len..][0..3].* = .{ '.', 'o', 0 };
+            return buf[0 .. stem.len + 2 :0];
+        }
+
+        fn sourceKind(arg: []const T) ?enum { c, cxx } {
+            const dot = std.mem.findScalarLast(T, arg, '.') orelse return null;
+            const ext = arg[dot..];
+            inline for (.{ ".cc", ".cpp", ".cxx", ".c++", ".cp", ".C", ".CC", ".CPP" }) |e| if (eql(T, ext, e)) return .cxx;
+            inline for (.{ ".c", ".s", ".S", ".m" }) |e| if (eql(T, ext, e)) return .c;
+            return null;
+        }
+    };
+}
+
+fn eql(comptime T: type, s: []const T, comptime literal: []const u8) bool {
+    return s.len == literal.len and startsWith(T, s, literal);
+}
 
 /// The macOS SDK's directories, relative to its root, and the flags passing them.
 const sdk_dirs = [_]struct { flag: []const u8, path: []const u8 }{

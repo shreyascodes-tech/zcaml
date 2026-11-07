@@ -190,6 +190,7 @@ fn buildCcWrapper(b: *std.Build, host: Platform, target: Platform) *std.Build.St
     const options = b.addOptions();
     options.addOption([]const []const u8, "args", args);
     options.addOption(bool, "macos_sdk", target.is_macos);
+    options.addOption(bool, "windows", target.resolved.result.os.tag == .windows);
 
     // Small: it runs for every C compilation.
     const is_windows = host.resolved.result.os.tag == .windows;
