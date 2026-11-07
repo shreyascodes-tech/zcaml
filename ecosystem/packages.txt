@@ -1,0 +1,94 @@
+# The packages run.sh builds, by how they build: commonly used ones, and enough of
+# each kind to see what does and doesn't cross-compile.
+#
+#   <package> [<library> | pps:<ppx>]...    default: the library <package>
+#
+# Not libraries that need an optional dependency (fmt.cli, cmdliner's), as
+# `(depends <package>)` doesn't install those.
+
+# dune, OCaml only
+fmt fmt fmt.tty
+yojson
+re
+csexp
+sexplib0
+sexplib
+base
+stdio
+cmdliner
+angstrom
+faraday
+uri
+ipaddr
+domain-name
+hex
+base64
+stringext
+camlp-streams
+ocamlgraph
+containers
+iter
+gen
+psq
+lru
+hmap
+gmap
+ezjsonm
+alcotest
+qcheck-core
+menhirLib
+lambdasoup
+toml
+fileutils
+dune-build-info
+ocaml-compiler-libs ocaml-compiler-libs.common
+
+# ppx: the rewriters run here, their runtime libraries on the target
+ppxlib
+ppx_deriving pps:ppx_deriving.show pps:ppx_deriving.eq
+ppx_deriving_yojson pps:ppx_deriving_yojson
+ppx_sexp_conv pps:ppx_sexp_conv
+ppx_jane pps:ppx_jane
+
+# dune, with C stubs
+bigstringaf
+cstruct
+ocplib-endian
+checkseum checkseum.c
+digestif digestif.c
+decompress decompress.de decompress.zl decompress.gz
+mirage-crypto
+mirage-crypto-rng mirage-crypto-rng.unix
+tls
+integers
+stdint
+spawn
+core
+core_unix core_unix
+lwt lwt lwt.unix
+eio_main
+notty notty notty.unix
+
+# topkg, ocamlbuild or findlib
+logs
+astring
+fpath
+bos
+uutf
+uucp
+uunf
+ptime ptime ptime.clock.os
+mtime mtime mtime.clock
+uuidm
+xmlm
+jsonm
+
+# configure or make, or system libraries
+zarith
+num
+ctypes
+ctypes-foreign ctypes.foreign
+yaml
+camomile
+sqlite3
+ssl

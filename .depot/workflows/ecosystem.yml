@@ -1,0 +1,108 @@
+name: Ecosystem
+
+# How much of opam cross-compiles with zcaml as it is: ecosystem/run.sh, on a
+# fresh machine, with a released OCaml and this checkout's dune (or a released
+# one). The report is the run's summary; the logs are an artifact.
+#
+#   depot ci run --workflow .depot/workflows/ecosystem.yml
+#   depot ci dispatch --repo shreyascodes-tech/zcaml --workflow ecosystem.yml --ref main \
+#     --input packages="lwt ptime"
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Packages to build, of ecosystem/packages.txt; default: all"
+        required: false
+        type: string
+      targets:
+        description: "Targets to build for"
+        required: false
+        type: string
+        default: "aarch64-linux-gnu x86_64-windows-gnu"
+      ocaml_tag:
+        description: "OCaml release (ocaml-v*) to build with"
+        required: false
+        type: string
+        default: "ocaml-v5.5.1-4"
+      dune_tag:
+        description: "dune release (dune-v*) to build with; default: this checkout's"
+        required: false
+        type: string
+
+env:
+  ZIG_VERSION: "0.17.0"
+  RELEASES: https://github.com/shreyascodes-tech/zcaml/releases/download
+  NATIVE: x86_64-linux-gnu
+
+jobs:
+  ecosystem:
+    name: Build opam packages
+    runs-on: depot-ubuntu-24.04-16
+    timeout-minutes: 120
+    env:
+      OCAML_TAG: ${{ inputs.ocaml_tag || 'ocaml-v5.5.1-4' }}
+      DUNE_TAG: ${{ inputs.dune_tag }}
+      TARGETS: ${{ inputs.targets || 'aarch64-linux-gnu x86_64-windows-gnu' }}
+      PACKAGES: ${{ inputs.packages }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
+      - name: Install QEMU, the aarch64 C library, and Wine
+        run: |
+          set -euo pipefail
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends qemu-user libc6-arm64-cross wine
+
+      - name: Download the toolchains
+        run: |
+          set -euo pipefail
+          [[ "$OCAML_TAG" =~ ^ocaml-v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+)?$ ]]
+          version="${BASH_REMATCH[1]}"
+          root="$RUNNER_TEMP/toolchains/$version/host-$NATIVE"
+          for t in $NATIVE $TARGETS; do
+            mkdir -p "$root/target-$t"
+            curl -fsSL "$RELEASES/$OCAML_TAG/ocaml-$version-host-$NATIVE-target-$t.tar.zst" |
+              zstd -d -q | tar -xf - -C "$root/target-$t"
+          done
+          echo "TOOLCHAINS=$root" >> "$GITHUB_ENV"
+
+      - name: Get dune
+        run: |
+          set -euo pipefail
+          if [[ -n "$DUNE_TAG" ]]; then
+            mkdir -p "$RUNNER_TEMP/dune"
+            curl -fsSL "$RELEASES/$DUNE_TAG/dune-${DUNE_TAG#dune-v}-$NATIVE.tar.zst" |
+              zstd -d -q | tar -xf - -C "$RUNNER_TEMP/dune"
+            bin="$RUNNER_TEMP/dune/bin"
+          else
+            zig build --summary failures -Docaml dune -Ddune-toolchains="$(dirname "$TOOLCHAINS")"
+            bin="$PWD/zig-out/dune/$NATIVE/bin"
+          fi
+          "$bin/dune" --version
+          echo "DUNE_BIN=$bin" >> "$GITHUB_ENV"
+
+      - name: Build the packages
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # the package names
+          ecosystem/run.sh "$RUNNER_TEMP/ecosystem" "$TOOLCHAINS" "$DUNE_BIN" $PACKAGES
+          cat "$RUNNER_TEMP/ecosystem/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecosystem
+          path: |
+            ${{ runner.temp }}/ecosystem/report.md
+            ${{ runner.temp }}/ecosystem/results.tsv
+            ${{ runner.temp }}/ecosystem/*/*.log
+          if-no-files-found: ignore
