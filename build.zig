@@ -6,6 +6,7 @@ const Dune = @import("build/dune/dune.zig");
 pub fn build(b: *std.Build) !void {
     const check_step = b.step("check", "compile the build's Zig programs, without installing them (for ZLS)");
     Ocaml.addCheck(b, check_step);
+    Dune.addCheck(b, check_step);
 
     const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
     const update_src = b.addUpdateSourceFiles();
@@ -119,12 +120,12 @@ fn addDune(b: *std.Build, step: *std.Build.Step, dune: Dune, toolchains: DuneToo
     const native = Ocaml.resolveTarget(b, "native");
     const native_tc = toolchains.get(b, native, native);
     const native_name = native.result.linuxTriple(b.allocator) catch @panic("OOM");
-    installDune(b, step, dune, native_tc, native_tc, native_name, native.result.os.tag);
+    installDune(b, step, dune, native_tc, native_tc, native_name, native);
     for (targets) |t| {
         const target = Ocaml.resolveTarget(b, t);
         const name = target.result.linuxTriple(b.allocator) catch @panic("OOM");
         if (std.mem.eql(u8, name, native_name)) continue;
-        installDune(b, step, dune, native_tc, toolchains.get(b, native, target), name, target.result.os.tag);
+        installDune(b, step, dune, native_tc, toolchains.get(b, native, target), name, target);
     }
 }
 
@@ -156,9 +157,9 @@ const DuneToolchains = union(enum) {
     }
 };
 
-fn installDune(b: *std.Build, step: *std.Build.Step, dune: Dune, native_tc: std.Build.LazyPath, tc: std.Build.LazyPath, name: []const u8, os: std.Target.Os.Tag) void {
-    const exe = dune.bootstrap(native_tc, tc, os);
-    const dest = b.fmt("dune/{s}/bin/dune{s}", .{ name, if (os == .windows) ".exe" else "" });
+fn installDune(b: *std.Build, step: *std.Build.Step, dune: Dune, native_tc: std.Build.LazyPath, tc: std.Build.LazyPath, name: []const u8, target: std.Build.ResolvedTarget) void {
+    const exe = dune.bootstrap(native_tc, tc, target);
+    const dest = b.fmt("dune/{s}/bin/dune{s}", .{ name, if (target.result.os.tag == .windows) ".exe" else "" });
     step.dependOn(&b.addInstallFileWithDir(exe, .prefix, dest).step);
 }
 

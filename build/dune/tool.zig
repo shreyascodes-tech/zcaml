@@ -1,8 +1,10 @@
 //! Bootstraps dune for a target: `boot/bootstrap.ml`'s two steps, run directly.
 //!
 //! ```text
-//! tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <out-file> [<macos-sdk>]
+//! tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <main-obj> <out-file> [<macos-sdk>]
 //! ```
+//!
+//! `<main-obj>` is linked in, with the program's `main` (`main.zig`).
 //!
 //! For macOS, `zcaml-cc` gets the SDK (dune's file watcher uses `CoreServices`)
 //! from `ZCAML_MACOS_SDK`.
@@ -12,7 +14,7 @@
 //! toolchain's toplevel, which `bootstrap.ml` would look up on `PATH` too, so this
 //! does what it does with the host's `ocamllex` and `ocaml`.
 //!
-//! The bootstrap takes no compiler flags, but `ocamlopt` reads `OCAMLPARAM` (`strip_flags`).
+//! The bootstrap takes no compiler flags, but `ocamlopt` reads `OCAMLPARAM` (`ocamlParam`).
 //!
 //! The bootstrap writes into the source tree: it runs in a copy, next to `<out-file>`.
 //! `zig` must be on `PATH`, for the toolchains' `zig cc`.
@@ -29,20 +31,22 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
 
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 6 and args.len != 7) fatal("usage: tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <out-file> [<macos-sdk>]", .{});
+    if (args.len != 7 and args.len != 8) fatal("usage: tool <dune-src> <host-toolchain> <target-toolchain> <target-os> <main-obj> <out-file> [<macos-sdk>]", .{});
     // Absolute: the commands run in `work`.
     const cwd = try std.process.currentPathAlloc(io, arena);
     const src = try path.resolve(arena, &.{ cwd, args[1] });
     const host_bin = try path.resolve(arena, &.{ cwd, args[2], "bin" });
     const target_bin = try path.resolve(arena, &.{ cwd, args[3], "bin" });
     const os = std.meta.stringToEnum(std.Target.Os.Tag, args[4]) orelse fatal("unknown OS '{s}'", .{args[4]});
-    const out = try path.resolve(arena, &.{ cwd, args[5] });
+    const main_obj = try path.resolve(arena, &.{ cwd, args[5] });
+    const out = try path.resolve(arena, &.{ cwd, args[6] });
 
     const work = try path.join(arena, &.{ path.dirname(out).?, "work" });
     Dir.cwd().deleteTree(io, work) catch {};
     try copyTree(io, arena, src, work);
     defer Dir.cwd().deleteTree(io, work) catch {};
     try setVersion(io, arena, work);
+    try addCrossHooks(io, arena, work);
 
     var env = try init.environ_map.clone(arena);
     try env.put("PATH", try std.mem.join(arena, if (builtin.os.tag == .windows) ";" else ":", &.{
@@ -50,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
         host_bin,
         init.environ_map.get("PATH") orelse "",
     }));
-    if (args.len == 7) try env.put("ZCAML_MACOS_SDK", try path.resolve(arena, &.{ cwd, args[6] }));
+    if (args.len == 8) try env.put("ZCAML_MACOS_SDK", try path.resolve(arena, &.{ cwd, args[7] }));
 
     try run(io, arena, work, &env, &.{
         try path.join(arena, &.{ host_bin, "ocamllex" ++ exe_ext }),
@@ -64,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
     for ([_][]const u8{ "pps", "types", "libs" }) |m| try script.print(arena, "#mod_use \"{s}/boot/{s}.ml\";;\n", .{ work, m });
     try script.print(arena, "#use \"{s}/boot/duneboot.ml\";;\n", .{work});
     try Dir.cwd().writeFile(io, .{ .sub_path = try path.join(arena, &.{ work, "boot", "main.top" }), .data = script.items });
-    if (os != .windows) try env.put("OCAMLPARAM", strip_flags);
+    try env.put("OCAMLPARAM", try ocamlParam(arena, os, main_obj));
     try run(io, arena, work, &env, &.{
         try path.join(arena, &.{ host_bin, "ocaml" ++ exe_ext }),
         "-I",
@@ -95,11 +99,62 @@ fn setVersion(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
     try Dir.cwd().writeFile(io, .{ .sub_path = project_path, .data = try std.fmt.allocPrint(arena, "{s}\n(version {s})\n", .{ project, version }) });
 }
 
-/// `OCAMLPARAM` for the bootstrap's `ocamlopt` runs: a stripped binary, ~25% smaller.
-/// OCaml backtraces need neither the symbols nor DWARF, and `-s` does nothing in
-/// compiles. Not on Windows, where the linker is flexlink, without `-s`, and there is
-/// nothing to strip.
-const strip_flags = "_,ccopt=-s";
+/// Cross-compiling a lock directory's packages with `-x` (`cross_pkg.ml`): the only
+/// changes to dune's source.
+fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
+    try Dir.cwd().writeFile(io, .{
+        .sub_path = try path.join(arena, &.{ work, "src", "dune_rules", "cross_pkg.ml" }),
+        .data = @embedFile("cross_pkg.ml"),
+    });
+    // Keep inactive contexts' package builds (`-x` ones), as `dune clean` removes them.
+    try replaceOnce(io, arena, work, "src/dune_rules/gen_rules.ml",
+        \\        (Subdir_set.of_list
+        \\           (List.rev_map contexts ~f:(fun context_name ->
+        \\              Filename.of_string_exn (Context_name.to_string context_name))))
+    ,
+        \\        (let _ = contexts in Subdir_set.all)
+    );
+    // A context with a findlib toolchain compiles with it, not the lock directory's
+    // `ocaml`: as a lock directory without one does.
+    try replaceOnce(io, arena, work, "src/dune_rules/context.ml",
+        \\           | Lock _ ->
+        \\             Pkg_rules.ocaml_toolchain builder.name
+    ,
+        \\           | Lock _ when Option.is_some builder.findlib_toolchain -> toolchain `Lock
+        \\           | Lock _ ->
+        \\             Pkg_rules.ocaml_toolchain builder.name
+    );
+    // A package's build, marked in a context with one.
+    try replaceOnce(io, arena, work, "src/dune_rules/pkg_rules.ml",
+        \\  >>> add_env (Pkg.exported_env pkg) build_action
+    ,
+        \\  >>> Cross_pkg.build_action context_name (add_env (Pkg.exported_env pkg) build_action)
+        \\        ~deps_target_dirs:(fun ctx -> List.map (Pkg.deps_closure pkg) ~f:(fun (dep : Pkg.t) ->
+        \\          (Paths.make dep.pkg_digest (Dependencies ctx) ~relative:Path.Build.relative).target_dir))
+    );
+}
+
+/// Replaces `old`, which must be in the file exactly once: fails loudly when dune changes.
+fn replaceOnce(io: Io, arena: std.mem.Allocator, work: []const u8, file: []const u8, old: []const u8, new: []const u8) !void {
+    const full = try path.join(arena, &.{ work, file });
+    const text = try Dir.cwd().readFileAlloc(io, full, arena, .unlimited);
+    const i = std.mem.find(u8, text, old) orelse fatal("{s}: no '{s}' to hook into: update addCrossHooks for this dune", .{ file, old });
+    if (std.mem.findPos(u8, text, i + old.len, old) != null) fatal("{s}: '{s}' more than once: update addCrossHooks for this dune", .{ file, old });
+    try Dir.cwd().writeFile(io, .{ .sub_path = full, .data = try std.mem.concat(arena, u8, &.{ text[0..i], new, text[i + old.len ..] }) });
+}
+
+/// `OCAMLPARAM` for the bootstrap's `ocamlopt` runs, read after the command line
+/// (`_,`), for its link of `dune.exe`:
+/// - `cclib=<main-obj>`: one more object, ahead of the runtime's `libasmrun.a`, whose
+///   `main` it replaces. Compiles ignore `cclib`.
+/// - `ccopt=-s`: a stripped binary, ~25% smaller. OCaml backtraces need neither the
+///   symbols nor DWARF, and `-s` does nothing in compiles. Not on Windows, where the
+///   linker is flexlink, without `-s`, and there is nothing to strip.
+fn ocamlParam(arena: std.mem.Allocator, os: std.Target.Os.Tag, main_obj: []const u8) ![]const u8 {
+    // `OCAMLPARAM` is `,`-separated, and `cclib` a space-separated list.
+    if (std.mem.findAny(u8, main_obj, ", \t") != null) fatal("'{s}': OCAMLPARAM can't hold a path with ',' or spaces", .{main_obj});
+    return std.fmt.allocPrint(arena, "_,cclib={s}{s}", .{ main_obj, if (os == .windows) "" else ",ccopt=-s" });
+}
 
 fn copyTree(io: Io, arena: std.mem.Allocator, src: []const u8, dest: []const u8) !void {
     var src_dir = try Dir.cwd().openDir(io, src, .{ .iterate = true });

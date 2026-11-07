@@ -3,7 +3,7 @@
 //!
 //! ```zig
 //! const dune: Dune = .init(b, b.dependency("dune", .{}), macos_sdk);
-//! const exe = dune.bootstrap(native_toolchain.directory(), aarch64_toolchain.directory(), .linux);
+//! const exe = dune.bootstrap(native_toolchain.directory(), aarch64_toolchain.directory(), aarch64_linux);
 //! ```
 const std = @import("std");
 const LazyPath = std.Build.LazyPath;
@@ -21,18 +21,45 @@ pub fn init(b: *std.Build, dep: *std.Build.Dependency, macos_sdk: ?LazyPath) Dun
 
 /// `dune(.exe)` for `target`, with `toolchain`, a toolchain installation for it
 /// running here, like `host_toolchain`: the native one, which runs the bootstrap.
-pub fn bootstrap(self: Dune, host_toolchain: LazyPath, toolchain: LazyPath, target: std.Target.Os.Tag) LazyPath {
+/// Its entry point is `main.zig`'s.
+pub fn bootstrap(self: Dune, host_toolchain: LazyPath, toolchain: LazyPath, target: std.Build.ResolvedTarget) LazyPath {
     const b = self.b;
+    const os = target.result.os.tag;
     const run = b.addRunArtifact(toolExe(b));
     run.setName("bootstrap dune");
     setEnv(b, run);
     run.addDirectoryArg(self.src);
     run.addDirectoryArg(host_toolchain);
     run.addDirectoryArg(toolchain);
-    run.addArg(@tagName(target));
-    const out = run.addOutputFileArg(if (target == .windows) "dune.exe" else "dune");
-    if (target == .macos) run.addDirectoryArg(self.macos_sdk orelse @panic("dune for macOS needs the macOS SDK"));
+    run.addArg(@tagName(os));
+    run.addFileArg(mainObject(b, target).getEmittedBin());
+    const out = run.addOutputFileArg(if (os == .windows) "dune.exe" else "dune");
+    if (os == .macos) run.addDirectoryArg(self.macos_sdk orelse @panic("dune for macOS needs the macOS SDK"));
     return out;
+}
+
+/// The bootstrap's Zig programs, for the build machine: `zig build check`.
+pub fn addCheck(b: *std.Build, step: *std.Build.Step) void {
+    step.dependOn(&mainObject(b, b.graph.host).step);
+    step.dependOn(&toolExe(b).step);
+}
+
+fn mainObject(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
+    const obj = b.addObject(.{
+        .name = "dune-main",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/dune/main.zig"),
+            .target = target,
+            .optimize = .ReleaseSmall,
+            .link_libc = true,
+            // Linked by the toolchain's `zig cc`, without Zig's runtime libraries.
+            .stack_check = false,
+            .stack_protector = false,
+            .strip = true,
+        }),
+    });
+    obj.bundle_compiler_rt = true;
+    return obj;
 }
 
 fn toolExe(b: *std.Build) *std.Build.Step.Compile {
