@@ -1,7 +1,9 @@
 //! `zcaml-cc-<target>`: the C compiler of a toolchain (`ocamlc -config`'s `c_compiler`).
 //! `Config`'s other C commands (assembling, linking) run it too.
 //!
-//! Runs `zig cc` with the target's flags baked in, followed by its own arguments.
+//! Runs `zig cc` with the target's flags baked in, followed by its own arguments, or
+//! `zig c++` for C++ (`-x c++`, as dune compiles C++ stubs): only that gets
+//! libc++'s headers.
 //! `c_compiler` has to be a single program: tools like dune split it into a program
 //! and flags and don't always pass the flags (and pass them twice when they do), so
 //! `zig cc -target ...` doesn't work there. The name is unique per target so the
@@ -73,7 +75,7 @@ const posix = struct {
         const len = 2 + target_args.len + sdk_args.len + ours.len;
         const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
         const argv = ptr[0..len :null];
-        argv[0..2].* = .{ zig, "cc" };
+        argv[0..2].* = .{ zig, if (isCxx(ours)) "c++" else "cc" };
         var i: usize = 2;
         for ([_][]const [*:0]const u8{ &target_args, sdk_args, ours }) |part| {
             @memcpy(argv[i..][0..part.len], part);
@@ -83,6 +85,16 @@ const posix = struct {
 
         _ = execvp(zig, argv);
         return cannotRun(zig);
+    }
+
+    fn isCxx(args: []const [*:0]const u8) bool {
+        var prev: []const u8 = "";
+        for (args) |a| {
+            const arg = std.mem.span(a);
+            if (std.mem.eql(u8, arg, "-xc++") or (std.mem.eql(u8, prev, "-x") and std.mem.eql(u8, arg, "c++"))) return true;
+            prev = arg;
+        }
+        return false;
     }
 
     fn cannotRun(zig: [*:0]const u8) u8 {
@@ -202,9 +214,9 @@ const windows = struct {
 
     const L = std.unicode.utf8ToUtf16LeStringLiteral;
 
-    /// `" cc <target args>`, closing the quoted zig path. The flags need no quoting (`buildCcWrapper`).
-    const cc_and_target_args = L(blk: {
-        var s: []const u8 = "\" cc";
+    /// `" <target args>`. The flags need no quoting (`buildCcWrapper`).
+    const target_args = L(blk: {
+        var s: []const u8 = "";
         for (options.args) |arg| s = s ++ " " ++ arg;
         break :blk s;
     });
@@ -223,7 +235,7 @@ const windows = struct {
     var sdk_buf: [w.PATH_MAX_WIDE]u16 = undefined;
     var pointer_buf: [4096]u8 = undefined;
 
-    /// Runs `"<zig>" cc <target args> <SDK args>` followed by our command line, minus the program name.
+    /// Runs `"<zig>" cc <target args> <SDK args>` (or `c++`) followed by our command line, minus the program name.
     fn run(cmdline: []const u16) u8 {
         // The child inherits our environment. First: setting a variable can move the
         // environment block, which `getenv`'s results point into.
@@ -234,15 +246,17 @@ const windows = struct {
         }
         const zig = getenv("ZIG") orelse L("zig");
 
+        const ours = skipProgramName(cmdline);
+        const command = if (isCxx(ours)) L("\" c++") else L("\" cc");
         var len: usize = 0;
-        for ([_][]const u16{ L("\""), zig, cc_and_target_args }) |part| if (!append(&len, part)) return cannotRun();
+        for ([_][]const u16{ L("\""), zig, command, target_args }) |part| if (!append(&len, part)) return cannotRun();
         if (options.macos_sdk) {
             const root = macosSdk() orelse return 1;
             if (!std.mem.eql(u16, root, L("none"))) for (sdk_dirs_w) |dir| {
                 for ([_][]const u16{ L(" \""), dir.flag, root, dir.path, L("\"") }) |part| if (!append(&len, part)) return cannotRun();
             };
         }
-        if (!append(&len, skipProgramName(cmdline))) return cannotRun();
+        if (!append(&len, ours)) return cannotRun();
         cmd_buf[len] = 0;
 
         var startup: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
@@ -308,6 +322,11 @@ const windows = struct {
         const line = firstLine(u8, pointer_buf[0..n]) orelse return null;
         const len = std.unicode.utf8ToUtf16Le(&sdk_buf, line) catch return null;
         return sdk_buf[0..len];
+    }
+
+    /// `-x c++` among the arguments, as dune passes it: unquoted.
+    fn isCxx(args: []const u16) bool {
+        return std.mem.find(u16, args, L(" -x c++")) != null or std.mem.find(u16, args, L(" -xc++")) != null;
     }
 
     /// The program name ends at the closing quote if quoted (no escapes there), else at the first blank.
