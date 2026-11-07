@@ -41,7 +41,24 @@ lambdasoup
 toml
 fileutils
 dune-build-info
+dune-site
 ocaml-compiler-libs ocaml-compiler-libs.common
+ocaml-version
+omd
+cmarkit
+tyxml
+odoc-parser
+batteries
+extlib
+mparser
+cudf
+bechamel
+pbrt
+asn1-combinators
+x509
+ocamlformat-lib
+uuseg
+progress
 
 # ppx: the rewriters run here, their runtime libraries on the target
 ppxlib
@@ -49,6 +66,11 @@ ppx_deriving pps:ppx_deriving.show pps:ppx_deriving.eq
 ppx_deriving_yojson pps:ppx_deriving_yojson
 ppx_sexp_conv pps:ppx_sexp_conv
 ppx_jane pps:ppx_jane
+ppx_expect pps:ppx_expect
+ppx_yojson_conv pps:ppx_yojson_conv
+sedlex sedlex pps:sedlex.ppx
+lwt_ppx lwt pps:lwt_ppx
+bisect_ppx pps:bisect_ppx
 
 # dune, with C stubs
 bigstringaf
@@ -68,6 +90,13 @@ core_unix core_unix
 lwt lwt lwt.unix
 eio_main
 notty notty notty.unix
+ocaml_intrinsics
+memtrace
+extunix
+cohttp-lwt-unix
+async
+re2
+luv
 
 # topkg, ocamlbuild or findlib
 logs
@@ -92,3 +121,4 @@ yaml
 camomile
 sqlite3
 ssl
+camlzip zip
