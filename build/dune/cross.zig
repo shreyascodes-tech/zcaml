@@ -13,8 +13,10 @@ const path = std.fs.path;
 const fatal = std.process.fatal;
 
 /// The toolchain, and the host context: set by `cross_pkg.ml`.
-pub const marker = "DUNE_PKG_CROSS_TARGET";
+const marker = "DUNE_PKG_CROSS_TARGET";
 const host_marker = "DUNE_PKG_CROSS_HOST";
+/// All set only in a cross context's package build: one of dune's actions.
+pub const markers = [_][:0]const u8{ marker, host_marker, "INSIDE_DUNE" };
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -24,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     const command: Command = try .parse(arena, args[2..]);
     const toolchain = env.get(marker).?;
-    const host = env.get(host_marker) orelse fatal("{s} without {s}", .{ marker, host_marker });
+    const host = env.get(host_marker).?;
     inline for (&.{ "DUNE_WORKSPACE", "DUNE_BUILD_DIR" }) |name| {
         if (env.get(name) != null) fatal("cross-compiling a package: {s} isn't supported", .{name});
     }

@@ -27,10 +27,16 @@ fn main(argc: c_int, argv: CArgv, envp: CArgv) callconv(.c) c_int {
 
 /// `dune build`, in a cross context's package build.
 fn isCrossBuild(argc: c_int, argv: CArgv) bool {
-    const marker = if (windows) _wgetenv(std.unicode.utf8ToUtf16LeStringLiteral(cross.marker)) else std.c.getenv(cross.marker);
-    if (marker == null or argc < 2) return false;
-    const build = if (windows) std.unicode.utf8ToUtf16LeStringLiteral("build") else "build";
-    return std.mem.eql(Char, std.mem.span(argv[1].?), build);
+    inline for (cross.markers) |name| if (getenv(name) == null) return false;
+    return argc >= 2 and std.mem.eql(Char, std.mem.span(argv[1].?), literal("build"));
+}
+
+fn getenv(comptime name: [:0]const u8) ?[*:0]const Char {
+    return if (windows) _wgetenv(literal(name)) else std.c.getenv(name.ptr);
+}
+
+fn literal(comptime s: [:0]const u8) [:0]const Char {
+    return if (windows) std.unicode.utf8ToUtf16LeStringLiteral(s) else s;
 }
 
 fn crossMain(argc: c_int, argv: CArgv, envp: CArgv) noreturn {
