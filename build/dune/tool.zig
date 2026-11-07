@@ -137,6 +137,19 @@ fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
         \\           | Lock _ ->
         \\             Pkg_rules.ocaml_toolchain builder.name
     );
+    // Its rules' `(run ocamlmklib ...)`, ..., run the toolchain's.
+    try replaceOnce(io, arena, work, "src/dune_rules/action_unexpanded.ml",
+        \\               Artifacts.binary ?hint ~loc:(Some loc) ~where ~dir artifacts s)
+    ,
+        \\               let* context = Context.DB.by_dir env.dir in
+        \\               Cross_pkg.toolchain_tool
+        \\                 ~findlib_toolchain:(Context.findlib_toolchain context)
+        \\                 ~ocaml:(fun () -> Context.ocaml context)
+        \\                 s
+        \\               >>= (function
+        \\                | Some path -> Memo.return (Ok path)
+        \\                | None -> Artifacts.binary ?hint ~loc:(Some loc) ~where ~dir artifacts s))
+    );
     // A package's build, marked in a context with one.
     try replaceOnce(io, arena, work, "src/dune_rules/pkg_rules.ml",
         \\  >>> add_env (Pkg.exported_env pkg) build_action

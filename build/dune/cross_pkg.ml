@@ -2,14 +2,17 @@
 
    A context with a findlib toolchain takes its compiler from it, not from the
    lock directory's [ocaml] (see [Context]), of the same release
-   ([check_compiler]), so its packages' builds compile for the target. Each also depends on its dependencies' builds in the host
-   context, and gets in its environment:
+   ([check_compiler]), so its packages' builds compile for the target. The OCaml
+   tools its rules run by name are the toolchain's too ([toolchain_tool]). Each package's
+   build also depends on its dependencies' builds in the host context, and gets
+   in its environment:
 
    - [DUNE_PKG_CROSS_TARGET]: the toolchain, for the package's
-     [dune build -p <pkg>], which dune runs as itself: our [main] (build/dune/cross.zig)
-     builds the package for the target with the toolchain, but its executables
-     for the build machine, with the host context's libraries. Builds that don't
-     use dune or topkg (make, configure scripts, ...) are the build machine's.
+     [dune build -p <pkg>] and [dune exec], which dune runs as itself: our [main]
+     (build/dune/cross.zig) builds the package for the target with the
+     toolchain, but its executables for the build machine, with the host
+     context's libraries. Builds that don't use dune or topkg (make, configure
+     scripts, ...) are the build machine's.
    - [DUNE_PKG_CROSS_HOST]: the host context.
    - [TOPKG_CONF_TOOLCHAIN]: the toolchain, for topkg's builds.
 
@@ -43,6 +46,25 @@ let of_context context =
           Option.some_if
             (Context_name.equal context (Context_name.target base.name ~toolchain))
             { toolchain; host = base.name }))
+;;
+
+(* The program [prog] of a rule's [(run prog ...)], in a context with a findlib
+   toolchain whose compiler is [ocaml], if it's one of the compiler's tools: the
+   toolchain's, as dune's own rules use. dune looks a rule's programs up for the
+   build machine (in the host context), right for anything else. Not [ocaml]:
+   scripts run on the build machine. *)
+let toolchain_tool ~findlib_toolchain ~ocaml prog =
+  match findlib_toolchain with
+  | None -> Memo.return None
+  | Some _ ->
+    let+ (ocaml : Ocaml_toolchain.t) = ocaml () in
+    (match prog with
+     | "ocamlc" -> Some ocaml.ocamlc
+     | "ocamlopt" -> Result.to_option ocaml.ocamlopt
+     | "ocamldep" -> Result.to_option ocaml.ocamldep
+     | "ocamlmklib" -> Result.to_option ocaml.ocamlmklib
+     | "ocamlobjinfo" -> Result.to_option ocaml.ocamlobjinfo
+     | _ -> None)
 ;;
 
 (* The host context's builds are of the same packages, by digest, from the same
