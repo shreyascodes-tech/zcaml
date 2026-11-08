@@ -20,6 +20,10 @@ Then `dune pkg lock`, and `dune build -x <target>` with
 [zcaml](https://github.com/shreyascodes-tech/zcaml)'s dune and toolchains.
 Nothing here is specific to zcaml: native builds are as upstream's.
 
+This repository is a mirror of zcaml's
+[`overlay/`](https://github.com/shreyascodes-tech/zcaml/tree/main/overlay), where
+it's developed and tested (`ecosystem/`): send issues and changes there.
+
 | package | what | why |
 |---|---|---|
 | `cmdliner.2.1.1+zcaml` | [dune-universe](https://github.com/dune-universe/opam-overlays)'s dune port, and the `cmdliner` tool, which the port leaves out (`cmdliner-tool.patch`) | upstream builds with make and `ocaml build.ml`, for the build machine only; packages' builds run the tool (`cmdliner install tool-support`) |
