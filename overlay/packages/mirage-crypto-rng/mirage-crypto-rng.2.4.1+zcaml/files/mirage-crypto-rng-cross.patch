@@ -1,0 +1,13 @@
+--- a/rng/unix/discover.ml
++++ b/rng/unix/discover.ml
+@@ -1,8 +1,8 @@
+ let () =
+   let open Configurator.V1 in
+-  main ~name:"rng_flags" (fun _t ->
++  main ~name:"rng_flags" (fun t ->
+     let c_lib_flags =
+-      match Sys.os_type with
++      match ocaml_config_var_exn t "os_type" with
+       | "Win32" | "Cygwin" -> ["-lbcrypt"]
+       | _ -> []
+     in
