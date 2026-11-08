@@ -1,0 +1,28 @@
+--- a/lib/uring/dune
++++ b/lib/uring/dune
+@@ -66,7 +66,7 @@
+     (chdir
+      %{project_root}/vendor/liburing
+      (progn
+-      (run ./configure)
++      (run sh ./configure --cc=%{ocaml-config:c_compiler} --use-libc)
+       (setenv
+        CFLAGS
+        "%{ocaml-config:ocamlc_cflags}"
+--- a/vendor/liburing/src/Makefile
++++ b/vendor/liburing/src/Makefile
+@@ -75,11 +75,11 @@
+ 
+ override CPPFLAGS += -MT "$@" -MMD -MP -MF "$@.d"
+ liburing_objs := $(patsubst %.c,%.ol,$(liburing_srcs))
+-liburing_sobjs := $(patsubst %.c,%.os,$(liburing_srcs))
++liburing_sobjs := $(patsubst %.c,%.so.o,$(liburing_srcs))
+ liburing_ffi_objs := ffi.ol
+-liburing_ffi_sobjs := ffi.os
++liburing_ffi_sobjs := ffi.so.o
+ 
+-%.os: %.c
++%.so.o: %.c
+ 	$(QUIET_CC)$(CC) $(CPPFLAGS) $(SO_CFLAGS) -c -o $@ $<
+ 
+ %.ol: %.c

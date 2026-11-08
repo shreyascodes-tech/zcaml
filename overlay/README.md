@@ -38,6 +38,7 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `sqlite3.5.4.2+zcaml` | with `libsqlite3` (`sqlite3-vendored.patch`) | upstream links the system's SQLite, found with the build machine's `pkg-config` |
 | `mirage-crypto-rng.2.4.1+zcaml` | the target's `os_type`, not `Sys.os_type`, for `-lbcrypt` (`mirage-crypto-rng-cross.patch`) | `discover.exe` runs on the build machine, where `Sys.os_type` isn't `Win32` |
 | `ca-certs.1.0.3+zcaml` | `CertOpenSystemStoreA` (`ca-certs-unicode.patch`) | OCaml on Windows defines `UNICODE`, so `CertOpenSystemStore` is `CertOpenSystemStoreW`, which takes `LPCWSTR`, not `"ROOT"` |
+| `uring.2.15.1+zcaml` | runs liburing's `configure` through `sh` with the target's C compiler and `--use-libc`, and names shared objects `.so.o` (`uring-cross.patch`) | `(run ./configure)` resolves in the default context, which `dune pkg` doesn't populate for dependencies; `-ffreestanding` drops `zig cc`'s glibc headers, and `.os` objects make `zig cc` run `/usr/bin/ld` |
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.
