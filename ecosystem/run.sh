@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds ecosystem/packages.txt's packages with dune pkg for $TARGETS, without
-# patching any of them: how much of opam cross-compiles with zcaml as it is.
+# Builds ecosystem/packages.txt's packages with dune pkg for $TARGETS, as opam has
+# them but for zcaml's overlay (overlay/): how much of opam cross-compiles with zcaml.
 #
 #   ecosystem/run.sh <work-dir> <toolchains> <dune-bin-dir> [<package>...]
 #
@@ -13,7 +13,8 @@
 #   TARGETS                    default: aarch64-linux-gnu x86_64-windows-gnu
 #   JOBS                       packages at a time, default: half the CPUs
 #   AARCH64_LINUX_GNU_SYSROOT  for qemu-aarch64, default: /usr/aarch64-linux-gnu
-#   OVERLAYS                   more opam repositories, ahead of dune's: `<name>=<url>`s
+#   OVERLAY                    zcaml's overlay, default: this checkout's; empty: none
+#   OVERLAYS                   more opam repositories, ahead of it: `<name>=<url>`s
 #   `zig` on PATH, and qemu-aarch64 and wine for running the targets'.
 set -euo pipefail
 
@@ -54,10 +55,11 @@ export OCAMLFIND_CONF="$work/findlib.conf"
 export XDG_CACHE_HOME="$work/cache"
 export WINEPREFIX="$work/wine" WINEDEBUG=-all
 
-# $OVERLAYS, then dune's default repositories, at fixed commits: a run's results
-# don't depend on when it ran.
+# $OVERLAYS, zcaml's overlay, then dune's default repositories, at fixed commits:
+# a run's results don't depend on when it ran.
+zcaml_overlay="${OVERLAY-$here/../overlay}"
 overlays=""
-for overlay in ${OVERLAYS:-}; do
+for overlay in ${OVERLAYS:-} ${zcaml_overlay:+"zcaml=file://$(cd "$zcaml_overlay" && pwd)"}; do
   printf '(repository\n (name %s)\n (url %s))\n' "${overlay%%=*}" "${overlay#*=}"
   overlays="$overlays ${overlay%%=*}"
 done >"$work/repositories.dune"

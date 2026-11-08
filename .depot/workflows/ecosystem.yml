@@ -30,7 +30,7 @@ on:
         required: false
         type: string
       overlays:
-        description: "More opam repositories, ahead of dune's: <name>=<url>s (ecosystem/run.sh's OVERLAYS)"
+        description: "More opam repositories, ahead of overlay/'s: <name>=<url>s (ecosystem/run.sh's OVERLAYS)"
         required: false
         type: string
 
