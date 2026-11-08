@@ -73,7 +73,7 @@ ppx_expect pps:ppx_expect
 ppx_yojson_conv pps:ppx_yojson_conv
 sedlex sedlex pps:sedlex.ppx
 lwt_ppx lwt pps:lwt_ppx
-bisect_ppx pps:bisect_ppx
+bisect_ppx_ng pps:bisect_ppx_ng
 
 # dune, with C stubs
 bigstringaf
