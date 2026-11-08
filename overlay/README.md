@@ -42,6 +42,8 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `libz.1.4` | zlib as a library with no modules, built by dune (`libz-dune.patch`): depending on it gives C stubs `zlib.h` and links zlib | new: `conf-zlib` checks for the system's zlib, which a cross build has none of |
 | `camlzip.1.14+zcaml` | built by dune with `libz` (`camlzip-dune.patch`) | upstream builds with make and the build machine's `ocamlfind`, against the system's zlib |
 | `extunix.0.4.4+zcaml` | `ppx_have` reads the features `discover` found from a file (`extunix-cross.patch`) | `ppx_have` is built with `config.ml`, so with the build machine's features: for Windows, it declares bindings that weren't compiled, and linking fails |
+| `eio_windows.1.6+zcaml` | `GetModuleHandleA` (`eio_windows-unicode.patch`) | OCaml on Windows defines `UNICODE`, so `GetModuleHandle` is `GetModuleHandleW`, which takes `LPCWSTR`, not `"ntdll.dll"` |
+| `eio_main.1.6+zcaml` | with `eio_windows.1.6+zcaml` | upstream's needs `eio_windows` of exactly its version |
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.

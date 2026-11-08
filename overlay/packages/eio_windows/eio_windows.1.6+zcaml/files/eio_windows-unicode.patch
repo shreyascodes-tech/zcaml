@@ -1,0 +1,30 @@
+diff -ru a/lib_eio_windows/eio_windows_stubs.c b/lib_eio_windows/eio_windows_stubs.c
+--- a/lib_eio_windows/eio_windows_stubs.c	2026-11-08 23:38:13.322783182 +0530
++++ b/lib_eio_windows/eio_windows_stubs.c	2026-11-08 23:38:13.325704605 +0530
+@@ -116,7 +116,7 @@
+   // Not sure what the overhead of this is, but it allows us to have low-level control
+   // over file creation. In particular, we can specify the HANDLE to the parent directory
+   // of a relative path a la openat.
+-  pNtCreateFile NtCreatefile = (pNtCreateFile)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtCreateFile");
++  pNtCreateFile NtCreatefile = (pNtCreateFile)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateFile");
+   caml_unix_check_path(v_pathname, "openat");
+   pathname = caml_stat_strdup_to_utf16(String_val(v_pathname));
+   RtlInitUnicodeString(&relative, pathname);
+@@ -217,7 +217,7 @@
+   // Not sure what the overhead of this is, but it allows us to have low-level control
+   // over file creation. In particular, we can specify the HANDLE to the parent directory
+   // of a relative path a la openat.
+-  pNtCreateFile NtCreatefile = (pNtCreateFile)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtCreateFile");
++  pNtCreateFile NtCreatefile = (pNtCreateFile)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateFile");
+   caml_unix_check_path(v_pathname, "unlinkat");
+   pathname = caml_stat_strdup_to_utf16(String_val(v_pathname));
+   RtlInitUnicodeString(&relative, pathname);
+@@ -282,7 +282,7 @@
+   size_t name_len, info_size;
+   NTSTATUS r;
+ 
+-  pNtCreateFile NtCreatefile = (pNtCreateFile)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtCreateFile");
++  pNtCreateFile NtCreatefile = (pNtCreateFile)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateFile");
+   caml_unix_check_path(v_old_path, "renameat");
+   caml_unix_check_path(v_new_path, "renameat");
+   old_dir = Is_some(v_old_fd) ? Handle_val(Some_val(v_old_fd)) : NULL;
