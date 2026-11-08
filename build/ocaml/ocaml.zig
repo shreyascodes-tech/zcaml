@@ -255,6 +255,10 @@ pub const Toolchain = struct {
         if (tc.host_rt.ocamlruni) |a| l.file(a, b.fmt("{s}/ocamlruni{s}", .{ bin, host_exe }));
         l.artifact(tc.host_rt.ocamlyacc, bin);
         l.artifact(tc.cc_wrapper, bin);
+        // Also as mingw-w64's gcc, which opam-repository's Windows packages check for
+        // (`conf-mingw-w64-gcc-*`) and `configure --host` looks for. A copy: a
+        // symbolic link wouldn't survive Windows.
+        if (target.is_windows) l.file(tc.cc_wrapper.getEmittedBin(), b.fmt("{s}/{s}-gcc{s}", .{ bin, target.triplet, host_exe }));
         if (!tc.host_rt.platform.eql(target)) {
             l.file(tc.target_rt.ocamlrun, b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
             if (tc.target_rt.ocamlrund) |a| l.file(a, b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));
