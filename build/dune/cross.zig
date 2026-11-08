@@ -15,9 +15,9 @@ const Allocator = std.mem.Allocator;
 const path = std.fs.path;
 const fatal = std.process.fatal;
 
-/// The toolchain, and the host context: set by `cross_pkg.ml`.
+/// The toolchain, and the host context's builds' libraries: set by `cross_pkg.ml`.
 const marker = "DUNE_PKG_CROSS_TARGET";
-const host_marker = "DUNE_PKG_CROSS_HOST";
+const host_marker = "DUNE_PKG_CROSS_HOST_OCAMLPATH";
 /// All set only in a cross context's package build: one of dune's actions.
 pub const markers = [_][:0]const u8{ marker, host_marker, "INSIDE_DUNE" };
 pub const commands = [_][:0]const u8{ "build", "exec" };
@@ -30,14 +30,14 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     // Copies: `env` frees them, as they're removed from it.
     const toolchain = try arena.dupe(u8, env.get(marker).?);
-    const host = try arena.dupe(u8, env.get(host_marker).?);
     const ocamlpath = try arena.dupe(u8, env.get("OCAMLPATH") orelse "");
+    const host_ocamlpath = try arena.dupe(u8, env.get(host_marker).?);
     inline for (&.{ "DUNE_WORKSPACE", "DUNE_BUILD_DIR" }) |name| {
         if (env.get(name) != null) fatal("cross-compiling a package: {s} isn't supported", .{name});
     }
 
     const cwd = try std.process.currentPathAlloc(io, arena);
-    const libs: Libraries = try .split(io, arena, ocamlpath, host);
+    const libs: Libraries = .{ .target = try existing(io, arena, ocamlpath), .host = try existing(io, arena, host_ocamlpath) };
     // A context's `OCAMLPATH` is the workspace's only if the environment has none.
     inline for (&.{ "OCAMLPATH", marker, host_marker, "DUNE_CROSS_TARGET" }) |name| _ = env.swapRemove(name);
     const dune: Dune = .{ .io = io, .exe = try std.process.executablePathAlloc(io, arena), .cwd = cwd, .env = env };
@@ -142,38 +142,21 @@ const Command = struct {
     }
 };
 
-/// The dependencies' libraries, from `OCAMLPATH`: the cross context's, and the host
+/// The dependencies' libraries: the cross context's (`OCAMLPATH`), and the host
 /// context's builds of the same packages, which `cross_pkg.ml` makes it depend on.
 const Libraries = struct {
     target: []const []const u8,
     host: []const []const u8,
-
-    fn split(io: Io, arena: Allocator, ocamlpath: []const u8, host_context: []const u8) !Libraries {
-        var target: std.ArrayList([]const u8) = .empty;
-        var host: std.ArrayList([]const u8) = .empty;
-        var it = std.mem.tokenizeScalar(u8, ocamlpath, path.delimiter);
-        while (it.next()) |dir| {
-            if (!exists(io, dir)) continue; // a package without libraries
-            const host_dir = try hostDir(arena, dir, host_context);
-            if (!exists(io, host_dir)) fatal("{s}: no build for the build machine, {s}", .{ dir, host_dir });
-            try target.append(arena, dir);
-            try host.append(arena, host_dir);
-        }
-        return .{ .target = target.items, .host = host.items };
-    }
-
-    /// `<build>/_private/<context>/.pkg/...`, in the host context.
-    fn hostDir(arena: Allocator, dir: []const u8, host_context: []const u8) ![]const u8 {
-        var components = path.componentIterator(dir);
-        while (components.next()) |component| {
-            if (!std.mem.eql(u8, component.name, "_private")) continue;
-            const context = components.next() orelse break;
-            const start = context.path.len - context.name.len;
-            return std.mem.concat(arena, u8, &.{ dir[0..start], host_context, dir[context.path.len..] });
-        }
-        fatal("OCAMLPATH has {s}: not a package's", .{dir});
-    }
 };
+
+/// The directories of the search path `list` that exist: not those of packages
+/// without libraries.
+fn existing(io: Io, arena: Allocator, list: []const u8) ![]const []const u8 {
+    var dirs: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeScalar(u8, list, path.delimiter);
+    while (it.next()) |dir| if (exists(io, dir)) try dirs.append(arena, dir);
+    return dirs.items;
+}
 
 /// This dune, run for a package's build.
 const Dune = struct {

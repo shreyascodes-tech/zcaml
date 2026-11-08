@@ -2,10 +2,13 @@
 
    A context with a findlib toolchain takes its compiler from it, not from the
    lock directory's [ocaml] (see [Context]), of the same release
-   ([check_compiler]), so its packages' builds compile for the target. The OCaml
+   ([check_compiler]), so its packages' builds compile for the target. Its
+   packages are the lock directory's solution for the target's platform
+   ([platform]). The OCaml
    tools its rules run by name are the toolchain's too ([toolchain_tool]). Each package's
-   build also depends on its dependencies' builds in the host context, and gets
-   in its environment:
+   build also depends on the host context's builds of its dependencies (of the
+   same names: the build machine's solution can differ), and gets in its
+   environment:
 
    - [DUNE_PKG_CROSS_TARGET]: the toolchain, for the package's
      [dune build -p <pkg>] and [dune exec], which dune runs as itself: our [main]
@@ -13,7 +16,7 @@
      toolchain, but its executables for the build machine, with the host
      context's libraries. Builds that don't use dune or topkg (make, configure
      scripts, ...) are the build machine's.
-   - [DUNE_PKG_CROSS_HOST]: the host context.
+   - [DUNE_PKG_CROSS_HOST_OCAMLPATH]: those builds' libraries.
    - [TOPKG_CONF_TOOLCHAIN]: the toolchain, for topkg's builds.
 
    Outside a lock directory's packages, in contexts without a toolchain, nothing
@@ -48,6 +51,60 @@ let of_context context =
             { toolchain; host = base.name }))
 ;;
 
+(* The platform [context]'s packages are the lock directory's solution for: the
+   build machine's, but a cross context's target's [os] and [arch], from its
+   toolchain's [ocamlc -config], in opam's names. Its [os-distribution],
+   [os-family] and [os-version] are unknown. Not from [Context]: its OCAMLPATH
+   is the packages'. *)
+let platform =
+  let module Var = Package_variable_name in
+  let target_config ~context ~toolchain =
+    let env = Global.env () in
+    let which = Which.which ~path:(Env_path.path env) in
+    let* findlib =
+      Findlib_config.discover_from_env
+        ~env
+        ~which
+        ~ocamlpath:(Memo.return [])
+        ~findlib_toolchain:(Some (Context_name.to_string toolchain))
+    in
+    let+ (ocaml : Ocaml_toolchain.t) =
+      Ocaml_toolchain.of_env_with_findlib context env findlib ~which
+    in
+    ocaml.ocaml_config
+  in
+  let opam_os = function
+    | "macosx" -> "macos"
+    | "mingw" | "mingw64" | "win32" -> "win32"
+    | os -> os
+  in
+  let opam_arch = function
+    | "amd64" -> "x86_64"
+    | "i386" -> "x86_32"
+    | "power" -> "ppc64"
+    | "riscv" -> "riscv64"
+    | arch -> arch
+  in
+  let memo =
+    Memo.create "cross-pkg-platform" ~input:(module Context_name) (fun context ->
+      let* build = Lock_dir.Sys_vars.solver_env in
+      of_context context
+      >>= function
+      | None -> Memo.return build
+      | Some { toolchain; host = _ } ->
+        let+ config = target_config ~context ~toolchain in
+        let set var value env =
+          Dune_pkg.Solver_env.set env var (Dune_pkg.Variable_value.string value)
+        in
+        Dune_pkg.Solver_env.unset_multi
+          build
+          (Var.Set.of_list [ Var.os_distribution; Var.os_family; Var.os_version ])
+        |> set Var.os (opam_os (Ocaml_config.system config))
+        |> set Var.arch (opam_arch (Ocaml_config.architecture config)))
+  in
+  Memo.exec memo
+;;
+
 (* The program [prog] of a rule's [(run prog ...)], in a context with a findlib
    toolchain whose compiler is [ocaml], if it's one of the compiler's tools: the
    toolchain's, as dune's own rules use. dune looks a rule's programs up for the
@@ -67,8 +124,8 @@ let toolchain_tool ~findlib_toolchain ~ocaml prog =
      | _ -> None)
 ;;
 
-(* The host context's builds are of the same packages, by digest, from the same
-   lock directory. *)
+(* The host context's builds are of the same packages, by name, from the same
+   lock directory: of the same versions. *)
 let check_lock_dir context ~host =
   let* lock_dir = Lock_dir.get_path context in
   let+ host_lock_dir = Lock_dir.get_path host in
@@ -120,9 +177,9 @@ let check_compiler context ((ocaml : Ocaml_toolchain.t), _ as toolchain) =
   toolchain
 ;;
 
-(* [action], the build of a package in [context], whose dependencies' target
-   directories in a context are [deps_target_dirs]. *)
-let build_action context ~deps_target_dirs (action : _ Action_builder.With_targets.t) =
+(* [action], the build of a package in [context], whose dependencies' builds in
+   the host context are [host_deps]: their target and library directories. *)
+let build_action context ~host_deps (action : _ Action_builder.With_targets.t) =
   let build =
     let open Action_builder.O in
     Action_builder.of_memo (of_context context)
@@ -130,14 +187,19 @@ let build_action context ~deps_target_dirs (action : _ Action_builder.With_targe
     | None -> action.build
     | Some { toolchain; host } ->
       let* () = Action_builder.of_memo (check_lock_dir context ~host) in
+      let* host_deps = Action_builder.of_memo (host_deps host) in
       let toolchain = Context_name.to_string toolchain in
+      let host_ocamlpath =
+        List.map host_deps ~f:(fun (_, lib) -> Path.to_absolute_filename lib)
+        |> String.concat ~sep:(String.make 1 Bin.path_sep)
+      in
       let env =
         Env.empty
         |> Env.add ~var:"DUNE_PKG_CROSS_TARGET" ~value:toolchain
-        |> Env.add ~var:"DUNE_PKG_CROSS_HOST" ~value:(Context_name.to_string host)
+        |> Env.add ~var:"DUNE_PKG_CROSS_HOST_OCAMLPATH" ~value:host_ocamlpath
         |> Env.add ~var:"TOPKG_CONF_TOOLCHAIN" ~value:toolchain
       in
-      Action_builder.paths (List.map (deps_target_dirs host) ~f:Path.build)
+      Action_builder.paths (List.map host_deps ~f:fst)
       >>> Action_builder.map action.build ~f:(Action.Full.add_env env)
   in
   { action with build }

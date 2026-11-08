@@ -150,13 +150,47 @@ fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
         \\                | Some path -> Memo.return (Ok path)
         \\                | None -> Artifacts.binary ?hint ~loc:(Some loc) ~where ~dir artifacts s))
     );
-    // A package's build, marked in a context with one.
+    // Its packages are the lock directory's for the target's platform.
+    try replaceOnce(io, arena, work, "src/dune_rules/pkg_rules.ml",
+        \\               and* platform = Lock_dir.Sys_vars.solver_env in
+    ,
+        \\               and* platform = Cross_pkg.platform ctx in
+    );
+    try replaceOnce(io, arena, work, "src/dune_rules/pkg_rules.ml",
+        \\    and* platform = Lock_dir.Sys_vars.solver_env in
+        \\    let+ t = of_ctx ctx ~allow_sharing:true in
+    ,
+        \\    and* platform = Cross_pkg.platform ctx in
+        \\    let+ t = of_ctx ctx ~allow_sharing:true in
+    );
+    try replaceOnce(io, arena, work, "src/dune_rules/pkg_rules.ml",
+        \\      let* platform = Lock_dir.Sys_vars.solver_env in
+        \\      let choose_for_current_platform field =
+    ,
+        \\      let* platform = Cross_pkg.platform (Package_universe.context_name package_universe) in
+        \\      let choose_for_current_platform field =
+    );
+    // A package's build, marked in a context with one. The host context's builds
+    // of its dependencies are of those names, and their dependencies.
     try replaceOnce(io, arena, work, "src/dune_rules/pkg_rules.ml",
         \\  >>> add_env (Pkg.exported_env pkg) build_action
     ,
         \\  >>> Cross_pkg.build_action context_name (add_env (Pkg.exported_env pkg) build_action)
-        \\        ~deps_target_dirs:(fun ctx -> List.map (Pkg.deps_closure pkg) ~f:(fun (dep : Pkg.t) ->
-        \\          (Paths.make dep.pkg_digest (Dependencies ctx) ~relative:Path.Build.relative).target_dir))
+        \\        ~host_deps:(fun host ->
+        \\          let open Memo.O in
+        \\          let names =
+        \\            Package.Name.Set.of_list
+        \\              (List.map (Pkg.deps_closure pkg) ~f:(fun (dep : Pkg.t) -> dep.info.name))
+        \\          in
+        \\          let* db = DB.of_ctx host ~allow_sharing:false in
+        \\          Pkg_digest.Map.values db.pkg_digest_table
+        \\          |> List.filter ~f:(fun (entry : DB.Pkg_table.entry) ->
+        \\            Package.Name.Set.mem names entry.pkg_digest.name)
+        \\          |> Memo.parallel_map ~f:(fun (entry : DB.Pkg_table.entry) ->
+        \\            Resolve.resolve db Loc.none entry.pkg_digest (Dependencies host))
+        \\          >>| Pkg.top_closure
+        \\          >>| List.map ~f:(fun (dep : Pkg.t) ->
+        \\            dep.paths.target_dir, (Pkg.install_roots dep).lib_root))
     );
 }
 
