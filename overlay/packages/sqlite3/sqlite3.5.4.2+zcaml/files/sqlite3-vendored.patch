@@ -1,0 +1,29 @@
+diff -ruN a/lib/config/dune b/lib/config/dune
+--- a/lib/config/dune	2026-11-08 05:25:57.566609561 +0530
++++ b/lib/config/dune	1970-01-01 05:30:00.000000000 +0530
+@@ -1,4 +0,0 @@
+-(executables
+- (names discover)
+- (libraries dune.configurator)
+- (modes byte exe))
+diff -ruN a/lib/dune b/lib/dune
+--- a/lib/dune	2026-11-08 05:25:57.566609561 +0530
++++ b/lib/dune	2026-11-08 05:25:57.569933593 +0530
+@@ -1,15 +1,6 @@
+ (library
+  (public_name sqlite3)
++ (libraries libsqlite3)
+  (foreign_stubs
+   (language c)
+-  (names sqlite3_stubs)
+-  (flags
+-   (:standard)
+-   (:include c_flags.sexp)))
+- (c_library_flags
+-  (:include c_library_flags.sexp)))
+-
+-(rule
+- (targets c_flags.sexp c_library_flags.sexp)
+- (action
+-  (run ./config/discover.exe)))
++  (names sqlite3_stubs)))

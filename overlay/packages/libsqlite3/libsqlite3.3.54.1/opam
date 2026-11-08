@@ -1,0 +1,24 @@
+opam-version: "2.0"
+synopsis: "SQLite, built from its amalgamation by dune"
+description: """
+SQLite's C library, compiled with the context's C compiler: unlike conf-sqlite3,
+which needs it installed on the system, it cross-compiles. A library with no
+modules: depending on it gives C stubs SQLite's headers and links it."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["D. Richard Hipp" "Dan Kennedy" "Joe Mistachkin"]
+license: "blessing"
+homepage: "https://sqlite.org"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+patches: [ "libsqlite3-dune.patch" ]
+build: ["dune" "build" "-p" name "-j" jobs]
+url {
+  src: "https://www.sqlite.org/2026/sqlite-autoconf-3540100.tar.gz"
+  checksum: [
+    "sha256=926ef8d3eab93fbf6e06011901273eec076b25594a4e1cdadd50c987f4f6d64e"
+    "sha512=3df4348f54f5cd0554eec6d91e1d08a70535b7b78f497b2c6f24910b5087f6ef70483c9e35fa388bd8f38483cb8d1cb84e98ccdd58b9f525a10e0cf48c8c6742"
+  ]
+}

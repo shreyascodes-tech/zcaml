@@ -1,0 +1,11 @@
+diff -ruN a/src/tool/dune b/src/tool/dune
+--- a/src/tool/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/tool/dune	2026-11-08 02:43:08.881322255 +0530
+@@ -0,0 +1,7 @@
++; The cmdliner tool, as the Makefile builds it: packages' builds run it
++; (`cmdliner install tool-support`).
++(executable
++ (name cmdliner_main)
++ (public_name cmdliner)
++ (package cmdliner)
++ (libraries cmdliner))

@@ -1,0 +1,10 @@
+--- a/dune	2026-11-08 02:53:04.299971324 +0530
++++ b/dune	2026-11-08 02:53:04.304217085 +0530
+@@ -38,7 +38,6 @@
+  (deps
+   (:exe configure_env.exe)
+   %{lib:gmp:libgmp.a}
+-  %{lib:gmp:libgmp.so}
+   %{lib:gmp:gmp.h})
+  (action
+   (with-stdout-to
