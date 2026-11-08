@@ -90,3 +90,5 @@ for target in $TARGETS; do
   read -ra runner <<<"$(runner "$target")"
   stage "run:$target" bash -c 'run "$@"' run "${runner[@]}" "$exe"
 done
+# The results are in results.tsv: run.sh goes on to the next package.
+exit 0
