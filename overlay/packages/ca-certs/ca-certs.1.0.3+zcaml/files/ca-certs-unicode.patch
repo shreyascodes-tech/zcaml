@@ -1,0 +1,20 @@
+--- a/lib/ca_certs_stubs.c
++++ b/lib/ca_certs_stubs.c
+@@ -12,7 +12,7 @@
+     CAMLparam1(v_f);
+     CAMLlocal1(v_encoded_cert);
+ 
+-    HCERTSTORE hCertStore = CertOpenSystemStore(0, "ROOT");
++    HCERTSTORE hCertStore = CertOpenSystemStoreA(0, "ROOT");
+     if (!hCertStore)
+     {
+         caml_failwith("ca_certs_iter_on_anchors: CertOpenSystemStore returned NULL");
+@@ -27,7 +27,7 @@
+         }
+         v_encoded_cert = caml_alloc_initialized_string(
+             pCertContext->cbCertEncoded,
+-            pCertContext->pbCertEncoded);
++            (const char *)pCertContext->pbCertEncoded);
+         caml_callback(v_f, v_encoded_cert);
+     }
+ 
