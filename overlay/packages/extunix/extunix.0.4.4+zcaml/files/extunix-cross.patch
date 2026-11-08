@@ -1,0 +1,98 @@
+diff -ruN a/discover/discover.ml b/discover/discover.ml
+--- a/discover/discover.ml	2026-11-08 22:49:32.554171502 +0530
++++ b/discover/discover.ml	2026-11-08 22:49:32.575082646 +0530
+@@ -191,6 +191,15 @@
+   | NO name -> pr "| `%s -> false" name) result;
+   close_out ch
+ 
++(* For ppx_have, which runs on the build machine: not config.ml, which it would be
++   built with in the build machine's context. *)
++let show_features file result =
++  let ch = open_out file in
++  List.iter (function
++  | YES {name; _} -> Printf.fprintf ch "%s true\n" name
++  | NO name -> Printf.fprintf ch "%s false\n" name) result;
++  close_out ch
++
+ let show_c_flags_sexp file c =
+   let cflags =
+     match C.ocaml_config_var c "ccomp_type" with
+@@ -216,6 +225,7 @@
+   let result = List.map (discover c) config in
+   show_c "config.h" result;
+   show_ml "config.ml" result;
++  show_features "features" result;
+   show_c_flags_sexp "c_flags.sexp" c;
+   show_link_flags_sexp "link_flags.sexp" result
+ 
+diff -ruN a/ppx_have/dune b/ppx_have/dune
+--- a/ppx_have/dune	2026-11-08 22:49:32.554294815 +0530
++++ b/ppx_have/dune	2026-11-08 22:49:32.575350573 +0530
+@@ -1,8 +1,6 @@
+-(copy_files ../src/config.ml)
+-
+ (library
+  (name ppx_have)
+- (modules Ppx_have Config)
++ (modules Ppx_have)
+  (kind ppx_rewriter)
+  (libraries ppxlib)
+  (preprocess
+diff -ruN a/ppx_have/ppx_have.ml b/ppx_have/ppx_have.ml
+--- a/ppx_have/ppx_have.ml	2026-11-08 22:49:32.554294815 +0530
++++ b/ppx_have/ppx_have.ml	2026-11-08 22:49:32.575539810 +0530
+@@ -1,16 +1,26 @@
+ let all = ref false
+ let funcs = Hashtbl.create 16
++let features = Hashtbl.create 64
++
++let read_features file =
++  let ch = open_in file in
++  (try
++     while true do
++       Scanf.sscanf (input_line ch) "%s %B" (Hashtbl.replace features)
++     done
++   with End_of_file -> ());
++  close_in ch
+ 
+ let args_spec =
+   [
+     ("--gen-all", Arg.Set all, "generate values from all [%%have ...] sections");
++    ("--features", Arg.String read_features, "<file> the features discover found");
+   ]
+ 
+-module ExtUnixConfig = Config
+ open Ppxlib
+ 
+ let check ~loc name =
+-  match ExtUnixConfig.feature name with
++  match Hashtbl.find_opt features name with
+   | None -> Location.raise_errorf ~loc "Unregistered feature %s" name
+   | Some have -> have
+ 
+diff -ruN a/src/dune b/src/dune
+--- a/src/dune	2026-11-08 22:49:32.554441231 +0530
++++ b/src/dune	2026-11-08 22:53:00.297283987 +0530
+@@ -1,5 +1,5 @@
+ (rule
+- (targets config.h config.ml c_flags.sexp link_flags.sexp)
++ (targets config.h config.ml features c_flags.sexp link_flags.sexp)
+  (deps
+   (:gen ../discover/discover.exe))
+  (action
+@@ -16,11 +16,13 @@
+  (public_name extunix)
+  (modules_without_implementation ExtUnix)
+  (libraries unix bigarray bytes)
++ ; the ppx runs in the context's root
++ (preprocessor_deps features)
+  (preprocess
+   (per_module
+-   ((pps ppx_have --gen-all)
++   ((pps ppx_have --gen-all --features=src/features)
+     All)
+-   ((pps ppx_have)
++   ((pps ppx_have --features=src/features)
+     Specific)))
+  (c_library_flags
+   :standard
