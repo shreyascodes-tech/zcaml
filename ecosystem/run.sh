@@ -59,6 +59,18 @@ export WINEPREFIX="$work/wine" WINEDEBUG=-all
 # a run's results don't depend on when it ran.
 zcaml_overlay="${OVERLAY-$here/../overlay}"
 overlays=""
+# A target's platform, as the lock directory's solutions are for: opam's names.
+platform() {
+  case "$1" in
+    x86_64-linux-gnu) echo '((arch x86_64) (os linux))' ;;
+    aarch64-linux-gnu) echo '((arch arm64) (os linux))' ;;
+    x86_64-windows-gnu) echo '((arch x86_64) (os win32) (sys-ocaml-arch x86_64) (sys-ocaml-cc cc) (sys-ocaml-libc msvc))' ;;
+    *) echo "error: no platform for $1" >&2; exit 1 ;;
+  esac
+}
+platforms="$(platform x86_64-linux-gnu)"
+for target in $TARGETS; do platforms="$platforms $(platform "$target")"; done
+
 for overlay in ${OVERLAYS:-} ${zcaml_overlay:+"zcaml=file://$(cd "$zcaml_overlay" && pwd)"}; do
   printf '(repository\n (name %s)\n (url %s))\n' "${overlay%%=*}" "${overlay#*=}"
   overlays="$overlays ${overlay%%=*}"
@@ -76,6 +88,7 @@ cat >>"$work/repositories.dune" <<EOF
 (lock_dir
  (repositories$overlays overlay-pinned relocatable-pinned upstream-pinned)
  (solver_env (sys-ocaml-version 5.5.1))
+ (solve_for_platforms $platforms)
  (constraints (ocaml-system (= 5.5.1))))
 EOF
 
