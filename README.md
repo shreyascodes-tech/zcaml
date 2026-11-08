@@ -29,6 +29,9 @@ Nothing here is specific to zcaml: native builds are as upstream's.
 | `re2.v0.17.0+zcaml` | builds its vendored RE2 with the toolchain's C compiler (`re2-cc.patch`) | upstream builds it with the build machine's `g++`; and lld, unlike GNU ld, fails on the version script's libstdc++ names (`--undefined-version`) |
 | `ocaml_intrinsics.v0.17.0+zcaml` | a probe for aarch64's CRC instructions that can pass (`ocaml_intrinsics-crc.patch`) | it tries `__crc32ud`, which no compiler has, so builds for aarch64 without `+crc` and `crc_stubs.c` fails (`Target not supported`); `-mcpu=generic+crc` rather than `-march=armv8-a+crc`, which gcc and clang take but `zig cc` doesn't |
 | `luv.0.5.14+zcaml` | the target's, not the build machine's, OCaml configuration for libuv (`luv-cross.patch`) | upstream asks `ocamlc -config` on `PATH` for `configure --host` and for Windows' libraries; includes `WinSDKVer.h`, which is `winsdkver.h` (only Windows' file systems don't care); and needs libuv's DLL, which libtool doesn't build without mingw's binutils (an empty one, then: only bytecode would load it) |
+| `num.1.6+zcaml` | num's own dune build | upstream's opam file builds with make, with the build machine's `ocamlfind`, for compatibility with OCaml < 4.06's installs |
+| `libsqlite3.3.54.1` | SQLite's amalgamation as a library with no modules, built by dune (`libsqlite3-dune.patch`): depending on it gives C stubs `sqlite3.h` and links SQLite | new: `conf-sqlite3` checks for the system's SQLite, which a cross build has none of |
+| `sqlite3.5.4.2+zcaml` | with `libsqlite3` (`sqlite3-vendored.patch`) | upstream links the system's SQLite, found with the build machine's `pkg-config` |
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.
