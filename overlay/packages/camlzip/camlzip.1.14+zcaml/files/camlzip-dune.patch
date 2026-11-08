@@ -1,0 +1,26 @@
+diff -ruN a/dune b/dune
+--- a/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/dune	2026-11-08 06:00:00.000000000 +0530
+@@ -0,0 +1,13 @@
++(library
++ (name zip)
++ (public_name camlzip)
++ (wrapped false)
++ (modules zlib zip gzip)
++ (libraries unix libz)
++ (foreign_stubs
++  (language c)
++  (names zlibstubs)))
++
++(deprecated_library_name
++ (old_public_name zip)
++ (new_public_name camlzip))
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-08 06:00:00.000000000 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name camlzip)
++(package
++ (name camlzip)
++ (deprecated_package_names zip))

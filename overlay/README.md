@@ -39,6 +39,8 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `mirage-crypto-rng.2.4.1+zcaml` | the target's `os_type`, not `Sys.os_type`, for `-lbcrypt` (`mirage-crypto-rng-cross.patch`) | `discover.exe` runs on the build machine, where `Sys.os_type` isn't `Win32` |
 | `ca-certs.1.0.3+zcaml` | `CertOpenSystemStoreA` (`ca-certs-unicode.patch`) | OCaml on Windows defines `UNICODE`, so `CertOpenSystemStore` is `CertOpenSystemStoreW`, which takes `LPCWSTR`, not `"ROOT"` |
 | `uring.2.15.1+zcaml` | runs liburing's `configure` through `sh` with the target's C compiler and `--use-libc`, and names shared objects `.so.o` (`uring-cross.patch`) | `(run ./configure)` resolves in the default context, which `dune pkg` doesn't populate for dependencies; `-ffreestanding` drops `zig cc`'s glibc headers, and `.os` objects make `zig cc` run `/usr/bin/ld` |
+| `libz.1.4` | zlib as a library with no modules, built by dune (`libz-dune.patch`): depending on it gives C stubs `zlib.h` and links zlib | new: `conf-zlib` checks for the system's zlib, which a cross build has none of |
+| `camlzip.1.14+zcaml` | built by dune with `libz` (`camlzip-dune.patch`) | upstream builds with make and the build machine's `ocamlfind`, against the system's zlib |
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.
