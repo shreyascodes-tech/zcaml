@@ -92,7 +92,6 @@ core core !x86_64-windows-gnu
 core_unix core_unix !x86_64-windows-gnu
 lwt lwt lwt.unix
 eio_main
-notty notty notty.unix
 ocaml_intrinsics
 memtrace
 extunix
