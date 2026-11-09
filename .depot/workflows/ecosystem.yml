@@ -28,7 +28,7 @@ on:
         description: "OCaml release (ocaml-v*) to build with"
         required: false
         type: string
-        default: "ocaml-v5.5.1-8"
+        default: "ocaml-v5.5.1-10"
       dune_tag:
         description: "dune release (dune-v*) to build with; default: this checkout's"
         required: false
