@@ -10,6 +10,9 @@
 # `build:<target> skip` for a !<target>, which the package doesn't support. The
 # first failure stops the package (a target's build failure, only that target),
 # its log is <work-dir>/<package>/<stage, with - for :>.log.
+#
+# DUNE_JOBS is each dune build's -j (default 2, as probes share the machine).
+# PROBE_LOCK_ONLY=1 stops after the lock, which warms the repositories.
 set -uo pipefail
 
 work="$1"
@@ -88,14 +91,17 @@ run() {
 export -f run
 
 stage lock dune pkg lock || exit 0
-stage native dune build ./bin/main.exe || exit 0
+[[ "${PROBE_LOCK_ONLY:-}" == 1 ]] && exit 0
+
+dune_jobs="${DUNE_JOBS:-2}"
+stage native dune build -j "$dune_jobs" ./bin/main.exe || exit 0
 for target in $TARGETS; do
   if [[ "$unsupported" == *" $target "* ]]; then
     printf '%s\t%s\t%s\n' "$package" "build:$target" skip | tee -a "$work/results.tsv"
     continue
   fi
   exe="_build/default.${target//-/_}/bin/main.exe" # run.sh's toolchain names
-  stage "build:$target" dune build -x "${target//-/_}" "./$exe" || continue
+  stage "build:$target" dune build -j "$dune_jobs" -x "${target//-/_}" "./$exe" || continue
   read -ra runner <<<"$(runner "$target")"
   stage "run:$target" bash -c 'run "$@"' run "${runner[@]}" "$exe"
 done

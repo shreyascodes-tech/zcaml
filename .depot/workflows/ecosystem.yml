@@ -54,6 +54,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Dune's build cache, git revision store, and Zig's cache: the same
+      # dependencies are built by every probe, and by every run.
+      - name: Cache dune and zig
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ecosystem/cache
+          key: ecosystem-cache-${{ runner.os }}-${{ env.OCAML_TAG }}-${{ inputs.dune_tag || 'checkout' }}-${{ hashFiles('ecosystem/packages.txt', 'ecosystem/probe.sh', 'ecosystem/run.sh', 'scripts/cross-env.sh', 'overlay/packages/**', 'build/dune/**', 'build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            ecosystem-cache-${{ runner.os }}-${{ env.OCAML_TAG }}-${{ inputs.dune_tag || 'checkout' }}-
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:

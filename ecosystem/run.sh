@@ -27,7 +27,9 @@ shift 3
 
 export TARGETS="${TARGETS:-aarch64-linux-gnu x86_64-windows-gnu}"
 export AARCH64_LINUX_GNU_SYSROOT="${AARCH64_LINUX_GNU_SYSROOT:-/usr/aarch64-linux-gnu}"
-jobs="${JOBS:-$(($(nproc) / 2 > 0 ? $(nproc) / 2 : 1))}"
+jobs="${JOBS:-$(nproc)}"
+# Each probe's dune builds share the machine with the other probes.
+export DUNE_JOBS="${DUNE_JOBS:-2}"
 
 # $work's findlib configuration and dune repositories, and the environment.
 # shellcheck source=../scripts/cross-env.sh
@@ -47,13 +49,28 @@ selected() {
 }
 selected "$@" >"$work/selected.txt"
 
+# Longest first: these took longest in previous runs, so they start first and
+# don't leave the run waiting for them at the end.
+heavy="async core_unix re2 core cohttp-lwt-unix ppx_jane tls ocamlformat-lib x509 ppx_expect extunix luv progress uuseg omd eio_main ppx_yojson_conv ppx_sexp_conv camomile uucp lwt_ppx sedlex bisect_ppx_ng sqlite3"
+awk -v heavy="$heavy" '
+  BEGIN { n = split(heavy, a, " "); for (i = 1; i <= n; i++) p[a[i]] = i }
+  {
+    name = $1
+    sub(/[<>=].*/, "", name)
+    print (name in p ? p[name] : 1000) "\t" NR "\t" $0
+  }
+' "$work/selected.txt" | sort -t$'\t' -k1,1n -k2,2n | cut -f3- >"$work/selected.sorted"
+mv "$work/selected.sorted" "$work/selected.txt"
+
 rm -f "$work/results.tsv"
 touch "$work/results.tsv"
 if [[ " $TARGETS " == *" x86_64-windows-gnu "* ]]; then wineboot -i >/dev/null 2>&1; fi
 
-# The first one alone: it fetches the repositories, which concurrent dunes wait for.
-head -n 1 "$work/selected.txt" | xargs -r -L 1 "$here/probe.sh" "$work"
-tail -n +2 "$work/selected.txt" | xargs -r -P "$jobs" -L 1 "$here/probe.sh" "$work"
+# Lock one package alone first: it fetches the repositories, which concurrent
+# dunes wait for. Only the lock: the package's build runs in parallel with the
+# others, so the warm-up doesn't serialize a whole build.
+head -n 1 "$work/selected.txt" | PROBE_LOCK_ONLY=1 xargs -r -L 1 "$here/probe.sh" "$work"
+xargs -r -P "$jobs" -L 1 "$here/probe.sh" "$work" <"$work/selected.txt"
 
 "$here/report.sh" "$work" >"$work/report.md"
 echo "$work/report.md"
