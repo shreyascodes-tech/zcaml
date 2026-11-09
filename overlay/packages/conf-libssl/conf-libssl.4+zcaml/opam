@@ -1,0 +1,21 @@
+opam-version: "2.0"
+synopsis: "OpenSSL, from libopenssl, for packages built with pkg-config"
+description: """
+The OpenSSL that libopenssl builds, found by dune-configurator through a
+pkg-config-compatible shim: no pkg-config binary is needed. Unlike
+conf-libssl, which needs an OpenSSL installed on the system, it
+cross-compiles: the shim points at libopenssl in the same dune package build."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["The OpenSSL Project"]
+license: "Apache-2.0"
+homepage: "https://www.openssl.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "libopenssl"
+]
+setenv: [
+  [ PKG_CONFIG = "pkg-config-zcaml" ]
+]
+substs: [ "dune" "dune-project" ]
+build: ["dune" "build" "-p" name "-j" jobs "@install"]
+flags: conf

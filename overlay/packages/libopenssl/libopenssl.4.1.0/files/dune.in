@@ -1,0 +1,323 @@
+(* -*- tuareg -*- *)
+(*
+   Builds OpenSSL from the OpenSSL tarball and zig-openssl's generated sources.
+
+   Dune runs this file while loading the package. It parses
+   zig-openssl/generated/manifest.txt, selects the platform from ocamlc -config,
+   and emits the compile rules, foreign libraries, public headers and
+   pkg-config file. Nothing outside dune and the OCaml toolchain parses or
+   compiles the manifest.
+*)
+
+type group = {
+  lib : string;
+  defines : string list;
+  srcs : string list;
+  gens : string list;
+}
+
+type platform = {
+  arch : string;
+  os : string;
+  gen_dir : string;
+  mutable triples : string list;
+  groups : (string, group) Hashtbl.t;
+}
+
+let split line =
+  let length = String.length line in
+  let rec loop i acc =
+    if i >= length then List.rev acc
+    else
+      match line.[i] with
+      | ' ' | '\t' | '\r' -> loop (i + 1) acc
+      | _ ->
+        let j = ref i in
+        while
+          !j < length
+          && line.[!j] <> ' '
+          && line.[!j] <> '\t'
+          && line.[!j] <> '\r'
+        do
+          incr j
+        done;
+        loop !j (String.sub line i (!j - i) :: acc)
+  in
+  loop 0 []
+
+let parse_manifest path =
+  let ic = open_in path in
+  let includes = ref [] in
+  let platforms = ref [] in
+  let current : platform option ref = ref None in
+  let current_platform () =
+    match !current with
+    | Some p -> p
+    | None -> failwith "manifest: record before platform"
+  in
+  let get_group id =
+    match Hashtbl.find_opt (current_platform ()).groups id with
+    | Some g -> g
+    | None -> failwith ("manifest: source before group " ^ id)
+  in
+  (try
+     while true do
+       let line = input_line ic in
+       match split line with
+       | [] | "#" :: _ -> ()
+       | "version" :: _ -> ()
+       | "include" :: dir :: _ -> includes := dir :: !includes
+       | "platform" :: arch :: os :: _abis :: gen_dir :: _ ->
+         let p =
+           {
+             arch;
+             os;
+             gen_dir;
+             triples = [];
+             groups = Hashtbl.create 16;
+           }
+         in
+         platforms := p :: !platforms;
+         current := Some p
+       | "triple" :: triple :: _ ->
+         let p = current_platform () in
+         p.triples <- p.triples @ [ triple ]
+       | "group" :: id :: lib :: _language :: defines ->
+         Hashtbl.replace
+           (current_platform ()).groups
+           id
+           { lib; defines; srcs = []; gens = [] }
+       | "source" :: id :: path :: _ ->
+         let g = get_group id in
+         Hashtbl.replace
+           (current_platform ()).groups
+           id
+           { g with srcs = g.srcs @ [ path ] }
+       | "generated" :: id :: path :: _ ->
+         let g = get_group id in
+         Hashtbl.replace
+           (current_platform ()).groups
+           id
+           { g with gens = g.gens @ [ path ] }
+       | kind :: _ -> failwith ("manifest: unknown record " ^ kind)
+     done
+   with End_of_file -> close_in ic);
+  (List.rev !includes, List.rev !platforms)
+
+let config = Jbuild_plugin.V1.ocamlc_config
+let config key = try List.assoc key config with Not_found -> ""
+
+let absolute path =
+  if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path
+  else path
+
+(* Substituted from zig-openssl's install directory. *)
+let zig_openssl = absolute "%{zig-openssl:lib}%"
+
+(* The OpenSSL tarball is this package's own source. *)
+let openssl_src = absolute "."
+
+let arch =
+  match config "architecture" with
+  | "amd64" -> "x86_64"
+  | "arm64" -> "aarch64"
+  | "riscv" -> "riscv64"
+  | "power" -> "powerpc64le"
+  | arch -> arch
+
+let os =
+  match config "system" with
+  | "linux" -> "linux"
+  | "macosx" -> "macos"
+  | "mingw64" | "win32" | "win64" -> "windows"
+  | system -> system
+
+let includes, platforms =
+  parse_manifest (Filename.concat zig_openssl "generated/manifest.txt")
+
+let platform =
+  match List.find_opt (fun p -> p.arch = arch && p.os = os) platforms with
+  | Some p -> p
+  | None ->
+    failwith
+      (Printf.sprintf
+         "zig-openssl has no generated sources for %s-%s"
+         arch
+         os)
+
+let generated_root = Filename.concat zig_openssl platform.gen_dir
+
+let extra_flags =
+  let flags = [ "-O2" ] in
+  let flags =
+    if os = "windows" then flags else flags @ [ "-fPIC"; "-pthread" ]
+  in
+  if arch = "powerpc64le" then flags @ [ "-mabi=ibmlongdouble" ] else flags
+
+(* Dune strings, for manifest values such as -DOPENSSLDIR="/usr/local/ssl". *)
+let quote s =
+  let safe c =
+    match c with
+    | ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';' | '\\' | '\'' -> false
+    | _ -> true
+  in
+  if s <> "" && String.for_all safe s then s
+  else "\"" ^ String.escaped s ^ "\""
+
+let words xs = String.concat " " (List.map quote xs)
+
+let include_flags =
+  List.concat_map
+    (fun dir ->
+      [ "-I"; Filename.concat generated_root dir;
+        "-I"; Filename.concat openssl_src dir ])
+    includes
+
+let out = Buffer.create (1024 * 1024)
+let emit fmt = Printf.ksprintf (Buffer.add_string out) fmt
+
+let object_count = ref 0
+let objects = Hashtbl.create 2
+
+let objects_for lib =
+  match Hashtbl.find_opt objects lib with
+  | Some r -> r
+  | None ->
+    let r = ref [] in
+    Hashtbl.add objects lib r;
+    r
+
+let emit_compile ~root ~lib ~defines path =
+  let name = Printf.sprintf "o_%d" !object_count in
+  incr object_count;
+  let obj = name ^ ".o" in
+  let source = Filename.concat root path in
+  emit
+    "(rule\n (targets %s)\n (deps %s)\n (action\n  (run %%%%{ocaml-config:c_compiler} %s %s %s -c %s -o %s)))\n"
+    obj
+    (quote source)
+    (words include_flags)
+    (words defines)
+    (words extra_flags)
+    (quote source)
+    obj;
+  let objs = objects_for lib in
+  objs := name :: !objs
+
+let foreign_library_flags =
+  if os = "windows" then
+    "\n (c_library_flags -lws2_32 -lcrypt32 -luserenv -ladvapi32 -lgdi32 -lbcrypt)"
+  else ""
+
+let groups = Hashtbl.to_seq_values platform.groups |> List.of_seq
+
+let () =
+  List.iter
+    (fun g ->
+      List.iter
+        (emit_compile ~root:openssl_src ~lib:g.lib ~defines:g.defines)
+        g.srcs;
+      List.iter
+        (emit_compile ~root:generated_root ~lib:g.lib ~defines:g.defines)
+        g.gens)
+    groups;
+  List.iter
+    (fun lib ->
+      match List.rev !(objects_for lib) with
+      | [] -> ()
+      | objs ->
+        emit
+          "(foreign_library\n (archive_name %s)\n (language c)\n (names)\n (extra_objects %s)%s)\n"
+          lib
+          (words objs)
+          foreign_library_flags)
+    [ "crypto"; "ssl" ];
+  emit
+    "(library\n (name libopenssl)\n (public_name libopenssl)\n (modules)\n (foreign_archives ssl crypto)\n%s)\n"
+    (if os = "windows" then
+       " (c_library_flags -lws2_32 -lcrypt32 -luserenv -ladvapi32 -lgdi32 -lbcrypt)\n"
+     else "")
+
+(* The pkg-config file ssl and anything else built against OpenSSL uses. *)
+let extra_libs =
+  if os = "windows" then
+    [ "-lws2_32"; "-lcrypt32"; "-luserenv"; "-ladvapi32"; "-lgdi32"; "-lbcrypt" ]
+  else if os = "linux" then [ "-ldl"; "-pthread" ]
+  else []
+
+let pc_contents =
+  "prefix=${pcfiledir}/..\n"
+  ^ "exec_prefix=${prefix}\n"
+  ^ "libdir=${prefix}\n"
+  ^ "includedir=${prefix}\n"
+  ^ "\n"
+  ^ "Name: OpenSSL\n"
+  ^ "Description: OpenSSL 4.1.0 built from source by dune\n"
+  ^ "Version: 4.1.0\n"
+  ^ "Libs: -L${libdir} -lssl -lcrypto "
+  ^ String.concat " " extra_libs
+  ^ "\n"
+  ^ "Cflags: -I${includedir}\n"
+
+let () =
+  emit
+    "(rule\n (targets openssl.pc)\n (action (write-file openssl.pc %s)))\n"
+    ("\"" ^ String.escaped pc_contents ^ "\"")
+
+(* Public headers: the generated configuration headers shadow upstream's
+   templates. Dune installs them under lib/libopenssl/<path>. *)
+let rec files_under root rel =
+  let dir = if rel = "" then root else Filename.concat root rel in
+  Sys.readdir dir
+  |> Array.to_list
+  |> List.sort String.compare
+  |> List.concat_map (fun name ->
+    let rel' = if rel = "" then name else Filename.concat rel name in
+    let path = Filename.concat root rel' in
+    if Sys.is_directory path then files_under root rel' else [ rel' ])
+
+let generated_headers =
+  files_under (Filename.concat generated_root "include") ""
+
+let upstream_headers = files_under (Filename.concat openssl_src "include") ""
+
+let headers =
+  let table = Hashtbl.create 256 in
+  List.iter
+    (fun rel ->
+      Hashtbl.replace
+        table
+        rel
+        (Filename.concat (Filename.concat openssl_src "include") rel))
+    upstream_headers;
+  List.iter
+    (fun rel ->
+      Hashtbl.replace
+        table
+        rel
+        (Filename.concat (Filename.concat generated_root "include") rel))
+    generated_headers;
+  Hashtbl.to_seq table
+  |> List.of_seq
+  |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+
+let header_entries = ref []
+
+let () =
+  List.iteri
+    (fun i (rel, source) ->
+      let target = Printf.sprintf "h_%d" i in
+      emit
+        "(rule\n (targets %s)\n (deps %s)\n (action (copy %s %s)))\n"
+        target
+        (quote source)
+        (quote source)
+        target;
+      header_entries :=
+        Printf.sprintf "(%s as %s)" target (quote rel) :: !header_entries)
+    headers;
+  emit
+    "(install\n (package libopenssl)\n (section lib)\n (files\n  (openssl.pc as pkgconfig/openssl.pc)\n  %s))\n"
+    (String.concat "\n  " (List.rev !header_entries))
+
+let () = Jbuild_plugin.V1.send (Buffer.contents out)

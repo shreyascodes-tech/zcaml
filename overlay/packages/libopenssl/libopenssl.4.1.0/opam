@@ -1,0 +1,26 @@
+opam-version: "2.0"
+synopsis: "OpenSSL, built from source by dune"
+description: """
+OpenSSL 4.1.0's libssl and libcrypto, compiled from the tarball zig-openssl
+pins with the context's C compiler. Unlike conf-libssl, it cross-compiles. A
+library with no modules, plus the headers and pkg-config file that consumers
+of conf-libssl use."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["The OpenSSL Project"]
+license: "Apache-2.0"
+homepage: "https://www.openssl.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+  "zig-openssl"
+]
+substs: [ "dune" "dune-project" ]
+build: ["dune" "build" "-p" name "-j" jobs "@install"]
+url {
+  src: "https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz"
+  checksum: [
+    "sha256=50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd"
+    "sha512=bb8f3c47955735253c161b412bd916401afa713736ebe38f12419a1cac0af6ea6db3523853dbd3073b90ab1beec8e0465355801b228386f2027b4ba47adf4869"
+  ]
+}

@@ -1,0 +1,8 @@
+; The sources libopenssl builds: zig-openssl's generated tree and the zon that
+; records which OpenSSL tarball they belong to.
+(install
+ (package zig-openssl)
+ (section lib)
+ (files
+  build.zig.zon
+  (glob_files_rec generated/*)))

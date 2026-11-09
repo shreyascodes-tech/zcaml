@@ -1,0 +1,5 @@
+(lang dune 3.23)
+(name zig-openssl)
+(package
+ (name zig-openssl)
+ (allow_empty))

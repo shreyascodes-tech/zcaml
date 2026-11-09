@@ -1,0 +1,5 @@
+(lang dune 3.23)
+(name conf-libssl)
+(package
+ (name conf-libssl)
+ (allow_empty))

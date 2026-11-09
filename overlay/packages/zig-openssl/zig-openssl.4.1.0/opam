@@ -1,0 +1,25 @@
+opam-version: "2.0"
+synopsis: "OpenSSL 4.1.0's generated sources, from zig-openssl"
+description: """
+zig-openssl's checked-in generated C sources and manifest for OpenSSL 4.1.0,
+installed for libopenssl to build from. The manifest is plain text: it lists the
+sources, compiler definitions and include directories, so no generator is
+needed."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["zig-openssl contributors"]
+license: "Apache-2.0"
+homepage: "https://github.com/shreyassanthu77/zig-openssl"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+substs: [ "dune" "dune-project" ]
+build: ["dune" "build" "-p" name "-j" jobs "@install"]
+url {
+  src: "https://github.com/shreyassanthu77/zig-openssl/archive/bf9d1cd90100efef0f790b4a5292c6a6a1707697.tar.gz"
+  checksum: [
+    "sha256=3e6c929d7218cb8e384c58711457431292ed138d5336f000b9aecd1962b85c61"
+    "sha512=bdb3b4f2c6529d93995a0a6fb965d63bc8c46a2a500c6e4dcbab5c8d0dcd3f610a8d695693ccd77e8c11b2fae7ab2b2efa38e525d2a5eb846b454f4f68fc98c9"
+  ]
+}

@@ -1,0 +1,5 @@
+; pkg-config-zcaml, which points pkg-config at libopenssl.
+(install
+ (package conf-libssl)
+ (section bin)
+ (files (bin/pkg-config-zcaml as pkg-config-zcaml)))
