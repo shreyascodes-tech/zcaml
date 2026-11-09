@@ -1,0 +1,20 @@
+opam-version: "2.0"
+synopsis: "Virtual package for GCC on i686 mingw-w64, as zcaml's x86_64 toolchain"
+description: """\
+zcaml's Windows toolchain is x86_64-only and installs `x86_64-w64-mingw32-gcc`.
+Upstream's package runs `i686-w64-mingw32-gcc --version`, which that toolchain
+doesn't have. This package checks the x86_64 compiler instead: it is what the
+64-bit build uses, and nothing here builds 32-bit code."""
+maintainer: "David Allsopp <dra27@dra27.uk>"
+authors: "The GCC Developers"
+license: "GPL-3.0-or-later"
+dev-repo: "git+https://github.com/dra27/mingw-w64-shims.git"
+homepage: "https://www.mingw-w64.org"
+bug-reports: "https://github.com/ocaml/opam-repository/issues"
+available: os = "win32"
+depends: [
+  "conf-mingw-w64-gcc-x86_64"
+]
+build: [
+  ["x86_64-w64-mingw32-gcc" "--version"]
+]
