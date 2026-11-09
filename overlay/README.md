@@ -46,6 +46,8 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `extunix.0.4.4+zcaml` | `ppx_have` reads the features `discover` found from a file (`extunix-cross.patch`) | `ppx_have` is built with `config.ml`, so with the build machine's features: for Windows, it declares bindings that weren't compiled, and linking fails |
 | `eio_windows.1.6+zcaml` | `GetModuleHandleA` (`eio_windows-unicode.patch`) | OCaml on Windows defines `UNICODE`, so `GetModuleHandle` is `GetModuleHandleW`, which takes `LPCWSTR`, not `"ntdll.dll"` |
 | `eio_main.1.6+zcaml` | with `eio_windows.1.6+zcaml` | upstream's needs `eio_windows` of exactly its version |
+| `merlin-lib.5.9+zcaml` | `CreateNamedPipeA` and `OpenEventA` (`merlin-lib-unicode.patch`) | OCaml on Windows defines `UNICODE`, so they're the `W` functions, which take `LPCWSTR`, not OCaml strings |
+| `ocaml-index.5.9+zcaml` | with either `merlin-lib` | upstream's needs `merlin-lib` of exactly its version, and `ocaml-lsp-server` needs it (`post`) |
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.

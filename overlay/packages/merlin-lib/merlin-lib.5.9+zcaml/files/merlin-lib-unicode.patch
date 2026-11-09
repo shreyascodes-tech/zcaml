@@ -1,0 +1,19 @@
+diff -ru a/src/platform/os_ipc_stub.c b/src/platform/os_ipc_stub.c
+--- a/src/platform/os_ipc_stub.c	2026-11-09 05:35:40.836736682 +0530
++++ b/src/platform/os_ipc_stub.c	2026-11-09 05:35:40.840070055 +0530
+@@ -213,13 +213,13 @@
+ 
+ #ifdef _WIN32
+   static BOOL bDoneReset = FALSE;
+-  HANDLE hPipe = CreateNamedPipe(String_val(Field(server, 0)), PIPE_ACCESS_DUPLEX, PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 1024, 1024, NMPWAIT_USE_DEFAULT_WAIT, NULL);
++  HANDLE hPipe = CreateNamedPipeA(String_val(Field(server, 0)), PIPE_ACCESS_DUPLEX, PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 1024, 1024, NMPWAIT_USE_DEFAULT_WAIT, NULL);
+   ret = Val_unit; /* None */
+   if (hPipe != INVALID_HANDLE_VALUE)
+   {
+     if (!bDoneReset)
+     {
+-      HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, String_val(Field(server, 1)));
++      HANDLE hEvent = OpenEventA(EVENT_MODIFY_STATE, FALSE, String_val(Field(server, 1)));
+       SetEvent(hEvent);
+       CloseHandle(hEvent);
+       bDoneReset = TRUE;
