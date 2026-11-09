@@ -1,0 +1,11 @@
+--- a/lib/dune
++++ b/lib/dune
+@@ -8,7 +8,7 @@
+ (library
+  (public_name vlt.mt)
+  (name vlt_mt)
+- (libraries threads.posix vlt)
++ (libraries threads vlt)
+  (modules vltThread)
+ )
+ 
