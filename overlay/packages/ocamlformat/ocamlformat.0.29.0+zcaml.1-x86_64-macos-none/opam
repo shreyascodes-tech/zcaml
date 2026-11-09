@@ -1,0 +1,10 @@
+opam-version: "2.0"
+synopsis: "ocamlformat 0.29.0, pre-built for x86_64-macos-none"
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+license: "MIT"
+homepage: "https://github.com/ocaml-ppx/ocamlformat"
+available: os = "macos" & arch = "x86_64"
+url {
+  src: "https://github.com/shreyascodes-tech/zcaml/releases/download/ocamlformat-v0.29.0-zcaml.1/ocamlformat-0.29.0-zcaml.1-x86_64-macos-none.tar.gz"
+  checksum: "sha256=35d1509569443961c57ef8f0edd9d60c7dc90f939540c9baf6514bcfe48f8581"
+}

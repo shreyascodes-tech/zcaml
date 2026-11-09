@@ -1,0 +1,10 @@
+opam-version: "2.0"
+synopsis: "ocamlformat 0.29.0, pre-built for aarch64-linux-musl"
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+license: "MIT"
+homepage: "https://github.com/ocaml-ppx/ocamlformat"
+available: os = "linux" & arch = "arm64" & os-distribution = "alpine"
+url {
+  src: "https://github.com/shreyascodes-tech/zcaml/releases/download/ocamlformat-v0.29.0-zcaml.1/ocamlformat-0.29.0-zcaml.1-aarch64-linux-musl.tar.gz"
+  checksum: "sha256=85d968e7c543ecd8c3be81bcb00926d6d01d3c15aef2239fc0cb03f5cba46bee"
+}

@@ -51,3 +51,20 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 
 `gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
 and its own `src/dune` writes `src/build.sh` too.
+
+## Pre-built dev tools
+
+dune pkg's dev tools, `dune tools exec ocamllsp` (what an editor runs) and
+`dune fmt` (after `dune tools install ocamlformat`), build the tool for the
+project: ocamlformat of `.ocamlformat`'s version, ocaml-lsp-server for its
+compiler. With this repository, they download it instead, if it's one of these
+(zcaml's `devtools/`, every host's, from the tool's sources):
+
+| package | for |
+|---|---|
+| `ocamlformat.0.29.0+zcaml.1-<host>` | any OCaml |
+| `ocaml-lsp-server.1.28.1+zcaml.1-<host>` | OCaml 5.5 |
+
+One package per host, which `available` picks (musl's on Alpine), of
+[zcaml's release](https://github.com/shreyascodes-tech/zcaml/releases) of it:
+it sorts above the tool's version, which `.ocamlformat` asks for.

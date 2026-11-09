@@ -1,0 +1,11 @@
+opam-version: "2.0"
+synopsis: "ocaml-lsp-server 1.28.1, pre-built for x86_64-windows-gnu, for OCaml 5.5"
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+license: "ISC"
+homepage: "https://github.com/ocaml/ocaml-lsp"
+available: os = "win32" & arch = "x86_64"
+depends: [ "ocaml" {>= "5.5" & < "5.6~"} ]
+url {
+  src: "https://github.com/shreyascodes-tech/zcaml/releases/download/ocaml-lsp-server-v1.28.1-zcaml.1/ocaml-lsp-server-1.28.1-zcaml.1-x86_64-windows-gnu.tar.gz"
+  checksum: "sha256=c9f3b0e5867c73093cdf5eb33bebfcc8001d21d61fc11a72f53550ed6d5fd701"
+}

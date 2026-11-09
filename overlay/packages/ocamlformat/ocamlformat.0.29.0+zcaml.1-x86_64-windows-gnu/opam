@@ -1,0 +1,10 @@
+opam-version: "2.0"
+synopsis: "ocamlformat 0.29.0, pre-built for x86_64-windows-gnu"
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+license: "MIT"
+homepage: "https://github.com/ocaml-ppx/ocamlformat"
+available: os = "win32" & arch = "x86_64"
+url {
+  src: "https://github.com/shreyascodes-tech/zcaml/releases/download/ocamlformat-v0.29.0-zcaml.1/ocamlformat-0.29.0-zcaml.1-x86_64-windows-gnu.tar.gz"
+  checksum: "sha256=4610243ca57a5eddb9b10f69eb15dea1b1f9d3f63a1db9c18d00ae80c261bb99"
+}
