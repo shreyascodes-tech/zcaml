@@ -18,7 +18,8 @@
 #
 #   PACKAGES_FILE              default: $here/packages.tsv
 #   GROUP                      only packages in this group, default: all
-#   SHARD / SHARDS             run one of SHARDS round-robin shards, 1-based
+#   SHARD / SHARDS             run one of SHARDS round-robin shards, 1-based;
+#                              an empty shard writes an empty report and exits 0
 #   SELECT_ONLY=1              print the selected packages and stop
 #   TARGETS                    default: aarch64-linux-gnu x86_64-windows-gnu
 #   JOBS                       packages at a time, default: half the CPUs
@@ -108,10 +109,6 @@ if (( shards > 1 )); then
   awk -v shard="$shard" -v shards="$shards" \
     '((NR - 1) % shards) == (shard - 1)' "$work/selected.txt" >"$work/selected.shard"
   mv "$work/selected.shard" "$work/selected.txt"
-  if [[ ! -s "$work/selected.txt" ]]; then
-    echo "shard $shard/$shards has no packages" >&2
-    exit 1
-  fi
 fi
 
 if [[ "${SELECT_ONLY:-}" == 1 ]]; then
@@ -121,6 +118,16 @@ fi
 
 rm -f "$work/results.tsv"
 touch "$work/results.tsv"
+
+# A shard with no packages is normal when fewer packages than shards are
+# asked for: leave an empty report so the other shards can still be merged,
+# rather than failing the workflow.
+if [[ ! -s "$work/selected.txt" ]]; then
+  "$here/report.sh" "$work" >"$work/report.md"
+  echo "$work/report.md"
+  exit 0
+fi
+
 if [[ " $TARGETS " == *" x86_64-windows-gnu "* ]]; then wineboot -i >/dev/null 2>&1; fi
 
 # Lock one package alone first: it fetches the repositories, which concurrent
