@@ -28,9 +28,8 @@ shift 3
 export TARGETS="${TARGETS:-aarch64-linux-gnu x86_64-windows-gnu}"
 export AARCH64_LINUX_GNU_SYSROOT="${AARCH64_LINUX_GNU_SYSROOT:-/usr/aarch64-linux-gnu}"
 jobs="${JOBS:-$(nproc)}"
-# Each probe's dune builds share the machine with the other probes; heavy
-# packages need more than a couple of jobs to finish before the run's tail.
-export DUNE_JOBS="${DUNE_JOBS:-4}"
+# Each probe's dune builds share the machine with the other probes.
+export DUNE_JOBS="${DUNE_JOBS:-2}"
 
 # $work's findlib configuration and dune repositories, and the environment.
 # shellcheck source=../scripts/cross-env.sh
