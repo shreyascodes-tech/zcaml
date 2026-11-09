@@ -1,12 +1,13 @@
 # zcaml
 
-**Get going with OCaml.**
+> [!NOTE]
+> The entire README is LLM generated so you may want to not readd it. I will rewrite it to be more me when I have time sorry :)
 
 zcaml makes it easier to get a working OCaml environment and build applications
 across platforms. It started with cross-compilation and grew into a broader goal:
 getting you from a fresh machine to building OCaml applications with less setup.
 
-## Three parts, useful independently
+## The Three parts
 
 ### Distributions
 
@@ -19,7 +20,7 @@ compilers targeting other platforms.
 An opam repository with package fixes, cross-compilation support, and prebuilt
 developer tools. Add it to your existing workflow wherever needed.
 
-### CLI — in development
+### CLI (in development)
 
 A manager that brings the pieces together: installing tools, managing versions,
 adding targets, and setting up SDKs.
