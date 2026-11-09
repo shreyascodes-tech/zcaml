@@ -114,7 +114,7 @@ build group. `GROUP=ml-only` (or `c-stubs`, `system-libs`) selects one group;
 the pinned opam-repository commit, ranks packages by reverse dependencies, drops
 packages that do not support OCaml 5.5.1 or are known not to lock, and applies
 `PATCHES`, `EXTRA`, and target exclusions. `--opam-repository` uses a local
-checkout instead of downloading; `--top N` cuts the ranked list (0 keeps all):
+checkout instead of downloading; `--top N` takes N packages after filtering (0 keeps all):
 
 ```sh
 ecosystem/generate-packages.py --top 500

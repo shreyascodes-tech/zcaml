@@ -460,19 +460,63 @@ def skip_meta(pkg):
     return (pkg in META or pkg.startswith('conf-') or pkg.startswith('host-')
             or pkg.startswith('msys2') or pkg.startswith('ocaml-env-'))
 
+
+# Fallback grouping for packages outside the source-scanned top set.
+CONF_TOOLS = {
+    'conf-pkg-config', 'conf-which', 'conf-perl', 'conf-perl-ipc-system-simple',
+    'conf-perl-string-shellquote', 'conf-python-3', 'conf-autoconf', 'conf-m4',
+    'conf-cmake', 'conf-bmake', 'conf-git', 'conf-bash', 'conf-clang', 'conf-gcc',
+    'conf-g++', 'conf-c++', 'conf-msvc32', 'conf-msvc64', 'conf-rust-2021',
+    'conf-binutils', 'conf-graphviz', 'conf-gnuplot', 'conf-r', 'conf-npm',
+    'conf-xdot', 'conf-diffutils', 'conf-sed', 'conf-awk', 'conf-unzip',
+    'conf-wget', 'conf-curl', 'conf-pkgconf',
+}
+CONF_LIBS = {
+    'conf-gmp', 'conf-gmp-powm-sec', 'conf-gmp-paths', 'conf-mpfr-paths',
+    'conf-zlib', 'conf-libffi', 'conf-libpcre', 'conf-libpcre2-8',
+    'conf-sqlite3', 'conf-libssl', 'conf-sdl2', 'conf-sdl2-image',
+    'conf-sdl2-ttf', 'conf-libev', 'conf-libcurl', 'conf-cairo', 'conf-gtk3',
+    'conf-gtk2', 'conf-gtksourceview3', 'conf-zmq', 'conf-libX11',
+    'conf-libXft', 'conf-openblas', 'conf-llvm', 'conf-gsl', 'conf-postgresql',
+    'conf-rdkit', 'conf-linux-libc-dev', 'conf-mpfr', 'conf-ffmpeg',
+    'conf-blas', 'conf-lapack', 'conf-libogg', 'conf-libseccomp',
+}
+LIB_HINTS = ('gmp', 'mpfr', 'zlib', 'libffi', 'sqlite', 'openssl', 'libssl',
+             'sdl', 'libev', 'curl', 'cairo', 'gtk', 'zmq', 'x11', 'xft',
+             'openblas', 'blas', 'lapack', 'llvm', 'gsl', 'postgres', 'rdkit',
+             'ffmpeg', 'libav', 'pcre', 'ncurses', 'linux-headers',
+             'linux-libc-dev', 'ogg', 'seccomp')
+
+def guess_group(text):
+    deps = {name for name, _ in required_items(text)}
+    confs = {d for d in deps if d.startswith('conf-')}
+    if confs & CONF_LIBS:
+        return 'system-libs'
+    if any(any(h in c for h in LIB_HINTS) for c in confs - CONF_TOOLS):
+        return 'system-libs'
+    if deps & {'ctypes', 'ctypes-foreign', 'conf-gcc', 'conf-clang',
+               'conf-c++', 'conf-g++', 'conf-rust-2021'}:
+        return 'c-stubs'
+    for name, body in fields(text):
+        if name == 'depexts' and any(h in body.lower() for h in LIB_HINTS):
+            return 'system-libs'
+    return 'ml-only'
+
 def top_packages(top, opam_repository):
     pkgs = opam_packages(opam_repository)
     ranked, texts, support = ranked_packages(pkgs)
     out = []
-    for rank, (package, _, _) in enumerate(ranked, 1):
-        if top and rank > top:
-            break
+    for package, _, _ in ranked:
         if skip_meta(package) or package in UNLOCKABLE:
             continue
         if not support[package]:
             continue
-        group = 'c-stubs' if package in C_STUBS else 'system-libs' if package in SYSTEM_LIBS else 'ml-only'
+        group = ('c-stubs' if package in C_STUBS else
+                 'system-libs' if package in SYSTEM_LIBS else
+                 guess_group(texts[package]))
         out.append((package, group))
+        if top and len(out) >= top:
+            break
     return out
 
 EXTRA = {
@@ -586,7 +630,7 @@ def apply_targets(package, unsupported):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--top', type=int, default=500,
-                        help='number of top lockable packages to include (0 = all)')
+                        help='number of top packages after filtering (0 = all)')
     parser.add_argument('--opam-repository', default='',
                         help='opam-repository checkout or packages directory (default: download the pinned commit)')
     parser.add_argument('--output', default=os.path.join(HERE, 'packages.tsv'),
