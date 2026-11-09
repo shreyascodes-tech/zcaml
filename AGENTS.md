@@ -110,3 +110,5 @@ Order functions and modules from most to least important, so a file reads top-do
 This is a judgement call, not a strict rule. Put things in another order when that is easier to read and understand.
 
 NEVER commit without explicit user confirmation.
+
+Commit messages are a single line: keep the subject, with no body unless absolutely necessary.
