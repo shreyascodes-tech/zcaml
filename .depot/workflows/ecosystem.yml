@@ -130,5 +130,60 @@ jobs:
           path: |
             ${{ runner.temp }}/ecosystem/report.md
             ${{ runner.temp }}/ecosystem/results.tsv
+            ${{ runner.temp }}/ecosystem/selected.txt
             ${{ runner.temp }}/ecosystem/*/*.log
+          if-no-files-found: ignore
+
+  # The shards upload separate reports; this merges them into one report.
+  summary:
+    name: Consolidated report
+    needs: ecosystem
+    if: always()
+    runs-on: depot-ubuntu-24.04-2
+    timeout-minutes: 10
+    env:
+      TARGETS: ${{ inputs.targets || 'aarch64-linux-gnu x86_64-windows-gnu' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ecosystem-*
+          path: ${{ runner.temp }}/shards
+
+      - name: Merge shard reports
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/summary"
+          mkdir -p "$work"
+
+          # Package log directories are disjoint between shards.
+          for d in "$RUNNER_TEMP"/shards/*; do
+            for p in "$d"/*/; do
+              [[ -d "$p" ]] || continue
+              cp -r "$p" "$work"/
+            done
+          done
+
+          : >"$work/results.tsv"
+          : >"$work/selected.txt"
+          for d in "$RUNNER_TEMP"/shards/*; do
+            cat "$d/results.tsv" >>"$work/results.tsv"
+            cat "$d/selected.txt" >>"$work/selected.txt"
+          done
+
+          ecosystem/report.sh "$work" >"$work/report.md"
+          cat "$work/report.md" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload consolidated report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecosystem-summary
+          path: |
+            ${{ runner.temp }}/summary/report.md
+            ${{ runner.temp }}/summary/results.tsv
+            ${{ runner.temp }}/summary/selected.txt
           if-no-files-found: ignore
