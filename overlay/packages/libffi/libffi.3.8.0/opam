@@ -1,0 +1,24 @@
+opam-version: "2.0"
+synopsis: "libffi, built from source by dune"
+description: """
+libffi's C library, compiled with the context's C compiler: unlike conf-libffi,
+which needs it installed on the system, it cross-compiles. A library with no
+modules: depending on it gives C stubs libffi's headers and links it."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["Anthony Green" "libffi contributors"]
+license: "MIT"
+homepage: "https://github.com/libffi/libffi"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+patches: [ "libffi-dune.patch" ]
+build: ["dune" "build" "-p" name "-j" jobs]
+url {
+  src: "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz"
+  checksum: [
+    "sha256=7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4"
+    "sha512=a259d50f40b5dcde9cb6227bd105761e667290f107553b204a5a6cfdfbf2e6b022ed04be2ea4596da42961d11396125425def3cb67e2844a9eba90b6750c8c39"
+  ]
+}

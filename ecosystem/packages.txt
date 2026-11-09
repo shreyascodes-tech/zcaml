@@ -1,9 +1,10 @@
 # The packages run.sh builds, by how they build: commonly used ones, and enough of
 # each kind to see what does and doesn't cross-compile.
 #
-#   <package> [<library> | pps:<ppx> | !<target>]...
+#   <package>[<constraint>] [<library> | pps:<ppx> | !<target>]...
 #
-# The libraries default to <package>. A !<target> is one the package doesn't
+# The libraries default to <package>. A constraint is opam's, attached to the
+# package (`ctypes-foreign>=0.24.0`). A !<target> is one the package doesn't
 # support (its docs, or code for one OS only): not built for.
 #
 # Not libraries that need an optional dependency (fmt.cli, cmdliner's), as
@@ -118,7 +119,7 @@ jsonm
 zarith
 num
 ctypes
-ctypes-foreign ctypes.foreign
+ctypes-foreign>=0.24.0 ctypes-foreign
 yaml
 camomile
 sqlite3

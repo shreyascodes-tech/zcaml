@@ -3,7 +3,7 @@
 # project depending on it would: an executable linking its libraries (all of their
 # modules: -linkall), run on the target. `run.sh` sets up the environment.
 #
-#   ecosystem/probe.sh <work-dir> <package> [<library> | pps:<ppx> | !<target>]...
+#   ecosystem/probe.sh <work-dir> <package>[<constraint>] [<library> | pps:<ppx> | !<target>]...
 #
 # Appends `<package> <stage> ok|fail|skip` lines to <work-dir>/results.tsv, stages:
 # lock, native, then build:<target> and run:<target> for each of $TARGETS, but
@@ -13,7 +13,9 @@
 set -uo pipefail
 
 work="$1"
-package="$2"
+package_spec="$2"
+package="${package_spec%%[<>=]*}"
+constraint="${package_spec#"$package"}"
 shift 2
 libraries=()
 ppxs=()
@@ -32,9 +34,16 @@ rm -rf "$dir"
 mkdir -p "$dir/bin"
 cd "$dir"
 
+depends="$package"
+if [[ -n "$constraint" ]]; then
+  operator="${constraint%%[0-9]*}"
+  version="${constraint#"$operator"}"
+  depends="($package ($operator $version))"
+fi
+
 cat >dune-project <<EOF
 (lang dune 3.24)
-(package (name probe) (allow_empty) (depends $package))
+(package (name probe) (allow_empty) (depends $depends))
 EOF
 cat >dune-workspace <<EOF
 (lang dune 3.24)

@@ -33,12 +33,14 @@ jobs="${JOBS:-$(($(nproc) / 2 > 0 ? $(nproc) / 2 : 1))}"
 # shellcheck source=../scripts/cross-env.sh
 source "$here/../scripts/cross-env.sh"
 
-# packages.txt's lines (`<package> <library>...`) for the packages asked for.
+# packages.txt's lines (`<package>[<constraint>] <library>...`) for the packages
+# asked for.
 selected() {
   local line name
   while read -r line; do
     line="${line%%#*}"
     read -r name _ <<<"$line" || true
+    name="${name%%[<>=]*}"
     [[ -n "$name" ]] || continue
     if [[ $# -eq 0 ]] || [[ " $* " == *" $name "* ]]; then echo "$line"; fi
   done <"$here/packages.txt"
