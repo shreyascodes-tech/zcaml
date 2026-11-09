@@ -242,8 +242,8 @@ fn verifyPair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
     const path_sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
     const parent_path = ctx.init.environ_map.get("PATH") orelse "/usr/bin:/bin";
     var new_path = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ bin_dir, path_sep, parent_path });
-    // Emulated hosts: compilers run `flexlink` and the C compiler (`zcaml-cc-*`)
-    // by name, so wrap them too.
+    // Emulated hosts: compilers run `flexlink`, the C compiler (`zcaml-cc-*`) and
+    // the archiver (`zcaml-ar-*`, `ar`) by name, so wrap them too.
     if (host.wrap.prefix_argv.len > 0 and !job.host.isWindows()) {
         const shim_dir = try std.fs.path.join(arena, &.{ work_dir, "host-shims" });
         try Dir.cwd().createDirPath(io, shim_dir);
@@ -251,7 +251,13 @@ fn verifyPair(ctx: *Context, arena: Allocator, job: PairJob) ![]const u8 {
         defer bin.close(io);
         var it = bin.iterate();
         while (try it.next(io)) |entry| {
-            if (!std.mem.eql(u8, entry.name, "flexlink") and !std.mem.startsWith(u8, entry.name, "zcaml-cc-")) continue;
+            const name = entry.name;
+            if (!std.mem.eql(u8, name, "flexlink") and
+                !std.mem.eql(u8, name, "ar") and
+                !std.mem.eql(u8, name, "ranlib") and
+                !std.mem.startsWith(u8, name, "zcaml-cc-") and
+                !std.mem.startsWith(u8, name, "zcaml-ar-") and
+                !std.mem.startsWith(u8, name, "zcaml-ranlib-")) continue;
             var script: std.ArrayList(u8) = .empty;
             try script.appendSlice(arena, "#!/bin/sh\nexec");
             for (host.wrap.prefix_argv) |a| try script.print(arena, " '{s}'", .{a});
