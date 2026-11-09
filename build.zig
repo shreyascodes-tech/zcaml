@@ -20,6 +20,14 @@ pub fn build(b: *std.Build) !void {
     }
     gen_step.dependOn(&update_src.step);
 
+    // For `ZCAML_MACOS_SDK`: cross-compiling C for macOS outside this build (dune
+    // pkg's packages).
+    if (b.option(bool, "macos-sdk", "install the macOS SDK, in Xcode's layout, to zig-out/macos-sdk") orelse false) {
+        if (b.lazyDependency("xcode_frameworks", .{})) |dep| {
+            b.installDirectory(.{ .source_dir = Ocaml.MacosSdk.layout(b, dep), .install_dir = .prefix, .install_subdir = "macos-sdk" });
+        }
+    }
+
     if (b.option(bool, "ocaml", "build ocaml") orelse false) {
         const version = b.option(Ocaml.Version, "ocaml-version", "ocaml version to build") orelse Ocaml.Versions.latest;
         const ocamldoc_opt = b.option(bool, "ocamldoc", "build and install ocamldoc");
