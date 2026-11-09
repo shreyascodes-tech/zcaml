@@ -45,15 +45,21 @@ env:
 
 jobs:
   ecosystem:
-    name: Build opam packages
+    name: Build opam packages (${{ matrix.shard }}/4)
     runs-on: depot-ubuntu-24.04-16
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       OCAML_TAG: ${{ inputs.ocaml_tag || 'ocaml-v5.5.1-8' }}
       DUNE_TAG: ${{ inputs.dune_tag }}
       TARGETS: ${{ inputs.targets || 'aarch64-linux-gnu x86_64-windows-gnu' }}
       PACKAGES: ${{ inputs.packages }}
       GROUP: ${{ inputs.group }}
+      SHARD: ${{ matrix.shard }}
+      SHARDS: 4
       OVERLAYS: ${{ inputs.overlays }}
     steps:
       - name: Checkout repository
@@ -120,7 +126,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ecosystem
+          name: ecosystem-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/ecosystem/report.md
             ${{ runner.temp }}/ecosystem/results.tsv

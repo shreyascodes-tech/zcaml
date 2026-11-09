@@ -18,6 +18,8 @@
 #
 #   PACKAGES_FILE              default: $here/packages.tsv
 #   GROUP                      only packages in this group, default: all
+#   SHARD / SHARDS             run one of SHARDS round-robin shards, 1-based
+#   SELECT_ONLY=1              print the selected packages and stop
 #   TARGETS                    default: aarch64-linux-gnu x86_64-windows-gnu
 #   JOBS                       packages at a time, default: half the CPUs
 #   AARCH64_LINUX_GNU_SYSROOT  for qemu-aarch64, default: /usr/aarch64-linux-gnu
@@ -47,6 +49,13 @@ source "$here/../scripts/cross-env.sh"
 # arguments, for the packages asked for and the $GROUP, if any.
 packages_file="${PACKAGES_FILE:-$here/packages.tsv}"
 group="${GROUP:-}"
+shard="${SHARD:-1}"
+shards="${SHARDS:-1}"
+if [[ ! "$shard" =~ ^[0-9]+$ || ! "$shards" =~ ^[0-9]+$ ]] ||
+   (( shards < 1 || shard < 1 || shard > shards )); then
+  echo "invalid SHARD/SHARDS: $shard/$shards" >&2
+  exit 1
+fi
 selected() {
   awk -F '\t' -v group="$group" -v want="$*" '
     BEGIN {
@@ -94,6 +103,21 @@ awk -v heavy="$heavy" '
   }
 ' "$work/selected.txt" | sort -t$'\t' -k1,1n -k2,2n | cut -f3- >"$work/selected.sorted"
 mv "$work/selected.sorted" "$work/selected.txt"
+
+if (( shards > 1 )); then
+  awk -v shard="$shard" -v shards="$shards" \
+    '((NR - 1) % shards) == (shard - 1)' "$work/selected.txt" >"$work/selected.shard"
+  mv "$work/selected.shard" "$work/selected.txt"
+  if [[ ! -s "$work/selected.txt" ]]; then
+    echo "shard $shard/$shards has no packages" >&2
+    exit 1
+  fi
+fi
+
+if [[ "${SELECT_ONLY:-}" == 1 ]]; then
+  cat "$work/selected.txt"
+  exit 0
+fi
 
 rm -f "$work/results.tsv"
 touch "$work/results.tsv"
