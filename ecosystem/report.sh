@@ -24,7 +24,7 @@ echo "## Cross-compiling opam packages with dune pkg"
 echo
 echo "Each package's libraries, linked (\`-linkall\`) into an executable that runs on the"
 echo "target. ✅ built and ran, ⚠️ built but didn't run, ❌ failed; · not reached, — not"
-echo "supported on the target (\`!<target>\` in packages.txt)."
+echo "supported on the target (\`!<target>\` in packages.tsv)."
 echo
 echo "| | packages |"
 echo "|---|---|"

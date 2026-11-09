@@ -3,3 +3,5 @@
 zig-pkg
 zig-out
 goal.md
+__pycache__/
+*.pyc

@@ -23,14 +23,18 @@ shift 2
 libraries=()
 ppxs=()
 unsupported=" "
+build_only=0
 for spec in "$@"; do
   case "$spec" in
     pps:*) ppxs+=("${spec#pps:}") ;;
     !*) unsupported="$unsupported${spec#!} " ;;
+    -) build_only=1 ;;
     *) libraries+=("$spec") ;;
   esac
 done
-[[ ${#libraries[@]} -gt 0 ]] || libraries=("$package")
+if [[ $build_only -eq 0 && ${#libraries[@]} -eq 0 ]]; then
+  libraries=("$package")
+fi
 
 dir="$work/$package"
 rm -rf "$dir"
@@ -52,13 +56,13 @@ cat >dune-workspace <<EOF
 (lang dune 3.24)
 $(cat "$work/repositories.dune")
 EOF
-cat >bin/dune <<EOF
-(executable
- (name main)
- (libraries ${libraries[*]})
- ${ppxs:+(preprocess (pps ${ppxs[*]}))}
- (link_flags (-linkall)))
-EOF
+{
+  echo '(executable'
+  echo ' (name main)'
+  if [[ $build_only -eq 0 ]]; then echo " (libraries ${libraries[*]})"; fi
+  if [[ ${#ppxs[@]} -gt 0 ]]; then echo " (preprocess (pps ${ppxs[*]}))"; fi
+  echo ' (link_flags (-linkall)))'
+} >bin/dune
 echo 'let () = print_endline "ok"' >bin/main.ml
 
 # Runs <stage>'s command, recording the result; `false` if it failed.

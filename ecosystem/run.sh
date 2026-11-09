@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds ecosystem/packages.txt's packages with dune pkg for $TARGETS, as opam has
-# them but for zcaml's overlay (overlay/): how much of opam cross-compiles with zcaml.
+# Builds ecosystem/packages.tsv's packages with dune pkg for $TARGETS, as opam
+# has them but for zcaml's overlay (overlay/): how much of opam cross-compiles
+# with zcaml.
 #
 #   ecosystem/run.sh <work-dir> <toolchains> <dune-bin-dir> [<package>...]
 #
@@ -10,6 +11,13 @@
 # packages are the named ones, or all. Writes <work-dir>/results.tsv (probe.sh)
 # and <work-dir>/report.md.
 #
+# packages.tsv columns: package, constraint, libraries, ppx, unsupported, group.
+# Empty libraries means the package name; a comma separates several entries; a
+# single `-` builds the package without linking a library. The `group` column is
+# ml-only, c-stubs, or system-libs.
+#
+#   PACKAGES_FILE              default: $here/packages.tsv
+#   GROUP                      only packages in this group, default: all
 #   TARGETS                    default: aarch64-linux-gnu x86_64-windows-gnu
 #   JOBS                       packages at a time, default: half the CPUs
 #   AARCH64_LINUX_GNU_SYSROOT  for qemu-aarch64, default: /usr/aarch64-linux-gnu
@@ -35,19 +43,44 @@ export DUNE_JOBS="${DUNE_JOBS:-2}"
 # shellcheck source=../scripts/cross-env.sh
 source "$here/../scripts/cross-env.sh"
 
-# packages.txt's lines (`<package>[<constraint>] <library>...`) for the packages
-# asked for.
+# packages.tsv's rows, as probe.sh's `<package>[<constraint>] <library>...`
+# arguments, for the packages asked for and the $GROUP, if any.
+packages_file="${PACKAGES_FILE:-$here/packages.tsv}"
+group="${GROUP:-}"
 selected() {
-  local line name
-  while read -r line; do
-    line="${line%%#*}"
-    read -r name _ <<<"$line" || true
-    name="${name%%[<>=]*}"
-    [[ -n "$name" ]] || continue
-    if [[ $# -eq 0 ]] || [[ " $* " == *" $name "* ]]; then echo "$line"; fi
-  done <"$here/packages.txt"
+  awk -F '\t' -v group="$group" -v want="$*" '
+    BEGIN {
+      want_n = split(want, a, " ")
+      for (i = 1; i <= want_n; i++) if (a[i] != "") w[a[i]] = 1
+    }
+    /^#/ || NF == 0 { next }
+    {
+      pkg = $1
+      g = $6 == "" ? "other" : $6
+      if (group != "" && group != "all" && g != group) next
+      if (want_n > 0 && !(pkg in w)) next
+      line = pkg $2
+      if ($3 != "") {
+        m = split($3, x, ",")
+        for (i = 1; i <= m; i++) if (x[i] != "") line = line " " x[i]
+      }
+      if ($4 != "") {
+        m = split($4, x, ",")
+        for (i = 1; i <= m; i++) if (x[i] != "") line = line " pps:" x[i]
+      }
+      if ($5 != "") {
+        m = split($5, x, ",")
+        for (i = 1; i <= m; i++) if (x[i] != "") line = line " !" x[i]
+      }
+      print line
+    }
+  ' "$packages_file"
 }
 selected "$@" >"$work/selected.txt"
+if [[ ! -s "$work/selected.txt" ]]; then
+  echo "no packages selected from $packages_file" >&2
+  exit 1
+fi
 
 # Longest first: these took longest in previous runs, so they start first and
 # don't leave the run waiting for them at the end.
