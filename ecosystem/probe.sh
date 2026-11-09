@@ -90,8 +90,11 @@ run() {
 }
 export -f run
 
+if [[ "${PROBE_LOCK_ONLY:-}" == 1 ]]; then
+  dune pkg lock >/dev/null 2>&1 || exit 0
+  exit 0
+fi
 stage lock dune pkg lock || exit 0
-[[ "${PROBE_LOCK_ONLY:-}" == 1 ]] && exit 0
 
 dune_jobs="${DUNE_JOBS:-2}"
 stage native dune build -j "$dune_jobs" ./bin/main.exe || exit 0
