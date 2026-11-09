@@ -1,7 +1,7 @@
 diff -ruN a/build.sh b/build.sh
 --- a/build.sh	1970-01-01 05:30:00.000000000 +0530
 +++ b/build.sh	2026-11-09 13:41:43.961703616 +0530
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,132 @@
 +#!/bin/sh
 +# Builds libffi's static library and headers with the context's C compiler, as
 +# libffi's configure would, but without autotools: the sources are a fixed list
@@ -118,12 +118,9 @@ diff -ruN a/build.sh b/build.sh
 +  "$cc" $flags -c "$f" -o "$objdir/$(basename "$f" .S).o"
 +done
 +
-+# zcaml's toolchain has no ar, but has zig (which zcaml-cc runs).
-+if command -v ar >/dev/null 2>&1; then
-+  ar cr libffi_stubs.a "$objdir"/*.o
-+else
-+  "${ZIG:-zig}" ar cr libffi_stubs.a "$objdir"/*.o
-+fi
++# The toolchain's archiver, or the one $AR names (which may carry flags).
++ar=${AR:-ar}
++$ar cr libffi_stubs.a "$objdir"/*.o
 +
 +# Dune's foreign_archives wants dllffi_stubs.so on Unix, .dll on Windows.
 +# Produce both names: each build only uses its own.
