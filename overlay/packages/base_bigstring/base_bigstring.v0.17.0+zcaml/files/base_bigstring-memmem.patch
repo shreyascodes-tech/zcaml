@@ -1,0 +1,26 @@
+--- a/src/base_bigstring_stubs.c
++++ b/src/base_bigstring_stubs.c
+@@ -72,6 +72,23 @@
+ #include "base_bigstring.h"
+ #include "internalhash.h"
+ 
++/* Windows' C library has no memmem. */
++#if defined(_WIN32) && !defined(__CYGWIN__)
++static void *zcaml_memmem(const void *haystack, size_t haystack_len,
++                          const void *needle, size_t needle_len)
++{
++  if (needle_len == 0) return (void *)haystack;
++  if (haystack_len < needle_len) return NULL;
++  const char *h = (const char *)haystack;
++  const char *n = (const char *)needle;
++  for (size_t i = 0; i + needle_len <= haystack_len; i++)
++    if (h[i] == n[0] && memcmp(h + i, n, needle_len) == 0)
++      return (void *)(h + i);
++  return NULL;
++}
++#define memmem zcaml_memmem
++#endif
++
+ /* Bytes_val is only available from 4.06 */
+ #ifndef Bytes_val
+ #define Bytes_val String_val
