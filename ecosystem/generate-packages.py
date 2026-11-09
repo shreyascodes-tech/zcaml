@@ -186,6 +186,17 @@ UNLOCKABLE = {
     'virtual_dom',
 }
 
+# Packages we don't probe: builds dune pkg can't handle yet (melange's hidden
+# `__private__` directory target), and current-list packages that depend on an
+# `UNLOCKABLE` package, which can never lock until those are ported.
+SKIP = {
+    'bap-bundle',
+    'melange',
+    'refl',
+    'reason-react',
+    'statocaml_profile',
+}
+
 META = {
     'ocaml', 'ocaml-base-compiler', 'ocaml-variants', 'ocaml-src',
     'ocaml-system', 'ocaml-compiler', 'base-unix', 'base-bytes',
@@ -507,7 +518,7 @@ def top_packages(top, opam_repository):
     ranked, texts, support = ranked_packages(pkgs)
     out = []
     for package, _, _ in ranked:
-        if skip_meta(package) or package in UNLOCKABLE:
+        if skip_meta(package) or package in UNLOCKABLE or package in SKIP:
             continue
         if not support[package]:
             continue
@@ -619,6 +630,12 @@ TARGET_PATCHES = {
     'camlp4': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'camlp5': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'bsdowl': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    # These build with make/ocamlbuild, which `build/dune/cross_pkg.ml` doesn't
+    # redirect: they compile with the build machine's compiler and their target
+    # link then mismatches the target stdlib.
+    'opam-file-format': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'ocplib-json-typed': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'process': 'aarch64-linux-gnu,x86_64-windows-gnu',
 }
 
 def apply_targets(package, unsupported):

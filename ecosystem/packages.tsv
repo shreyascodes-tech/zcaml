@@ -69,7 +69,6 @@ stdlib-shims					ml-only
 mirage-crypto					c-stubs
 hex					ml-only
 uuidm					ml-only
-melange					ml-only
 ocamlgraph					ml-only
 dune-site					ml-only
 xmlm					ml-only
@@ -236,7 +235,6 @@ progress					c-stubs
 flux				x86_64-windows-gnu	ml-only
 toml					ml-only
 bitstring					c-stubs
-reason-react					ml-only
 zmq					system-libs
 pa_ppx					ml-only
 libsail					system-libs
@@ -306,7 +304,7 @@ uri-sexp					ml-only
 sexp_pretty					ml-only
 conduit-lwt					ml-only
 happy-eyeballs					ml-only
-opam-file-format					ml-only
+opam-file-format				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 tar					ml-only
 ISO8601					ml-only
 ezxmlm					ml-only
@@ -355,7 +353,7 @@ stk					ml-only
 z3					system-libs
 lablgtk3-sourceview3					system-libs
 linol					ml-only
-ocplib-json-typed					ml-only
+ocplib-json-typed				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 pandoc					ml-only
 ppx_assert					ml-only
 fieldslib					ml-only
@@ -389,7 +387,7 @@ parmap					c-stubs
 dokeysto					ml-only
 lsp					c-stubs
 incremental					ml-only
-process					ml-only
+process				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 bigstring					c-stubs
 bst					ml-only
 prometheus-app					ml-only
@@ -464,7 +462,6 @@ miaou-driver-term					ml-only
 mirage-flow-lwt					ml-only
 pgocaml					ml-only
 ppx_marshal_ext					ml-only
-refl					ml-only
 bechamel					ml-only
 bhttp					ml-only
 bls12-381					ml-only
@@ -479,7 +476,6 @@ mehari					ml-only
 msat					ml-only
 msgpck					ml-only
 ogg					system-libs
-statocaml_profile					ml-only
 ocaml-secondary-compiler					ml-only
 ppx_derivers					ml-only
 ppx_cold					ml-only
@@ -488,7 +484,6 @@ ppx_custom_printf					ml-only
 ppx_bench					ml-only
 gmap					ml-only
 kdf					ml-only
-bap-bundle					ml-only
 pecu					ml-only
 eio_posix					ml-only
 happy-eyeballs-mirage					ml-only
@@ -501,10 +496,14 @@ curl_lwt					ml-only
 solo5					system-libs
 httpaf-lwt-unix					ml-only
 safepass					ml-only
+slice					ml-only
+extunix					c-stubs
+ldp_tls					ml-only
+alt-ergo-lib					ml-only
+conformist					ml-only
 odoc-parser					ml-only
 ocamlformat-lib					ml-only
 bisect_ppx_ng			bisect_ppx_ng		ml-only
 ocaml_intrinsics					c-stubs
 memtrace					c-stubs
-extunix					c-stubs
 luv					c-stubs
