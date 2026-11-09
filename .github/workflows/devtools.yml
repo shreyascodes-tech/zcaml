@@ -1,0 +1,242 @@
+name: Dev tools
+
+# Release tags: <package>-v<version>-zcaml.<revision>, of a devtools/devtools.txt
+# tool, a build of it (one more for each release of the same version):
+#   ocamlformat-v0.29.0-zcaml.1 -> ocamlformat 0.29.0, build 1
+# Never move an existing tag.
+#
+# A tool is built from its release's sources with dune pkg (devtools/build.sh),
+# for every zcaml host, on Linux, with the x86_64-linux-gnu-hosted toolchains of
+# an OCaml release and zcaml's dune. Then it's smoke-tested (devtools/test.sh):
+# the Linux builds in distro containers (other architectures through qemu), the
+# Windows one under Wine, the macOS ones on macOS, natively and under Rosetta.
+# Each host's is a .tar.gz (dune pkg doesn't extract .tar.zst), with an install
+# file: devtools/overlay.sh makes overlay/'s binary packages of a release.
+
+on:
+  push:
+    tags:
+      - "ocamlformat-v*"
+      - "ocaml-lsp-server-v*"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "devtools.txt's package, to build and test, not release"
+        required: true
+        type: string
+      version:
+        description: "its version"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: "0.17.0"
+  # What scripts/cross-env.sh's lock directory is for: OCaml 5.5.1.
+  OCAML_TAG: "ocaml-v5.5.1-8"
+  OCAML_VERSION: "5.5.1"
+  DUNE_TAG: "dune-v3.24.2-zcaml.4"
+  NATIVE: x86_64-linux-gnu
+  TARGETS: >-
+    aarch64-linux-gnu x86_64-linux-musl aarch64-linux-musl x86_64-windows-gnu
+    aarch64-macos-none x86_64-macos-none
+
+jobs:
+  resolve:
+    name: Resolve the tool
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      package: ${{ steps.find.outputs.package }}
+      version: ${{ steps.find.outputs.version }}
+      name: ${{ steps.find.outputs.name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - id: find
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_PACKAGE" ]]; then
+            package="$INPUT_PACKAGE" version="$INPUT_VERSION" name="$package-$version-zcaml.0"
+          elif [[ "$REF_NAME" =~ ^(.+)-v(.+)-zcaml\.([0-9]+)$ ]]; then
+            package="${BASH_REMATCH[1]}" version="${BASH_REMATCH[2]}"
+            name="$package-$version-zcaml.${BASH_REMATCH[3]}"
+          else
+            echo "error: tag '$REF_NAME' isn't <package>-v<version>-zcaml.<revision>" >&2
+            exit 1
+          fi
+          if ! awk -v p="$package" -v v="$version" '$1 == p && $2 == v { found = 1 } END { exit !found }' devtools/devtools.txt; then
+            echo "error: $package $version isn't in devtools/devtools.txt" >&2
+            exit 1
+          fi
+          { echo "package=$package"; echo "version=$version"; echo "name=$name"; } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build
+    needs: resolve
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 90
+    env:
+      PACKAGE: ${{ needs.resolve.outputs.package }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      NAME: ${{ needs.resolve.outputs.name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
+      - name: Download the toolchains and dune
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/toolchains/$OCAML_VERSION/host-$NATIVE"
+          for t in $NATIVE $TARGETS; do
+            archive="ocaml-$OCAML_VERSION-host-$NATIVE-target-$t.tar.zst"
+            gh release download "$OCAML_TAG" --pattern "$archive" --dir "$RUNNER_TEMP"
+            mkdir -p "$root/target-$t"
+            zstd -d -q -c "$RUNNER_TEMP/$archive" | tar -xf - -C "$root/target-$t"
+            rm "$RUNNER_TEMP/$archive"
+          done
+          mkdir -p "$RUNNER_TEMP/dune"
+          gh release download "$DUNE_TAG" --pattern "dune-${DUNE_TAG#dune-v}-$NATIVE.tar.zst" --output - |
+            zstd -d -q | tar -xf - -C "$RUNNER_TEMP/dune"
+          "$RUNNER_TEMP/dune/bin/dune" --version
+          { echo "TOOLCHAINS=$root"; echo "DUNE_BIN=$RUNNER_TEMP/dune/bin"; } >> "$GITHUB_ENV"
+
+      - name: Install the macOS SDK
+        run: |
+          zig build -Dmacos-sdk --summary failures
+          echo "ZCAML_MACOS_SDK=$PWD/zig-out/macos-sdk" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: devtools/build.sh "$RUNNER_TEMP/work" "$TOOLCHAINS" "$DUNE_BIN" "$PACKAGE" "$VERSION"
+
+      - name: Set up QEMU & Wine
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged tonistiigi/binfmt --install arm64 >/dev/null
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends wine
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/work/out"
+          # Runs the test in <image> for <platform>, with the checkout at /w.
+          in_docker() {
+            docker run --rm --platform "$1" -v "$PWD:/w" -v "$out:/o" -w /w "$2" \
+              sh -c "${3:+$3 && }devtools/test.sh /o/$4 $PACKAGE $VERSION"
+          }
+          for t in $NATIVE $TARGETS; do
+            case "$t" in
+              x86_64-linux-gnu) devtools/test.sh "$out/$t" "$PACKAGE" "$VERSION" ;;
+              aarch64-linux-gnu) in_docker linux/arm64 ubuntu:24.04 "" "$t" ;;
+              x86_64-linux-musl) in_docker linux/amd64 alpine:3.22 "apk add --no-cache bash >/dev/null" "$t" ;;
+              aarch64-linux-musl) in_docker linux/arm64 alpine:3.22 "apk add --no-cache bash >/dev/null" "$t" ;;
+              x86_64-windows-gnu) WINEDEBUG=-all devtools/test.sh "$out/$t" "$PACKAGE" "$VERSION" wine ;;
+              *-macos-none) ;; # test-macos
+              *) echo "error: no way to run $t's" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir archives
+          for t in $NATIVE $TARGETS; do
+            tar --sort=name --owner=0 --group=0 -czf "archives/$NAME-$t.tar.gz" -C "$RUNNER_TEMP/work/out/$t" .
+          done
+          (cd archives && sha256sum -- *.tar.gz > SHA256SUMS)
+          ls -l archives
+          cat archives/SHA256SUMS
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: devtools
+          path: archives/*
+          compression-level: 0
+
+  test-macos:
+    name: Test on macOS
+    needs: [resolve, build]
+    runs-on: depot-macos-15
+    timeout-minutes: 15
+    env:
+      PACKAGE: ${{ needs.resolve.outputs.package }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      NAME: ${{ needs.resolve.outputs.name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Rosetta 2 is available
+        run: |
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+          fi
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          name: devtools
+          path: archives
+
+      - name: Test (native + Rosetta 2)
+        run: |
+          set -euo pipefail
+          for t in aarch64-macos-none x86_64-macos-none; do
+            mkdir -p "out/$t"
+            tar -xzf "archives/$NAME-$t.tar.gz" -C "out/$t"
+            # macOS's bash 3.2: no empty arrays under `set -u`.
+            if [[ $t == x86_64-* ]]; then
+              devtools/test.sh "out/$t" "$PACKAGE" "$VERSION" arch -x86_64
+            else
+              devtools/test.sh "out/$t" "$PACKAGE" "$VERSION"
+            fi
+          done
+
+  publish:
+    name: Publish
+    needs: [resolve, build, test-macos]
+    if: github.event_name == 'push'
+    runs-on: depot-ubuntu-24.04-2
+    timeout-minutes: 10
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          name: devtools
+          path: archives
+
+      - name: Create GitHub Release and attach the archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          PACKAGE: ${{ needs.resolve.outputs.package }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          files=(archives/*.tar.gz archives/SHA256SUMS)
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${files[@]}" \
+              --title "$PACKAGE $VERSION (zcaml build ${TAG_NAME##*.})" \
+              --notes "$PACKAGE $VERSION, built from its sources for every zcaml host with the $OCAML_TAG toolchains. Binary packages of it for dune pkg's dev tools (dune tools exec, dune fmt) are in zcaml's overlay."
+          fi
