@@ -324,10 +324,14 @@ pub const Toolchain = struct {
         l.file(binutils, b.fmt("{s}/ranlib{s}", .{ bin, host_exe }));
         l.file(binutils, b.fmt("{s}/zcaml-ar-{s}{s}", .{ bin, target.triplet, host_exe }));
         l.file(binutils, b.fmt("{s}/zcaml-ranlib-{s}{s}", .{ bin, target.triplet, host_exe }));
-        // Also as mingw-w64's gcc, which opam-repository's Windows packages check for
-        // (`conf-mingw-w64-gcc-*`) and `configure --host` looks for. A copy: a
-        // symbolic link wouldn't survive Windows.
-        if (target.is_windows) l.file(tc.cc_wrapper.getEmittedBin(), b.fmt("{s}/{s}-gcc{s}", .{ bin, target.triplet, host_exe }));
+        // Also as mingw-w64's gcc and g++, which opam-repository's Windows packages
+        // check for (`conf-mingw-w64-gcc-*`) and `configure --host` looks for. A copy:
+        // a symbolic link wouldn't survive Windows.
+        if (target.is_windows) {
+            const cc_wrapper = tc.cc_wrapper.getEmittedBin();
+            l.file(cc_wrapper, b.fmt("{s}/{s}-gcc{s}", .{ bin, target.triplet, host_exe }));
+            l.file(cc_wrapper, b.fmt("{s}/{s}-g++{s}", .{ bin, target.triplet, host_exe }));
+        }
         if (!tc.host_rt.platform.eql(target)) {
             l.file(tc.target_rt.ocamlrun, b.fmt("{s}/ocamlrun-target{s}", .{ bin, target_exe }));
             if (tc.target_rt.ocamlrund) |a| l.file(a, b.fmt("{s}/ocamlrund-target{s}", .{ bin, target_exe }));

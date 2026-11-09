@@ -4,8 +4,8 @@
 //! Runs `zig cc` with the target's flags baked in, followed by its own arguments.
 //! Where `zig cc` isn't gcc (`Args`), it is made to be:
 //!
-//! - C++ (`-x c++`, as dune compiles C++ stubs, or a C++ source) runs `zig c++`:
-//!   only that gets libc++'s headers.
+//! - C++ (`-x c++`, as dune compiles C++ stubs, a C++ source, or the names
+//!   `g++`/`c++`) runs `zig c++`: only that gets libc++'s headers.
 //! - On Windows, `-c foo.c` writes `foo.o`, as mingw's gcc (and clang) do, and
 //!   OCaml's `ext_obj` says: not `foo.obj`.
 //! `c_compiler` has to be a single program: tools like dune split it into a program
@@ -78,6 +78,15 @@ fn endsWithExe(comptime T: type, s: []const T) bool {
     return std.mem.endsWith(T, s, lower) or std.mem.endsWith(T, s, upper);
 }
 
+/// Installed as a C++ driver (`g++`, `c++`, ...): its arguments need no `-x c++`.
+fn isCxxName(comptime T: type, path: []const T) bool {
+    const seps = [_]T{ '/', '\\' };
+    var base = path[if (std.mem.findLastAny(T, path, &seps)) |i| i + 1 else 0..];
+    if (endsWithExe(T, base)) base = base[0 .. base.len - 4];
+    return std.mem.endsWith(T, base, if (T == u16) &[_]u16{ 'g', '+', '+' } else "g++") or
+        std.mem.endsWith(T, base, if (T == u16) &[_]u16{ 'c', '+', '+' } else "c++");
+}
+
 const posix = struct {
     extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -111,11 +120,12 @@ const posix = struct {
         var source_buf: [4096]u8 = undefined;
         var obj_buf: [4096]u8 = undefined;
         const scan: Args(u8) = .scan(&it, &source_buf);
+        const cxx = scan.cxx or isCxxName(u8, std.mem.span(args[0]));
         const obj_args: []const [*:0]const u8 = if (scan.defaultObject(&obj_buf)) |obj| &.{ "-o", obj } else &.{};
         const len = 2 + target_args.len + sdk_args.len + ours.len + obj_args.len;
         const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
         const argv = ptr[0..len :null];
-        argv[0..2].* = .{ zig, if (scan.cxx) "c++" else "cc" };
+        argv[0..2].* = .{ zig, if (cxx) "c++" else "cc" };
         var i: usize = 2;
         for ([_][]const [*:0]const u8{ &target_args, sdk_args, ours, obj_args }) |part| {
             @memcpy(argv[i..][0..part.len], part);
@@ -312,7 +322,8 @@ const windows = struct {
         const ours = skipProgramName(cmdline);
         var it: CmdlineIterator = .{ .rest = ours };
         const scan: Args(u16) = .scan(&it, &source_buf);
-        const command = if (scan.cxx) L("\" c++") else L("\" cc");
+        const cxx = scan.cxx or isCxxName(u16, programName(cmdline) orelse &.{});
+        const command = if (cxx) L("\" c++") else L("\" cc");
         var len: usize = 0;
         for ([_][]const u16{ L("\""), zig, command, target_args }) |part| if (!append(&len, part)) return cannotRun();
         if (options.macos_sdk) {
