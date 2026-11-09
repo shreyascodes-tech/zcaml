@@ -1,0 +1,10 @@
+# The dev tools devtools.yml releases, built from their release's sources (as
+# opam-repository has them), and overlay.sh makes binary packages of:
+#
+#   <package> <version> <ocaml> <license> <homepage> <source URL> <sha256>
+#
+# <ocaml>: the OCaml release the tool is for (ocaml-lsp-server's merlin reads the
+# compiler's files), the toolchains'; `-` for any.
+
+ocamlformat 0.29.0 - MIT https://github.com/ocaml-ppx/ocamlformat https://github.com/ocaml-ppx/ocamlformat/releases/download/0.29.0/ocamlformat-0.29.0.tbz dac77f0a957ae782bb4b869b07b9803a872a34f8c1eae8901b42d21b623c9db5
+ocaml-lsp-server 1.28.1 5.5 ISC https://github.com/ocaml/ocaml-lsp https://github.com/ocaml/ocaml-lsp/releases/download/1.28.1/lsp-1.28.1.tbz 12b52379b934d699673bd826ba16e20687555aedcefc55a39c68afbb620fba19
