@@ -32,10 +32,14 @@
 //!
 //! It runs for every C compilation, so it is kept small: libc's `execvp` on POSIX,
 //! `CreateProcessW` on Windows, and nothing of `std.Io`, panics or stack traces.
+//!
+//! With `binutils`, the same program is a multicall wrapper for `zig`'s plain tools:
+//! `ar`, `ranlib`, ... It takes the tool from its own name (`ar`, `zcaml-ar-<target>`)
+//! and runs `zig <tool>` with no target flags or SDK. Installed for the host only.
 const std = @import("std");
 const builtin = @import("builtin");
 /// `args`: the target's `zig cc` flags. `macos_sdk`, `windows`: whether the target
-/// is macOS, Windows.
+/// is macOS, Windows. `binutils`: the multicall tool wrapper, below.
 const options = @import("options");
 
 pub const panic = std.debug.no_panic;
@@ -47,6 +51,31 @@ pub const std_options: std.Options = .{
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     return if (builtin.os.tag == .windows) windows.run(init.args.vector) else posix.run(init.args.vector);
+}
+
+/// What the wrapper calls itself in errors.
+const program: []const u8 = if (options.binutils) "zcaml-tools" else "zcaml-cc";
+
+/// The subcommand of a multicall wrapper: `ar` from `ar`, `ar.exe`, `.../ar`, or
+/// `zcaml-ar-<target>`. `null` for no name.
+fn toolName(comptime T: type, argv0: []const T) ?[]const T {
+    const seps = [_]T{ '/', '\\' };
+    var base = argv0[if (std.mem.findLastAny(T, argv0, &seps)) |i| i + 1 else 0..];
+    if (endsWithExe(T, base)) base = base[0 .. base.len - 4];
+    if (base.len == 0) return null;
+    const prefix = "zcaml-";
+    if (startsWith(T, base, prefix)) {
+        const rest = base[prefix.len..];
+        const end = std.mem.findScalar(T, rest, '-') orelse rest.len;
+        return if (end == 0) null else rest[0..end];
+    }
+    return base;
+}
+
+fn endsWithExe(comptime T: type, s: []const T) bool {
+    const lower: []const T = if (T == u16) &[_]u16{ '.', 'e', 'x', 'e' } else ".exe";
+    const upper: []const T = if (T == u16) &[_]u16{ '.', 'E', 'X', 'E' } else ".EXE";
+    return std.mem.endsWith(T, s, lower) or std.mem.endsWith(T, s, upper);
 }
 
 const posix = struct {
@@ -66,6 +95,7 @@ const posix = struct {
 
     fn run(args: []const [*:0]const u8) u8 {
         const zig = std.c.getenv("ZIG") orelse "zig";
+        if (comptime options.binutils) return runTool(zig, args);
         var cwd_buf: [4096]u8 = undefined;
         if (std.c.getcwd(&cwd_buf, cwd_buf.len)) |cwd| {
             if (isConfiguratorProbe(u8, std.mem.span(@as([*:0]u8, @ptrCast(cwd)))))
@@ -97,6 +127,24 @@ const posix = struct {
         return cannotRun(zig);
     }
 
+    /// `zig <tool> <our args, minus the program name>`: the multicall wrapper.
+    fn runTool(zig: [*:0]const u8, args: []const [*:0]const u8) u8 {
+        if (args.len == 0) return cannotRun(zig);
+        const tool = toolName(u8, std.mem.span(args[0])) orelse return cannotRun(zig);
+        const tool_z = concat(&.{tool}) orelse return cannotRun(zig);
+        const ours = args[1..];
+        const len = 2 + ours.len;
+        const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
+        const argv = ptr[0..len :null];
+        argv[0] = zig;
+        argv[1] = tool_z;
+        @memcpy(argv[2..][0..ours.len], ours);
+        argv[len] = null;
+
+        _ = execvp(zig, argv);
+        return cannotRun(zig);
+    }
+
     const ArgvIterator = struct {
         args: []const [*:0]const u8,
         i: usize = 0,
@@ -109,7 +157,7 @@ const posix = struct {
     };
 
     fn cannotRun(zig: [*:0]const u8) u8 {
-        printErr(&.{ "zcaml-cc: could not run ", std.mem.span(zig), "\n" });
+        printErr(&.{ program, ": could not run ", std.mem.span(zig), "\n" });
         return 127;
     }
 
@@ -251,6 +299,7 @@ const windows = struct {
 
     /// Runs `"<zig>" cc <target args> <SDK args>` (or `c++`) followed by our command line, minus the program name.
     fn run(cmdline: []const u16) u8 {
+        if (comptime options.binutils) return runTool(cmdline);
         // The child inherits our environment. First: setting a variable can move the
         // environment block, which `getenv`'s results point into.
         if (getenv("ZIG_LOCAL_CACHE_DIR") == null) {
@@ -277,7 +326,24 @@ const windows = struct {
             for ([_][]const u16{ L(" -o \""), obj, L("\"") }) |part| if (!append(&len, part)) return cannotRun();
         }
         cmd_buf[len] = 0;
+        return spawn();
+    }
 
+    /// Runs `"<zig>" <tool>` followed by our command line, minus the program name.
+    fn runTool(cmdline: []const u16) u8 {
+        const zig = getenv("ZIG") orelse L("zig");
+        const name = programName(cmdline) orelse return cannotRun();
+        const tool = toolName(u16, name) orelse return cannotRun();
+        const ours = skipProgramName(cmdline);
+        var len: usize = 0;
+        for ([_][]const u16{ L("\""), zig, L("\" ") }) |part| if (!append(&len, part)) return cannotRun();
+        if (!append(&len, tool)) return cannotRun();
+        if (!append(&len, ours)) return cannotRun();
+        cmd_buf[len] = 0;
+        return spawn();
+    }
+
+    fn spawn() u8 {
         var startup: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
         startup.cb = @sizeOf(w.STARTUPINFOW);
         var child: w.PROCESS.INFORMATION = undefined;
@@ -370,6 +436,19 @@ const windows = struct {
         }
     };
 
+    /// The program name `cmdline` starts with: to the closing quote if quoted (no
+    /// escapes there), else to the first blank.
+    fn programName(cmdline: []const u16) ?[]const u16 {
+        const line = std.mem.trimStart(u16, cmdline, L(" \t"));
+        if (line.len == 0) return null;
+        if (line[0] == '"') {
+            const end = std.mem.findScalarPos(u16, line, 1, '"') orelse return null;
+            return line[1..end];
+        }
+        const end = std.mem.findAny(u16, line, L(" \t")) orelse line.len;
+        return line[0..end];
+    }
+
     /// The program name ends at the closing quote if quoted (no escapes there), else at the first blank.
     fn skipProgramName(cmdline: []const u16) []const u16 {
         if (cmdline.len > 0 and cmdline[0] == '"') {
@@ -397,7 +476,10 @@ const windows = struct {
     }
 
     fn cannotRun() u8 {
-        const msg = "zcaml-cc: could not run zig\n";
+        const msg = if (options.binutils)
+            "zcaml-tools: could not run zig\n"
+        else
+            "zcaml-cc: could not run zig\n";
         if (GetStdHandle(STD_ERROR_HANDLE)) |h| _ = WriteFile(h, msg, msg.len, null, null);
         return 127;
     }

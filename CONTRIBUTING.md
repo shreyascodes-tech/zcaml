@@ -27,7 +27,7 @@ and Wine to run other targets' executables.
 | Path | Purpose |
 |---|---|
 | [`build.zig`](build.zig), [`build.zig.zon`](build.zig.zon) | Build options, compiler matrix, and pinned dependencies |
-| [`build/ocaml/`](build/ocaml/) | OCaml build graph, platforms, the `zcaml-cc` C compiler wrapper, and build tools |
+| [`build/ocaml/`](build/ocaml/) | OCaml build graph, platforms, the `zcaml-cc`/`zcaml-ar` wrappers, and build tools |
 | [`build/ocaml/manifests/`](build/ocaml/manifests/) | Per-version manifests generated from upstream OCaml sources |
 | [`build/dune/`](build/dune/) | Dune bootstrap and its changes for cross-compiling packages |
 | [`overlay/`](overlay/) | The opam overlay, mirrored to `zcaml-overlay` |

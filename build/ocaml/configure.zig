@@ -235,6 +235,12 @@ pub fn ccWrapperName(b: *std.Build, target: Platform) []const u8 {
     return b.fmt("zcaml-cc-{s}", .{target.triplet});
 }
 
+/// Name of the toolchain's archiver (`ar`), without `.exe`: `cc_wrapper.zig`'s
+/// `binutils` multicall, running `zig ar`. Unique per target, as `ccWrapperName`.
+pub fn arWrapperName(b: *std.Build, target: Platform) []const u8 {
+    return b.fmt("zcaml-ar-{s}", .{target.triplet});
+}
+
 /// What the C compiler wrapper passes `zig cc` before its own arguments.
 /// The target as asked for, not as resolved: `zig cc` resolves it the same, but
 /// passes queries (`-dumpversion`, `-print-*`, `-E -`) to clang as is, which
@@ -255,6 +261,8 @@ const CTools = struct {
     rpath: []const u8,
     /// `c_compiler`: a single program, see `ccWrapperName`. The other commands run it too.
     cc: []const u8,
+    /// `ar`: a single program, see `arWrapperName`.
+    ar: []const u8,
     asm_cmd: []const u8,
     packld: []const u8,
     mkdll: []const u8,
@@ -271,6 +279,7 @@ const CTools = struct {
         // `zig cc` with the target's flags (and the macOS SDK), through `PATH`: installed
         // compilers stay relocatable, without system cross-gcc.
         const cc = ccWrapperName(b, target);
+        const ar = arWrapperName(b, target);
         const flexlink_flags = if (target.is_windows) std.mem.join(b.allocator, " ", target.flexlinkFlags(b)) catch @panic("OOM") else "";
         const mkdll = if (target.is_windows)
             b.fmt("flexlink {s}", .{flexlink_flags})
@@ -282,6 +291,7 @@ const CTools = struct {
             .cclibs = cclibs.items,
             .rpath = if (target.is_elf) "-Wl,-rpath," else "",
             .cc = cc,
+            .ar = ar,
             // `-g0`: no DWARF for the (temporary, randomly named) assembly file itself;
             // the `.loc` debug info `ocamlopt -g` emits is kept.
             .asm_cmd = b.fmt("{s}{s} -Wno-trigraphs -g0 -fdebug-compilation-dir=. -c", .{ cc, if (target.arch == .riscv) " -mcpu=baseline_rv64-c-zca-zcd" else "" }),
@@ -310,7 +320,7 @@ pub fn makefileConfig(src: *const Source, host: Platform, target: Platform) []co
         .{ "OCAML_VERSION_MINOR", b.fmt("{d}", .{v.minor}) },
         .{ "OCAML_VERSION_PATCHLEVEL", b.fmt("{d}", .{v.patchlevel}) },
         .{ "CC", t.cc },
-        .{ "ARCMD", "zig ar" },
+        .{ "ARCMD", t.ar },
         .{ "O", "o" },
         .{ "EXT_OBJ", ".o" },
         .{ "A", "a" },
@@ -397,7 +407,7 @@ pub fn compilerConfigMl(src: *const Source, config_common: []const u8, host: Pla
         .{ .name = "PACKLD", .value = packld },
         .{ .name = "rpath", .value = rpath },
         .{ .name = "mksharedlibrpath", .value = rpath },
-        .{ .name = "AR", .value = "zig ar" },
+        .{ .name = "AR", .value = t.ar },
         .{ .name = "supports_shared_libraries", .value = "true" },
         .{ .name = "natdynlink", .value = boolStr(target.hasNativeCompiler()) },
         .{ .name = "mkdll_exp", .value = mkdll },

@@ -41,7 +41,7 @@ Prebuilt binaries are available in
 
 | Tool | Release |
 |---|---|
-| OCaml | [5.5.1](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocaml-v5.5.1-8) |
+| OCaml | [5.5.1](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocaml-v5.5.1-9) |
 | Dune | [3.24.2+zcaml.4](https://github.com/shreyascodes-tech/zcaml/releases/tag/dune-v3.24.2-zcaml.4) |
 | OCaml-LSP | [1.28.1, for OCaml 5.5](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocaml-lsp-server-v1.28.1-zcaml.1) |
 | ocamlformat | [0.29.0](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocamlformat-v0.29.0-zcaml.1) |
@@ -145,7 +145,7 @@ need an SDK when using Apple frameworks; the planned CLI will handle SDK setup.
 ## How it works
 
 zcaml builds upstream OCaml with Zig and provides target-specific wrappers around
-`zig cc` and `zig c++`.
+`zig cc` and `zig c++`, plus `ar` and `ranlib` that run `zig ar` and `zig ranlib`.
 
 Its Dune integration cross-compiles package dependencies while keeping build-time
 tools, such as PPX rewriters, runnable on the development machine. The overlay

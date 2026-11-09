@@ -69,6 +69,10 @@ odoc_nats: SMap(extras.OcamldocNative) = .empty,
 flexlink_byte: ?flexdll.Byte = null,
 flexlink_opts: SMap(LazyPath) = .empty,
 cc_wrappers: SMap(*std.Build.Step.Compile) = .empty,
+binutils_wrappers: SMap(*std.Build.Step.Compile) = .empty,
+/// The wrappers as `PATH` entries for the build: `zcaml-cc-<target>` and
+/// `zcaml-ar-<target>`, beside each other.
+build_bins: SMap(LazyPath) = .empty,
 toolchains: SMap(Toolchain) = .empty,
 
 pub const Options = struct {
@@ -148,6 +152,7 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
         .ld_conf = self.ld_conf,
         .makefile_config = b.addWriteFiles().add("Makefile.config", configure.makefileConfig(self.src, host, target)),
         .cc_wrapper = self.getCcWrapper(host, target),
+        .binutils = self.getBinutilsWrapper(host),
         .host_rt = self.getRuntime(host),
         .target_rt = self.getRuntime(target),
         .stdlib = self.getStdlib(target),
@@ -169,6 +174,7 @@ pub fn build(self: *Ocaml, host_resolved: std.Build.ResolvedTarget, target_resol
 pub fn addCheck(b: *std.Build, step: *std.Build.Step) void {
     const native: Platform = .init(b, resolveTarget(b, "native"));
     step.dependOn(&buildCcWrapper(b, native, native).step);
+    step.dependOn(&buildBinutilsWrapper(b, native).step);
     step.dependOn(&@import("tools.zig").toolsExe(b).step);
     step.dependOn(&driver.withPathExe(b).step);
 }
@@ -183,14 +189,67 @@ fn getCcWrapper(self: *Ocaml, host: Platform, target: Platform) *std.Build.Step.
     return exe;
 }
 
+/// `ar`, `ranlib`, ... for `host`: they run on it, and need no target flags, so one
+/// serves every target.
+fn getBinutilsWrapper(self: *Ocaml, host: Platform) *std.Build.Step.Compile {
+    if (self.binutils_wrappers.get(host.triplet)) |exe| return exe;
+    const exe = buildBinutilsWrapper(self.src.b, host);
+    self.binutils_wrappers.put(self.src.b.allocator, host.triplet, exe) catch @panic("OOM");
+    return exe;
+}
+
+/// The build machine's wrappers, as a directory to put first on `PATH`: `Config`'s
+/// commands name `zcaml-cc-<target>` and `zcaml-ar-<target>`, which must be beside
+/// each other (`with_path.zig`).
+fn getBuildBinDir(self: *Ocaml, host: Platform, target: Platform) LazyPath {
+    const key = self.pairKey(host, target);
+    if (self.build_bins.get(key)) |dir| return dir;
+    const b = self.src.b;
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(self.getCcWrapper(host, target).getEmittedBin(), b.fmt("{s}{s}", .{ configure.ccWrapperName(b, target), host.exeExt() }));
+    _ = wf.addCopyFile(self.getBinutilsWrapper(host).getEmittedBin(), b.fmt("{s}{s}", .{ configure.arWrapperName(b, target), host.exeExt() }));
+    const dir = wf.getDirectory();
+    self.build_bins.put(b.allocator, key, dir) catch @panic("OOM");
+    return dir;
+}
+
 fn buildCcWrapper(b: *std.Build, host: Platform, target: Platform) *std.Build.Step.Compile {
     const args = configure.ccWrapperArgs(b, target);
     // The Windows command line is built by plain concatenation.
     for (args) |arg| if (std.mem.findAny(u8, arg, " \t\"") != null) std.debug.panic("cc wrapper argument needs quoting: {s}", .{arg});
+    return buildWrapper(b, host, .{
+        .name = configure.ccWrapperName(b, target),
+        .args = args,
+        .macos_sdk = target.is_macos,
+        .windows = target.resolved.result.os.tag == .windows,
+        .binutils = false,
+    });
+}
+
+fn buildBinutilsWrapper(b: *std.Build, host: Platform) *std.Build.Step.Compile {
+    return buildWrapper(b, host, .{
+        .name = "zcaml-binutils",
+        .args = &.{},
+        .macos_sdk = false,
+        .windows = false,
+        .binutils = true,
+    });
+}
+
+const WrapperOptions = struct {
+    name: []const u8,
+    args: []const []const u8,
+    macos_sdk: bool,
+    windows: bool,
+    binutils: bool,
+};
+
+fn buildWrapper(b: *std.Build, host: Platform, opts: WrapperOptions) *std.Build.Step.Compile {
     const options = b.addOptions();
-    options.addOption([]const []const u8, "args", args);
-    options.addOption(bool, "macos_sdk", target.is_macos);
-    options.addOption(bool, "windows", target.resolved.result.os.tag == .windows);
+    options.addOption([]const []const u8, "args", opts.args);
+    options.addOption(bool, "macos_sdk", opts.macos_sdk);
+    options.addOption(bool, "windows", opts.windows);
+    options.addOption(bool, "binutils", opts.binutils);
 
     // Small: it runs for every C compilation.
     const is_windows = host.resolved.result.os.tag == .windows;
@@ -205,7 +264,7 @@ fn buildCcWrapper(b: *std.Build, host: Platform, target: Platform) *std.Build.St
         .sanitize_c = .off,
     });
     mod.addOptions("options", options);
-    const exe = b.addExecutable(.{ .name = configure.ccWrapperName(b, target), .root_module = mod });
+    const exe = b.addExecutable(.{ .name = opts.name, .root_module = mod });
     exe.link_gc_sections = true;
     exe.bundle_ubsan_rt = false;
     // lld-link keeps most of compiler_rt (~36 KiB); the wrapper has its own `memcpy`/`memset`.
@@ -219,6 +278,8 @@ pub const Toolchain = struct {
     ld_conf: LazyPath,
     makefile_config: LazyPath,
     cc_wrapper: *std.Build.Step.Compile,
+    /// `ar`, `ranlib`, ... for the host: see `cc_wrapper.zig`'s `binutils`.
+    binutils: *std.Build.Step.Compile,
     host_rt: runtime.Artifacts,
     target_rt: runtime.Artifacts,
     stdlib: stdlib.Artifacts,
@@ -255,6 +316,14 @@ pub const Toolchain = struct {
         if (tc.host_rt.ocamlruni) |a| l.file(a, b.fmt("{s}/ocamlruni{s}", .{ bin, host_exe }));
         l.artifact(tc.host_rt.ocamlyacc, bin);
         l.artifact(tc.cc_wrapper, bin);
+        // `ar`/`ranlib`, as `Config.ar` names them, and plain ones for build systems
+        // that look them up on `PATH`. Copies: a symlink wouldn't survive Windows
+        // (as `-gcc`'s below).
+        const binutils = tc.binutils.getEmittedBin();
+        l.file(binutils, b.fmt("{s}/ar{s}", .{ bin, host_exe }));
+        l.file(binutils, b.fmt("{s}/ranlib{s}", .{ bin, host_exe }));
+        l.file(binutils, b.fmt("{s}/zcaml-ar-{s}{s}", .{ bin, target.triplet, host_exe }));
+        l.file(binutils, b.fmt("{s}/zcaml-ranlib-{s}{s}", .{ bin, target.triplet, host_exe }));
         // Also as mingw-w64's gcc, which opam-repository's Windows packages check for
         // (`conf-mingw-w64-gcc-*`) and `configure --host` looks for. A copy: a
         // symbolic link wouldn't survive Windows.
@@ -389,7 +458,7 @@ fn getRuntime(self: *Ocaml, p: Platform) runtime.Artifacts {
         .platform = p,
         .variants = self.opts.runtime_variants,
         .flexlink_exe = if (p.is_windows) self.buildPlatformFlexlink() else null,
-        .cc_dir = if (p.is_windows) self.getCcWrapper(self.build_platform, p).getEmittedBinDirectory() else null,
+        .cc_dir = if (p.is_windows) self.getBuildBinDir(self.build_platform, p) else null,
     });
     self.runtimes.put(self.src.b.allocator, p.triplet, rt) catch @panic("OOM");
     return rt;
@@ -450,7 +519,7 @@ fn rawOcamlopt(self: *Ocaml, ocamlrun: ?*std.Build.Step.Compile, exe: LazyPath, 
         .b = self.src.b,
         .ocamlrun = ocamlrun,
         .exe = exe,
-        .cc_dir = self.getCcWrapper(self.build_platform, target).getEmittedBinDirectory(),
+        .cc_dir = self.getBuildBinDir(self.build_platform, target),
         .stdlib_dir = null,
         .flexlink = if (target.is_windows) self.getRuntime(target).flexlink.? else null,
         .prefix_map = self.src.prefixMap(),
