@@ -1,0 +1,11 @@
+--- a/rng/unix/mc_getrandom_stubs.c
++++ b/rng/unix/mc_getrandom_stubs.c
+@@ -57,7 +57,7 @@
+  * have decided to go with the more modern Windows API with bcrypt,
+  * and make Windows 10 our minimum supported version of mirage-crypto.
+  */
+-#include <Windows.h>
++#include <windows.h>
+ #include <ntstatus.h>
+ #include <bcrypt.h>
+ 
