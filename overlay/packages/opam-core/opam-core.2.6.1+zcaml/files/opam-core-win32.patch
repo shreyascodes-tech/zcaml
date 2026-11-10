@@ -71,7 +71,7 @@
  let _ocaml_major = String.sub Sys.ocaml_version 0 p |> int_of_string in
  let p = succ p in
  let _ocaml_minor = String.sub Sys.ocaml_version p (String.index_from Sys.ocaml_version p '.' - p) |> int_of_string in
-+let system = if Array.length Sys.argv > 2 then Sys.argv.(2) else Config.system
++let system = if Array.length Sys.argv > 2 then Sys.argv.(2) else Config.system in
  match Sys.argv.(1) with
  | "flags" ->
      print_string "()"
