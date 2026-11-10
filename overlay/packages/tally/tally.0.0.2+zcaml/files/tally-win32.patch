@@ -1,0 +1,34 @@
+--- a/rusage/tally_rusage.c
++++ b/rusage/tally_rusage.c
+@@ -6,6 +6,25 @@
+ #include <caml/fail.h>
+ #include <caml/unixsupport.h>
+ 
++#if defined(_WIN32)
++
++CAMLprim value tally_uname(value unit) {
++  CAMLparam1(unit);
++  CAMLreturn(caml_copy_string("Windows"));
++}
++
++CAMLprim value tally_sysconf_clock_tick(value unit) {
++  CAMLparam1(unit);
++  CAMLreturn(Val_long(100));
++}
++
++CAMLprim value tally_sysctl_kinfo_proc(value pid_r) {
++  CAMLparam1(pid_r);
++  uerror("sysctl_kinfo_proc", Nothing);
++}
++
++#else
++
+ #include <sys/param.h>
+ #include <sys/types.h>
+ #include <sys/time.h>
+@@ -115,3 +134,5 @@
+ }
+ 
+ #endif
++
++#endif
