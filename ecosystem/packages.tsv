@@ -115,7 +115,7 @@ http					ml-only
 pp					ml-only
 caqti					ml-only
 cohttp-eio					ml-only
-vlt		vlt,threads			ml-only
+vlt		threads,vlt			ml-only
 re2		re2		x86_64-windows-gnu	c-stubs
 stringext					ml-only
 metrics					c-stubs
@@ -419,7 +419,7 @@ httpun-ws					ml-only
 ppx_js_style					ml-only
 metrics-lwt					ml-only
 dream-pure					ml-only
-mirage-xen		-			ml-only
+mirage-xen		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 thread-local-storage					ml-only
 mirage-solo5		-			ml-only
 tsort					ml-only
@@ -439,7 +439,6 @@ elm_playground		-			ml-only
 domainslib					ml-only
 ez_cmdliner					ml-only
 resto					ml-only
-async_js				x86_64-windows-gnu	ml-only
 csvfields					ml-only
 ezcurl					ml-only
 grenier		-			ml-only
@@ -448,7 +447,6 @@ httpcats					ml-only
 incr_map					ml-only
 mnet-tls					ml-only
 ocsigenserver					system-libs
-ojs_base				x86_64-windows-gnu	ml-only
 sendmail					ml-only
 directories					c-stubs
 http-lwt-client					ml-only
@@ -467,7 +465,6 @@ bhttp					ml-only
 bls12-381					ml-only
 broken					ml-only
 cohttp-lwt-jsoo				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
-commons				x86_64-windows-gnu	ml-only
 data-encoding					ml-only
 dkim					ml-only
 lacaml					system-libs
@@ -495,12 +492,15 @@ dream-httpaf					ml-only
 curl_lwt					ml-only
 solo5					system-libs
 httpaf-lwt-unix					ml-only
-safepass		safepass,unix			ml-only
+safepass		unix,safepass			ml-only
 slice					ml-only
 extunix					c-stubs
-ldp_tls				x86_64-windows-gnu	ml-only
 alt-ergo-lib					ml-only
 conformist					ml-only
+utcp					ml-only
+xenstore_transport					ml-only
+caps					ml-only
+irmin-watcher					ml-only
 odoc-parser					ml-only
 ocamlformat-lib					ml-only
 bisect_ppx_ng			bisect_ppx_ng		ml-only

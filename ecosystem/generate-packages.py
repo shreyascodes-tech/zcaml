@@ -187,11 +187,16 @@ UNLOCKABLE = {
 }
 
 # Packages we don't probe: builds dune pkg can't handle yet (melange's hidden
-# `__private__` directory target), and current-list packages that depend on an
-# `UNLOCKABLE` package, which can never lock until those are ported.
+# `__private__` directory target), current-list packages that depend on an
+# `UNLOCKABLE` package, and packages whose win32 lock can't be solved at all.
+# They can't lock until those are ported.
 SKIP = {
+    'async_js',
     'bap-bundle',
+    'commons',
+    'ldp_tls',
     'melange',
+    'ojs_base',
     'refl',
     'reason-react',
     'statocaml_profile',
@@ -606,8 +611,8 @@ PATCHES.update({
 
 # Libraries the package uses but doesn't declare for the probe's link.
 PATCHES.update({
-    'vlt': ('', 'vlt,threads', '', '', 'ml-only'),
-    'safepass': ('', 'safepass,unix', '', '', 'ml-only'),
+    'vlt': ('', 'threads,vlt', '', '', 'ml-only'),
+    'safepass': ('', 'unix,safepass', '', '', 'ml-only'),
 })
 
 # Additional target exclusions. Multiple targets are comma-separated.
@@ -653,6 +658,7 @@ TARGET_PATCHES = {
     # Platform-specific C stubs.
     'inotify': 'x86_64-windows-gnu',
     'eio_posix': 'x86_64-windows-gnu',
+    'mirage-xen': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'async_js': 'x86_64-windows-gnu',
     'ojs_base': 'x86_64-windows-gnu',
     'commons': 'x86_64-windows-gnu',
