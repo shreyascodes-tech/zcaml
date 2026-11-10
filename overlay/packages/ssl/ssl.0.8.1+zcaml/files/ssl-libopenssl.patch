@@ -1,0 +1,100 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	2026-11-02 02:56:42.000000000 +0530
++++ b/dune-project	2026-11-10 05:21:32.506739164 +0530
+@@ -24,6 +24,5 @@
+  (depends
+   (ocaml
+    (>= "4.14"))
+-  dune-configurator
+-  conf-libssl
++  libopenssl
+   (alcotest :with-test)))
+diff -ruN a/src/config/discover.ml b/src/config/discover.ml
+--- a/src/config/discover.ml	2026-11-02 02:56:42.000000000 +0530
++++ b/src/config/discover.ml	1970-01-01 05:30:00.000000000 +0530
+@@ -1,37 +0,0 @@
+-module C = Configurator.V1
+-
+-let directory_exists fsp = Sys.file_exists fsp && Sys.is_directory fsp
+-let libs = ["-lssl"; "-lcrypto"]
+-
+-let default c : C.Pkg_config.package_conf =
+-  let prefix =
+-    if C.ocaml_config_var_exn c "system" = "macosx" then
+-      List.find_opt directory_exists
+-        ["/opt/homebrew/opt/openssl"; "/usr/local/opt/openssl"; "/opt/local"]
+-    else None
+-  in
+-  match prefix with
+-    | Some prefix ->
+-        {
+-          libs = ("-L" ^ Filename.concat prefix "lib") :: libs;
+-          cflags = ["-I" ^ Filename.concat prefix "include"];
+-        }
+-    | None -> { libs; cflags = [] }
+-
+-let () =
+-  C.main ~name:"ssl" (fun c ->
+-      let conf =
+-        match
+-          Option.bind (C.Pkg_config.get c) (fun pc ->
+-              C.Pkg_config.query pc ~package:"openssl")
+-        with
+-          | Some conf -> conf
+-          | None ->
+-              let conf = default c in
+-              Printf.eprintf
+-                "Warning: pkg-config could not find openssl, building with: %s\n"
+-                (String.concat " " (conf.cflags @ conf.libs));
+-              conf
+-      in
+-      C.Flags.write_sexp "c_library_flags.sexp" conf.libs;
+-      C.Flags.write_sexp "c_flags.sexp" conf.cflags)
+diff -ruN a/src/config/dune b/src/config/dune
+--- a/src/config/dune	2026-11-02 02:56:42.000000000 +0530
++++ b/src/config/dune	1970-01-01 05:30:00.000000000 +0530
+@@ -1,3 +0,0 @@
+-(executable
+- (name discover)
+- (libraries dune-configurator))
+diff -ruN a/src/dune b/src/dune
+--- a/src/dune	2026-11-02 02:56:42.000000000 +0530
++++ b/src/dune	2026-11-10 05:21:26.628471763 +0530
+@@ -1,20 +1,14 @@
+ (library
+  (name ssl)
+  (public_name ssl)
+- (libraries unix)
++ (libraries unix libopenssl)
+  (wrapped false)
+  (foreign_stubs
+   (language c)
+   (names ssl_stubs)
+   (flags
+-   :standard
+-   (:include c_flags.sexp)))
+- (c_library_flags
+-  (:include c_library_flags.sexp))
++   :standard)
++  (include_dirs
++   (lib libopenssl)))
+  (instrumentation
+   (backend bisect_ppx)))
+-
+-(rule
+- (targets c_flags.sexp c_library_flags.sexp)
+- (action
+-  (run ./config/discover.exe)))
+diff -ruN a/ssl.opam b/ssl.opam
+--- a/ssl.opam	2026-11-02 02:56:42.000000000 +0530
++++ b/ssl.opam	2026-11-10 05:21:32.506779992 +0530
+@@ -10,8 +10,7 @@
+ depends: [
+   "dune" {>= "3.23"}
+   "ocaml" {>= "4.14"}
+-  "dune-configurator"
+-  "conf-libssl"
++  "libopenssl"
+   "alcotest" {with-test}
+   "odoc" {with-doc}
+ ]
