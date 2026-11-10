@@ -651,6 +651,9 @@ TARGET_PATCHES = {
     'camlp5': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'bsdowl': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # These build/run only in a JavaScript runtime, not a native executable.
+    'curl': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'curl_lwt': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'ezcurl': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'js_of_ocaml-lwt': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'brr': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'cohttp-lwt-jsoo': 'aarch64-linux-gnu,x86_64-windows-gnu',

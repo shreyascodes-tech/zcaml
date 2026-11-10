@@ -206,7 +206,7 @@ ca-certs-nss					ml-only
 camlp5-buildscripts					ml-only
 tls-mirage					ml-only
 lwt_log					ml-only
-curl					system-libs
+curl				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 cairo2					system-libs
 linenoise					c-stubs
 trace					ml-only
@@ -440,7 +440,7 @@ domainslib					ml-only
 ez_cmdliner					ml-only
 resto					ml-only
 csvfields					ml-only
-ezcurl					ml-only
+ezcurl				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 grenier		-			ml-only
 hashcons					ml-only
 httpcats					ml-only
@@ -489,7 +489,7 @@ gluten-lwt-unix					ml-only
 spelll					ml-only
 opatch		-			ml-only
 dream-httpaf					ml-only
-curl_lwt					ml-only
+curl_lwt				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 solo5					system-libs
 httpaf-lwt-unix					ml-only
 safepass		unix,safepass			ml-only

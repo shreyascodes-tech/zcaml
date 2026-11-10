@@ -16,10 +16,24 @@
  let main c =
    let cflags, libs =
      match C.ocaml_config_var c "ccomp_type" with
-@@ -422,6 +431,7 @@
+@@ -422,6 +431,21 @@
              | Ok c ->  c
              | Error err -> C.die "%s" err)
         in
++       let libs =
++         let run prog =
++           try
++             Some (String.trim
++                     (C.Process.run_capture_exn c prog ["--variable=libdir"; "libcurl"]))
++           with _ -> None
++         in
++         let libdir =
++           match run "pkg-config" with
++           | Some d when d <> "" -> Some d
++           | _ -> (match run "pkgconf" with Some d when d <> "" -> Some d | _ -> None)
++         in
++         match libdir with Some d -> ("-L" ^ d) :: libs | None -> libs
++       in
 +       let cflags = List.concat_map demote_partial_glibc cflags in
         "-Wall" :: "-Wno-deprecated-declarations" :: cflags, libs
      | Some "msvc" -> ["-W2"], []
