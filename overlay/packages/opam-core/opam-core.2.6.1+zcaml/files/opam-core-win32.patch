@@ -1,16 +1,23 @@
 --- a/src/core/dune
 +++ b/src/core/dune
-@@ -13,9 +13,9 @@
+@@ -13,7 +13,6 @@
      (names opam_stubs)
      (flags :standard
             -DUNICODE -D_UNICODE -DCAML_NAME_SPACE
 -           -D_WIN32_WINNT=0x602 ; Require Windows 8 / Server 2012 or later
             (:include c-flags.sexp)))
    (c_library_flags (:standard
-+                   -lgdi32
                     (:include c-libraries.sexp)))
-   (wrapped     false))
+@@ -73,7 +72,8 @@
+   (files   opam-putenv.exe))
  
+ (rule
+-  (with-stdout-to c-libraries.sexp (run ocaml %{dep:../../shell/context_flags.ml} clibs)))
++  (with-stdout-to c-libraries.sexp
++   (run ocaml %{dep:../../shell/context_flags.ml} clibs %{ocaml-config:system})))
+ 
+ (rule
+   (targets c-flags.sexp)
 --- a/src/core/opamInject.c
 +++ b/src/core/opamInject.c
 @@ -8,7 +8,7 @@
@@ -58,3 +65,30 @@
          free(lpData);
          result = caml_alloc_small(1, 0);
          Field(result, 0) = v;
+--- a/shell/context_flags.ml
++++ b/shell/context_flags.ml
+@@ -5,20 +5,21 @@
+ let _ocaml_major = String.sub Sys.ocaml_version 0 p |> int_of_string in
+ let p = succ p in
+ let _ocaml_minor = String.sub Sys.ocaml_version p (String.index_from Sys.ocaml_version p '.' - p) |> int_of_string in
++let system = if Array.length Sys.argv > 2 then Sys.argv.(2) else Config.system
+ match Sys.argv.(1) with
+ | "flags" ->
+     print_string "()"
+ | "mingw-arch" ->
+-    if Config.system = "mingw64" then
++    if system = "mingw64" then
+       print_string "x86_64"
+     else
+       print_string "i686"
+ | "clibs" ->
+-    if Sys.win32 then
++    if system = "mingw" || system = "mingw64" || system = "win32" then
+       let common =
+         "-ladvapi32 -lgdi32 -luser32 -lshell32 -lole32 -luuid -luserenv"
+       in
+-      if Config.system = "mingw" then
++      if system = "mingw" then
+         (* This appears to be a packaging bug in i686-w64-mingw32, as
+            GetFileVersionInfoEx and friends are include in the x86_64 copy of
+            libversion.a *)
