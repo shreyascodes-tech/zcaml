@@ -1,13 +1,16 @@
 --- a/src/core/dune
 +++ b/src/core/dune
-@@ -13,7 +13,6 @@
+@@ -13,9 +13,9 @@
      (names opam_stubs)
      (flags :standard
             -DUNICODE -D_UNICODE -DCAML_NAME_SPACE
 -           -D_WIN32_WINNT=0x602 ; Require Windows 8 / Server 2012 or later
             (:include c-flags.sexp)))
    (c_library_flags (:standard
++                   -lgdi32
                     (:include c-libraries.sexp)))
+   (wrapped     false))
+ 
 --- a/src/core/opamInject.c
 +++ b/src/core/opamInject.c
 @@ -8,7 +8,7 @@

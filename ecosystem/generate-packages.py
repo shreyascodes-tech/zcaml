@@ -664,7 +664,7 @@ TARGET_PATCHES = {
     'commons': 'x86_64-windows-gnu',
     'ldp_tls': 'x86_64-windows-gnu',
     # dose3 runs the target's bytecode on the build machine here.
-    'opam-client': 'aarch64-linux-gnu',
+    'opam-client': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # These build with make/ocamlbuild, which `build/dune/cross_pkg.ml` doesn't
     # redirect: they compile with the build machine's compiler and their target
     # link then mismatches the target stdlib.
