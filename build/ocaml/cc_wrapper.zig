@@ -87,6 +87,72 @@ fn isCxxName(comptime T: type, path: []const T) bool {
         std.mem.endsWith(T, base, if (T == u16) &[_]u16{ 'c', '+', '+' } else "c++");
 }
 
+/// A directory that carries a *partial* glibc tree: Debian's
+/// `/usr/include/<triple>` has glibc's `sys/cdefs.h` and `bits/`, but not
+/// `netinet/in.h`. `-I` on it shadows Zig's own glibc headers with a possibly
+/// older `sys/cdefs.h`; `-idirafter` keeps it for third-party headers only.
+fn isPartialGlibc(dir: []const u8) bool {
+    var buf: [4096]u8 = undefined;
+    return exists(dir, "/sys/cdefs.h", &buf) and !exists(dir, "/netinet/in.h", &buf);
+}
+
+fn exists(dir: []const u8, suffix: []const u8, buf: *[4096]u8) bool {
+    if (dir.len + suffix.len + 1 > buf.len) return false;
+    @memcpy(buf[0..dir.len], dir);
+    @memcpy(buf[dir.len..][0..suffix.len], suffix);
+    buf[dir.len + suffix.len] = 0;
+    const z: [*:0]const u8 = @ptrCast(buf);
+    return std.c.access(z, 0) == 0;
+}
+
+/// `-Idir` -> `-idirafterdir`: the compiler accepts the joined form.
+fn demoteInclude(dir: []const u8) ?[*:0]const u8 {
+    const prefix = "-idirafter";
+    const buf: [*]u8 = @ptrCast(std.c.malloc(prefix.len + dir.len + 1) orelse return null);
+    @memcpy(buf[0..prefix.len], prefix);
+    @memcpy(buf[prefix.len..][0..dir.len], dir);
+    buf[prefix.len + dir.len] = 0;
+    return @ptrCast(buf);
+}
+
+/// Demotes `-I`/`-isystem` on partial glibc trees to `-idirafter`, keeping every
+/// other argument. The result is never freed: it is exec'd immediately.
+fn demoteIncludes(args: []const [*:0]const u8) []const [*:0]const u8 {
+    const ptr: [*][*:0]const u8 = @ptrCast(@alignCast(std.c.malloc(args.len * @sizeOf([*:0]const u8)) orelse return args));
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = std.mem.span(args[i]);
+        if (std.mem.eql(u8, arg, "-I") or std.mem.eql(u8, arg, "-isystem")) {
+            if (i + 1 < args.len and isPartialGlibc(std.mem.span(args[i + 1]))) {
+                ptr[n] = "-idirafter";
+                n += 1;
+                i += 1;
+                ptr[n] = args[i];
+                n += 1;
+                continue;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-isystem") and arg.len > "-isystem".len) {
+            const dir = arg["-isystem".len..];
+            if (isPartialGlibc(dir)) {
+                ptr[n] = demoteInclude(dir) orelse args[i];
+                n += 1;
+                continue;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-I") and arg.len > 2) {
+            const dir = arg[2..];
+            if (isPartialGlibc(dir)) {
+                ptr[n] = demoteInclude(dir) orelse args[i];
+                n += 1;
+                continue;
+            }
+        }
+        ptr[n] = args[i];
+        n += 1;
+    }
+    return ptr[0..n];
+}
+
 const posix = struct {
     extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -121,13 +187,14 @@ const posix = struct {
         var obj_buf: [4096]u8 = undefined;
         const scan: Args(u8) = .scan(&it, &source_buf);
         const cxx = scan.cxx or isCxxName(u8, std.mem.span(args[0]));
+        const exec_args = demoteIncludes(ours);
         const obj_args: []const [*:0]const u8 = if (scan.defaultObject(&obj_buf)) |obj| &.{ "-o", obj } else &.{};
-        const len = 2 + target_args.len + sdk_args.len + ours.len + obj_args.len;
+        const len = 2 + target_args.len + sdk_args.len + exec_args.len + obj_args.len;
         const ptr: [*]?[*:0]const u8 = @ptrCast(@alignCast(std.c.malloc((len + 1) * @sizeOf(?[*:0]const u8)) orelse return cannotRun(zig)));
         const argv = ptr[0..len :null];
         argv[0..2].* = .{ zig, if (cxx) "c++" else "cc" };
         var i: usize = 2;
-        for ([_][]const [*:0]const u8{ &target_args, sdk_args, ours, obj_args }) |part| {
+        for ([_][]const [*:0]const u8{ &target_args, sdk_args, exec_args, obj_args }) |part| {
             @memcpy(argv[i..][0..part.len], part);
             i += part.len;
         }
