@@ -659,6 +659,7 @@ TARGET_PATCHES = {
     'cohttp-lwt-jsoo': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'ezjs_min': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # Platform-specific C stubs.
+    'irmin-watcher': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'inotify': 'x86_64-windows-gnu',
     'eio_posix': 'x86_64-windows-gnu',
     'mirage-xen': 'aarch64-linux-gnu,x86_64-windows-gnu',

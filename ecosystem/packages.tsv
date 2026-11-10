@@ -500,7 +500,7 @@ conformist					ml-only
 utcp					ml-only
 xenstore_transport					ml-only
 caps					ml-only
-irmin-watcher					ml-only
+irmin-watcher				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 odoc-parser					ml-only
 ocamlformat-lib					ml-only
 bisect_ppx_ng			bisect_ppx_ng		ml-only
