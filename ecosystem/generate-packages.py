@@ -593,6 +593,21 @@ PATCHES.update({
     'dune-compiledb': ('', '-', '', '', 'ml-only'),
     'utop': ('', '-', '', '', 'ml-only'),
     'core_bench': ('', '-', '', '', 'ml-only'),
+    'kdf': ('', '-', '', '', 'ml-only'),
+    'miaou-driver-term': ('', '-', '', '', 'ml-only'),
+    'grenier': ('', '-', '', '', 'ml-only'),
+    'opatch': ('', '-', '', '', 'ml-only'),
+    'alt-ergo': ('', '-', '', '', 'ml-only'),
+    'elm_playground': ('', '-', '', '', 'ml-only'),
+    'elm_playground_3d': ('', '-', '', '', 'ml-only'),
+    'mirage-xen': ('', '-', '', '', 'ml-only'),
+    'mirage-solo5': ('', '-', '', '', 'ml-only'),
+})
+
+# Libraries the package uses but doesn't declare for the probe's link.
+PATCHES.update({
+    'vlt': ('', 'vlt,threads', '', '', 'ml-only'),
+    'safepass': ('', 'safepass,unix', '', '', 'ml-only'),
 })
 
 # Additional target exclusions. Multiple targets are comma-separated.
@@ -630,6 +645,20 @@ TARGET_PATCHES = {
     'camlp4': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'camlp5': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'bsdowl': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    # These build/run only in a JavaScript runtime, not a native executable.
+    'js_of_ocaml-lwt': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'brr': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'cohttp-lwt-jsoo': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'ezjs_min': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    # Platform-specific C stubs.
+    'inotify': 'x86_64-windows-gnu',
+    'eio_posix': 'x86_64-windows-gnu',
+    'async_js': 'x86_64-windows-gnu',
+    'ojs_base': 'x86_64-windows-gnu',
+    'commons': 'x86_64-windows-gnu',
+    'ldp_tls': 'x86_64-windows-gnu',
+    # dose3 runs the target's bytecode on the build machine here.
+    'opam-client': 'aarch64-linux-gnu',
     # These build with make/ocamlbuild, which `build/dune/cross_pkg.ml` doesn't
     # redirect: they compile with the build machine's compiler and their target
     # link then mismatches the target stdlib.

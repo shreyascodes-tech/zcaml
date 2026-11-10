@@ -115,7 +115,7 @@ http					ml-only
 pp					ml-only
 caqti					ml-only
 cohttp-eio					ml-only
-vlt					ml-only
+vlt		vlt,threads			ml-only
 re2		re2		x86_64-windows-gnu	c-stubs
 stringext					ml-only
 metrics					c-stubs
@@ -191,7 +191,7 @@ expect_test_helpers_core					ml-only
 cstruct-lwt					ml-only
 lambdasoup					ml-only
 rdf					ml-only
-js_of_ocaml-lwt					ml-only
+js_of_ocaml-lwt				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 async_ssl					system-libs
 ez_file					ml-only
 menhirSdk					ml-only
@@ -259,7 +259,7 @@ ocp-indent		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 oseq					ml-only
 owl					system-libs
 decoders					ml-only
-opam-client					ml-only
+opam-client				aarch64-linux-gnu	ml-only
 printbox-text					ml-only
 testcontainers					ml-only
 unix-errno				x86_64-windows-gnu	c-stubs
@@ -346,7 +346,7 @@ graphv_core_lib					c-stubs
 containers-data					ml-only
 ppx_bitstring					ml-only
 visitors		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
-ezjs_min					ml-only
+ezjs_min				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 omake					c-stubs
 posix-types				x86_64-windows-gnu	c-stubs
 stk					ml-only
@@ -391,7 +391,7 @@ process				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 bigstring					c-stubs
 bst					ml-only
 prometheus-app					ml-only
-brr					ml-only
+brr				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 ffmpeg-avutil					system-libs
 irmin-pack					ml-only
 postgresql					system-libs
@@ -419,36 +419,36 @@ httpun-ws					ml-only
 ppx_js_style					ml-only
 metrics-lwt					ml-only
 dream-pure					ml-only
-mirage-xen					ml-only
+mirage-xen		-			ml-only
 thread-local-storage					ml-only
-mirage-solo5					ml-only
+mirage-solo5		-			ml-only
 tsort					ml-only
-inotify					ml-only
+inotify				x86_64-windows-gnu	ml-only
 colombe					ml-only
 session					ml-only
 bitv					ml-only
 rio					ml-only
 streamable					ml-only
-alt-ergo					ml-only
+alt-ergo		-			ml-only
 conan					ml-only
 coq-core					ml-only
 domain_shims					ml-only
 mlgmpidl					system-libs
 MlFront_Core					ml-only
-elm_playground					ml-only
+elm_playground		-			ml-only
 domainslib					ml-only
 ez_cmdliner					ml-only
 resto					ml-only
-async_js					ml-only
+async_js				x86_64-windows-gnu	ml-only
 csvfields					ml-only
 ezcurl					ml-only
-grenier					ml-only
+grenier		-			ml-only
 hashcons					ml-only
 httpcats					ml-only
 incr_map					ml-only
 mnet-tls					ml-only
 ocsigenserver					system-libs
-ojs_base					ml-only
+ojs_base				x86_64-windows-gnu	ml-only
 sendmail					ml-only
 directories					c-stubs
 http-lwt-client					ml-only
@@ -456,9 +456,9 @@ liquidsoap-lang					ml-only
 patricia-tree					ml-only
 capnp-rpc-lwt					ml-only
 catapult					ml-only
-elm_playground_3d					ml-only
+elm_playground_3d		-			ml-only
 irc-client					ml-only
-miaou-driver-term					ml-only
+miaou-driver-term		-			ml-only
 mirage-flow-lwt					ml-only
 pgocaml					ml-only
 ppx_marshal_ext					ml-only
@@ -466,8 +466,8 @@ bechamel					ml-only
 bhttp					ml-only
 bls12-381					ml-only
 broken					ml-only
-cohttp-lwt-jsoo					ml-only
-commons					ml-only
+cohttp-lwt-jsoo				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
+commons				x86_64-windows-gnu	ml-only
 data-encoding					ml-only
 dkim					ml-only
 lacaml					system-libs
@@ -483,22 +483,22 @@ jst-config					ml-only
 ppx_custom_printf					ml-only
 ppx_bench					ml-only
 gmap					ml-only
-kdf					ml-only
+kdf		-			ml-only
 pecu					ml-only
-eio_posix					ml-only
+eio_posix				x86_64-windows-gnu	ml-only
 happy-eyeballs-mirage					ml-only
 graphql_parser					ml-only
 gluten-lwt-unix					ml-only
 spelll					ml-only
-opatch					ml-only
+opatch		-			ml-only
 dream-httpaf					ml-only
 curl_lwt					ml-only
 solo5					system-libs
 httpaf-lwt-unix					ml-only
-safepass					ml-only
+safepass		safepass,unix			ml-only
 slice					ml-only
 extunix					c-stubs
-ldp_tls					ml-only
+ldp_tls				x86_64-windows-gnu	ml-only
 alt-ergo-lib					ml-only
 conformist					ml-only
 odoc-parser					ml-only
