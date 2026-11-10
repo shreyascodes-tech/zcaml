@@ -1,0 +1,31 @@
+--- a/src/rusage_stubs.c
++++ b/src/rusage_stubs.c
+@@ -19,8 +19,28 @@
+ #include <caml/memory.h>
+ #include <caml/mlvalues.h>
+ 
++#if defined(_WIN32)
++#include <string.h>
++
++struct rusage {
++  struct { long tv_sec; long tv_usec; } ru_utime, ru_stime;
++  long ru_maxrss, ru_ixrss, ru_idrss, ru_isrss, ru_minflt, ru_majflt;
++  long ru_nswap, ru_inblock, ru_oublock, ru_msgsnd, ru_msgrcv, ru_nsignals;
++  long ru_nvcsw, ru_nivcsw;
++};
++
++#define RUSAGE_SELF 0
++#define RUSAGE_CHILDREN 1
++
++static int getrusage(int who, struct rusage *ru) {
++  (void)who;
++  memset(ru, 0, sizeof(*ru));
++  return 0;
++}
++#else
+ #include <sys/resource.h>
+ #include <sys/time.h>
++#endif
+ 
+ #define Nothing Val_int(0)
+ 

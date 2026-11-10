@@ -19,3 +19,14 @@
  
  /* SetEnvironmentVariable function pointer type */
  typedef LRESULT (WINAPI *SETENVIRONMENTVARIABLE)(LPCWSTR,LPCWSTR);
+--- a/src/core/opamWindows.c
++++ b/src/core/opamWindows.c
+@@ -23,7 +23,7 @@
+ #include <caml/signals.h>
+ #include <caml/unixsupport.h>
+ 
+-#include <Windows.h>
++#include <windows.h>
+ #include <Shlobj.h>
+ #include <TlHelp32.h>
+ #include <Knownfolders.h>
