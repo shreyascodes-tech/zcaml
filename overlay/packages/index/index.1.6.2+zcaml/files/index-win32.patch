@@ -1,0 +1,48 @@
+--- a/src/unix/pread.c
++++ b/src/unix/pread.c
+@@ -4,6 +4,21 @@
+ #include <caml/signals.h>
+ #include <caml/unixsupport.h>
+ 
++/* Windows' C library has no pread. */
++#if defined(_WIN32)
++#include <io.h>
++static int zcaml_pread(int fd, void *buf, unsigned int n, __int64 off)
++{
++  __int64 old = _lseeki64(fd, 0, SEEK_CUR);
++  if (old < 0) return -1;
++  if (_lseeki64(fd, off, SEEK_SET) < 0) return -1;
++  int ret = _read(fd, buf, n);
++  if (_lseeki64(fd, old, SEEK_SET) < 0) return -1;
++  return ret;
++}
++#define pread zcaml_pread
++#endif
++
+ CAMLprim value caml_index_pread_int
+ (value v_fd, value v_fd_off, value v_buf, value v_buf_off, value v_len)
+ {
+--- a/src/unix/pwrite.c
++++ b/src/unix/pwrite.c
+@@ -4,6 +4,21 @@
+ #include <caml/signals.h>
+ #include <caml/unixsupport.h>
+ 
++/* Windows' C library has no pwrite. */
++#if defined(_WIN32)
++#include <io.h>
++static int zcaml_pwrite(int fd, void *buf, unsigned int n, __int64 off)
++{
++  __int64 old = _lseeki64(fd, 0, SEEK_CUR);
++  if (old < 0) return -1;
++  if (_lseeki64(fd, off, SEEK_SET) < 0) return -1;
++  int ret = _write(fd, buf, n);
++  if (_lseeki64(fd, old, SEEK_SET) < 0) return -1;
++  return ret;
++}
++#define pwrite zcaml_pwrite
++#endif
++
+ CAMLprim value caml_index_pwrite_int
+ (value v_fd, value v_fd_off, value v_buf, value v_buf_off, value v_len)
+ {
