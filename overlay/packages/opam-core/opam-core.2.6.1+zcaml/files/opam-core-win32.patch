@@ -38,3 +38,20 @@
  #include <userenv.h>
  #define STRSAFE_NO_DEPRECATE
  #include <strsafe.h>
+@@ -396,7 +396,7 @@
+ 
+       if (ret == ERROR_SUCCESS) {
+         switch(Int_val(value_type)) {
+-        case 0:
++        case 0: {
+           int len;
+           cbData = (cbData / 2) - 1; /* bytes -> characters; remove NULL terminator */
+           len = win_wide_char_to_multi_byte((wchar_t *)lpData, cbData, NULL, 0);
+@@ -404,6 +404,7 @@
+           win_wide_char_to_multi_byte((wchar_t *)lpData, cbData, (char *)String_val(v), len);
+           break;
+         }
++        }
+         free(lpData);
+         result = caml_alloc_small(1, 0);
+         Field(result, 0) = v;
