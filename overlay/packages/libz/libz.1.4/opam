@@ -3,7 +3,8 @@ synopsis: "zlib, built from source by dune"
 description: """
 zlib's C library, compiled with the context's C compiler: unlike conf-zlib,
 which needs it installed on the system, it cross-compiles. A library with no
-modules: depending on it gives C stubs zlib's headers and links it."""
+modules: depending on it gives C stubs zlib's headers and links it, and its
+zlib.pc lets conf-zlib answer pkg-config queries."""
 maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
 authors: ["Jean-loup Gailly" "Mark Adler"]
 license: "Zlib"
