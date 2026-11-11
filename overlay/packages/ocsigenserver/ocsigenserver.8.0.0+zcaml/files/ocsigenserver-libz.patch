@@ -1,0 +1,26 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	2026-09-24 18:52:36.000000000 +0530
++++ b/dune-project	2026-11-10 11:19:12.961429883 +0530
+@@ -19,8 +19,8 @@
+  (depends
+   (ocaml (>= 4.14))
+   (bytesrw (>= 0.3.0))
+-  conf-zlib
+-  conf-zstd
++  libz
++  libzstd
+   (cohttp-lwt-unix (>= 6.0))
+   conduit-lwt-unix
+   http
+diff -ruN a/src/extensions/dune b/src/extensions/dune
+--- a/src/extensions/dune	2026-09-24 18:52:36.000000000 +0530
++++ b/src/extensions/dune	2026-11-10 11:19:12.961642074 +0530
+@@ -20,7 +20,7 @@
+  (name deflatemod)
+  (public_name ocsigenserver.ext.deflatemod)
+  (modules deflatemod)
+- (libraries bytesrw bytesrw.zlib bytesrw.zstd ocsigenserver))
++ (libraries bytesrw bytesrw.zlib bytesrw.zstd libz libzstd ocsigenserver))
+ 
+ (library
+  (name extendconfiguration)

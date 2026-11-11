@@ -1,0 +1,192 @@
+diff -ruN a/dune b/dune
+--- a/dune	2026-09-24 18:52:36.000000000 +0530
++++ b/dune	2026-11-11 12:06:43.868840703 +0530
+@@ -15,6 +15,33 @@
+  (section etc)
+  (package ocsigenserver))
+ 
++; What `make install.files` used to copy: the configured sysconfdir is
++; <prefix>/lib/ocsigenserver/etc/ocsigenserver (see the opam file).
++(install
++ (files
++  (ocsigenserver.conf.sample as etc/ocsigenserver/ocsigenserver.conf.sample)
++  (src/files/mime.types as etc/ocsigenserver/mime.types)
++  (src/files/keep as var/log/ocsigenserver/.keep)
++  (src/files/keep as var/lib/ocsigenserver/.keep)
++  (src/files/keep as var/run/.keep))
++ (section lib)
++ (package ocsigenserver))
++
++(install
++ (files
++  (glob_files (local/var/www/*.html with_prefix var/www))
++  (glob_files
++   (local/var/www/ocsigenstuff/*.png with_prefix var/www/ocsigenstuff))
++  (glob_files
++   (local/var/www/ocsigenstuff/*.css with_prefix var/www/ocsigenstuff)))
++ (section lib)
++ (package ocsigenserver))
++
++(install
++ (files src/files/ocsigenserver.1)
++ (section man)
++ (package ocsigenserver))
++
+ (subdir
+  local/etc
+  (rule
+diff -ruN a/src/files/keep b/src/files/keep
+--- a/src/files/keep	1970-01-01 05:30:00.000000000 +0530
++++ b/src/files/keep	2026-11-11 12:06:43.868983112 +0530
+@@ -0,0 +1,2 @@
++This file only exists to create the directory it is installed into.  The
++server writes its runtime files (logs, data, and the command pipe) here.
+diff -ruN a/src/files/ocsigenserver.conf/dune b/src/files/ocsigenserver.conf/dune
+--- a/src/files/ocsigenserver.conf/dune	2026-09-24 18:52:36.000000000 +0530
++++ b/src/files/ocsigenserver.conf/dune	2026-11-11 12:07:45.304626149 +0530
+@@ -1,3 +1,23 @@
+ (executable
+  (name gen)
+- (libraries str unix))
++ (modules gen options)
++ (libraries str findlib))
++
++(executable
++ (name gen_options)
++ (modules gen_options))
++
++; configure used to write options.ml.  Dune writes it from the package's
++; install paths instead.  dune pkg sets OCAMLFIND_DESTDIR to the package's
++; lib root; a plain dune build has no such setting, so fall back to
++; %{lib:ocsigenserver:META}, which is <prefix>/lib/ocsigenserver/META.
++(rule
++ (targets options.ml)
++ (action
++  (with-stdout-to
++   options.ml
++   (run
++    %{exe:gen_options.exe}
++    %{env:OCAMLFIND_DESTDIR=}
++    %{lib:ocsigenserver:META}
++    %{read:../../../VERSION}))))
+diff -ruN a/src/files/ocsigenserver.conf/gen.ml b/src/files/ocsigenserver.conf/gen.ml
+--- a/src/files/ocsigenserver.conf/gen.ml	2026-09-24 18:52:36.000000000 +0530
++++ b/src/files/ocsigenserver.conf/gen.ml	2026-11-11 12:07:42.434599837 +0530
+@@ -71,15 +71,12 @@
+ 
+ open Options
+ 
+-let libdir () =
+-  if libdir_set = 0
+-  then (
+-    let inp = Unix.open_process_in "ocamlfind printconf destdir" in
+-    let libdir = input_line inp in
+-    ignore (Unix.close_process_in inp);
+-    libdir)
+-  else libdir
++let libdir () = libdir
+ 
++(* The transitive findlib closure of the packages in Makefile.options'
++   SERVER_PACKAGE, as `ocamlfind query -recursive` computed it at configure
++   time.  Ask Findlib directly, so the closure follows the installed packages
++   instead of a list baked in when this patch was written. *)
+ let deps () =
+   let extra_deps =
+     [ "ocsigenserver.polytables"
+@@ -90,19 +87,26 @@
+     ; "ocsigenserver" ]
+   in
+   let packages =
+-    "lwt_ssl,bytes,lwt.unix,logs,logs-syslog.unix,syslog-message,ipaddr,findlib,cryptokit,re,str,xml-light,dynlink,cohttp-lwt-unix,http"
++    [ "lwt_ssl"
++    ; "bytes"
++    ; "lwt.unix"
++    ; "logs"
++    ; "logs-syslog.unix"
++    ; "syslog-message"
++    ; "ipaddr"
++    ; "findlib"
++    ; "cryptokit"
++    ; "re"
++    ; "str"
++    ; "xml-light"
++    ; "dynlink"
++    ; "cohttp-lwt-unix"
++    ; "http" ]
+   in
+-  let deps = ref [] in
+-  let cmd = "ocamlfind query -p-format -recursive " ^ packages in
+-  let inp = Unix.open_process_in cmd in
+-  (try
+-     while true do
+-       deps := input_line inp :: !deps
+-     done
+-   with End_of_file -> ());
+-  match Unix.close_process_in inp with
+-  | WEXITED 0 -> !deps @ extra_deps
+-  | _ -> failwith ("Command failed: " ^ cmd)
++  Findlib.init ();
++  (* `ocamlfind query -recursive` prints the deepest ancestor first; the old
++     code prepended every line, so keep the resulting reverse order. *)
++  List.rev (Findlib.package_deep_ancestors [] packages) @ extra_deps
+ 
+ (* Encode a string as a string literal that can be included in an ocaml file. *)
+ let str = Printf.sprintf "%S"
+diff -ruN a/src/files/ocsigenserver.conf/gen_options.ml b/src/files/ocsigenserver.conf/gen_options.ml
+--- a/src/files/ocsigenserver.conf/gen_options.ml	1970-01-01 05:30:00.000000000 +0530
++++ b/src/files/ocsigenserver.conf/gen_options.ml	2026-11-11 12:06:43.869451377 +0530
+@@ -0,0 +1,37 @@
++(* Generates options.ml, which configure used to write: the paths are the
++   package's install paths, which dune gives us. *)
++
++let absolute path =
++  if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path
++  else path
++
++let ( // ) = Filename.concat
++
++let () =
++  let destdir = Sys.argv.(1) in
++  let meta = absolute Sys.argv.(2) in
++  let version = String.trim Sys.argv.(3) in
++  (* dune pkg's OCAMLFIND_DESTDIR is <prefix>/lib; without it,
++     <prefix>/lib/ocsigenserver/META has two dirnames up at <prefix>/lib. *)
++  let libdir =
++    if destdir = "" then Filename.dirname (Filename.dirname meta)
++    else absolute destdir
++  in
++  let prefix = Filename.dirname libdir in
++  let ocsigen = libdir // "ocsigenserver" in
++  let configdir = ocsigen // "etc" // "ocsigenserver" in
++  Printf.printf "let version = %S\n" version;
++  Printf.printf "let src = \"\"\n";
++  Printf.printf "let port = 80\n";
++  Printf.printf "let bindir = %S\n" (prefix // "bin");
++  Printf.printf "let libdir = %S\n" libdir;
++  Printf.printf "let libdir_set = 1\n";
++  Printf.printf "let logdir = %S\n" (ocsigen // "var" // "log" // "ocsigenserver");
++  Printf.printf "let configdir = %S\n" configdir;
++  Printf.printf "let staticpagesdir = %S\n" (ocsigen // "var" // "www");
++  Printf.printf "let datadir = %S\n" (ocsigen // "var" // "lib" // "ocsigenserver");
++  Printf.printf "let uploaddir = %S\n" "/tmp";
++  Printf.printf
++    "let commandpipe = %S\n"
++    (ocsigen // "var" // "run" // "ocsigenserver_command");
++  Printf.printf "let mimefile = %S\n" (configdir // "mime.types")
+diff -ruN a/src/files/ocsigenserver.conf/options.ml b/src/files/ocsigenserver.conf/options.ml
+--- a/src/files/ocsigenserver.conf/options.ml	2026-09-24 18:52:36.000000000 +0530
++++ b/src/files/ocsigenserver.conf/options.ml	1970-01-01 05:30:00.000000000 +0530
+@@ -1,13 +0,0 @@
+-let version = "dev"
+-let src = ""
+-let port = 80
+-let bindir = ""
+-let libdir = ""
+-let libdir_set = 0
+-let logdir = ""
+-let configdir = ""
+-let staticpagesdir = ""
+-let datadir = ""
+-let uploaddir = ""
+-let commandpipe = ""
+-let mimefile = ""
