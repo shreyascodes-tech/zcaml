@@ -1,8 +1,30 @@
---- a/src/re2_c/dune	2026-11-08 04:22:32.462669777 +0530
-+++ b/src/re2_c/dune	2026-11-08 04:22:32.477003004 +0530
-@@ -11,4 +11,4 @@
-   (source_tree libre2))
-  (action
-   (bash
+--- a/src/re2_c/dune	2026-11-11 07:42:13.083505504 +0530
++++ b/src/re2_c/dune	2026-11-11 07:42:13.088795863 +0530
+@@ -5,10 +5,20 @@
+  (c_library_flags :standard -lstdc++ -lpthread)
+  (foreign_archives re2_c_stubs))
+
+-(rule
+- (targets libre2_c_stubs.a dllre2_c_stubs.so)
+- (deps
+-  (source_tree libre2))
+- (action
+-  (bash
 -    "\nARFLAGS=rsc\nCXXFLAGS=\"-Wall -O3 -g -pthread\"\nif [ FreeBSD = `uname -s` ]; then\n     CXX=clang++\n     CXXFLAGS=\"$CXXFLAGS -I /usr/local/lib/re2\"\nelse\n     CXX=g++\nfi\nif ! %{arch_sixtyfour}; then\nCXX=\"$CXX -m32\"\nfi\n%{make} -s -C libre2 clean\n%{make} -s -C libre2 ARFLAGS=\"$ARFLAGS\" CXX=\"$CXX\" CXXFLAGS=\"$CXXFLAGS\" obj/libre2.a obj/so/libre2.so\ncp libre2/obj/libre2.a libre2_c_stubs.a\ncp libre2/obj/so/libre2.so dllre2_c_stubs.so\n%{make} -s -C libre2 clean\n")))
-+    "\nARFLAGS=rsc\nCXXFLAGS=\"-Wall -O3 -g -pthread\"\nif [ FreeBSD = `uname -s` ]; then\n     CXX=clang++\n     CXXFLAGS=\"$CXXFLAGS -I /usr/local/lib/re2\"\nelse\n     CXX=\"%{cc}\"\nfi\nLDFLAGS=-lstdc++\ncase %{system} in macosx) ;; *) LDFLAGS=\"$LDFLAGS -Wl,--undefined-version\" ;; esac\nif ! %{arch_sixtyfour}; then\nCXX=\"$CXX -m32\"\nfi\n%{make} -s -C libre2 clean\n%{make} -s -C libre2 ARFLAGS=\"$ARFLAGS\" CXX=\"$CXX\" CXXFLAGS=\"$CXXFLAGS\" LDFLAGS=\"$LDFLAGS\" obj/libre2.a obj/so/libre2.so\ncp libre2/obj/libre2.a libre2_c_stubs.a\ncp libre2/obj/so/libre2.so dllre2_c_stubs.so\n%{make} -s -C libre2 clean\n")))
++; RE2, built by dune: its own sources, as its Makefile's OFILES lists them
++; (re2/*.cc and util/*.cc, without the tests, the PCRE shim and the benchmark).
++; copy_files brings them into this directory, where foreign_library looks
++; sources up by name; the headers stay in libre2/, an include dir.
++(copy_files (files libre2/re2/*.cc))
++(copy_files (files libre2/util/*.cc))
++
++(foreign_library
++ (archive_name re2_c_stubs)
++ (language cxx)
++ (include_dirs libre2)
++ (flags :standard -Wall -O3 -g -pthread -DNDEBUG -Wno-sign-compare)
++ (names
++  arena hash rune stringpiece stringprintf strutil valgrind
++  bitstate compile dfa filtered_re2 mimics_pcre nfa onepass parse
++  perl_groups prefilter prefilter_tree prog re2 regexp set simplify
++  tostring unicode_casefold unicode_groups))
