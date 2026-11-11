@@ -1,0 +1,14 @@
+opam-version: "2.0"
+synopsis: "pkg-config, from the zcaml toolchain"
+description: """
+zcaml's toolchains install a patched u-config as pkg-config in their bin
+directories, which searches OCAMLPATH for the packages of a dune pkg build.
+There is nothing to check or install: this only tells the solver that
+pkg-config is available."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["Christopher Wellons"]
+license: "Unlicense"
+homepage: "https://github.com/skeeto/u-config"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+build: []
+flags: conf

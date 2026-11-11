@@ -1,0 +1,20 @@
+opam-version: "2.0"
+synopsis: "zlib, from libz, for packages built with pkg-config"
+description: """
+The zlib that libz builds, found by dune-configurator with the toolchain's
+pkg-config. Unlike conf-zlib, which needs zlib installed on the system, it
+cross-compiles: pkg-config searches OCAMLPATH, so it finds libz's zlib.pc in
+the same dune package build."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["Jean-loup Gailly" "Mark Adler"]
+license: "Zlib"
+homepage: "https://zlib.net"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "libz"
+]
+setenv: [
+  [ PKG_CONFIG = "pkg-config" ]
+]
+build: []
+flags: conf
