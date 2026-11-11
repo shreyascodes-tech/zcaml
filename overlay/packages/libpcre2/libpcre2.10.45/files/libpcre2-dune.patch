@@ -1,0 +1,114 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:17:35.473479717 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name libpcre2)
++(package
++ (name libpcre2)
++ (allow_empty))
+diff -ruN a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:25:54.221017709 +0530
+@@ -0,0 +1,86 @@
++; PCRE2, as a library with no modules: depending on it compiles C stubs with
++; its headers and links it. config.h, pcre2.h and pcre2_chartables.c are what
++; configure would generate; the .generic and .dist files are the defaults
++; upstream ships for builds without it. JIT stays off: it needs executable
++; memory, which a cross target may not have.
++(rule
++ (targets config.h)
++ (deps config.h.generic)
++ (action
++  (copy %{deps} %{targets})))
++
++(rule
++ (targets pcre2.h)
++ (deps pcre2.h.generic)
++ (action
++  (copy %{deps} %{targets})))
++
++(rule
++ (targets pcre2_chartables.c)
++ (deps pcre2_chartables.c.dist)
++ (action
++  (copy %{deps} %{targets})))
++
++(library
++ (name libpcre2)
++ (public_name libpcre2)
++ (modules)
++ (foreign_stubs
++  (language c)
++  (names
++   pcre2_auto_possess
++   pcre2_chartables
++   pcre2_chkdint
++   pcre2_compile
++   pcre2_compile_class
++   pcre2_config
++   pcre2_context
++   pcre2_convert
++   pcre2_dfa_match
++   pcre2_error
++   pcre2_extuni
++   pcre2_find_bracket
++   pcre2_jit_compile
++   pcre2_maketables
++   pcre2_match
++   pcre2_match_data
++   pcre2_newline
++   pcre2_ord2utf
++   pcre2_pattern_info
++   pcre2_script_run
++   pcre2_serialize
++   pcre2_string_utils
++   pcre2_study
++   pcre2_substitute
++   pcre2_substring
++   pcre2_tables
++   pcre2_ucd
++   pcre2_valid_utf
++   pcre2_xclass)
++  (extra_deps
++   pcre2_compile.h
++   pcre2_internal.h
++   pcre2_intmodedep.h
++   pcre2_jit_char_inc.h
++   pcre2_jit_match.c
++   pcre2_jit_misc.c
++   pcre2_jit_neon_inc.h
++   pcre2_jit_simd_inc.h
++   pcre2_ucp.h
++   pcre2_ucptables.c
++   pcre2_util.h)
++  (flags
++   :standard
++   -DHAVE_CONFIG_H
++   -DPCRE2_CODE_UNIT_WIDTH=8
++   -DSUPPORT_PCRE2_8
++   ; pcre2-ocaml uses Unicode properties.
++   -DSUPPORT_UNICODE
++   ; pcre2.h's Windows declarations: a static library, not a DLL.
++   -DPCRE2_STATIC)))
++
++(install
++ (section lib)
++ (files
++  (pcre2.h as pcre2.h)
++  (pcre2posix.h as pcre2posix.h)))
+diff -ruN a/src/pcre2.h.generic b/src/pcre2.h.generic
+--- a/src/pcre2.h.generic	2025-02-04 19:18:31.000000000 +0530
++++ b/src/pcre2.h.generic	2026-11-10 11:26:07.875504923 +0530
+@@ -51,6 +51,11 @@
+ export setting is defined in pcre2_internal.h, which includes this file. So we
+ don't change existing definitions of PCRE2_EXP_DECL. */
+ 
++/* zcaml: PCRE2 is built as a static library, so Windows applications must not
++import its symbols from a DLL. */
++
++#define PCRE2_STATIC 1
++
+ #if defined(_WIN32) && !defined(PCRE2_STATIC)
+ #  ifndef PCRE2_EXP_DECL
+ #    define PCRE2_EXP_DECL  extern __declspec(dllimport)

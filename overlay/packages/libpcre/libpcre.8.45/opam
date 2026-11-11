@@ -1,0 +1,25 @@
+opam-version: "2.0"
+synopsis: "PCRE, built from source by dune"
+description: """
+PCRE's C library, compiled with the context's C compiler: unlike
+conf-libpcre, which needs it installed on the system, it cross-compiles. A
+library with no modules: depending on it gives C stubs pcre.h and links it.
+JIT is off: it needs executable memory, which a cross target may not have."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["Philip Hazel"]
+license: "BSD-3-Clause"
+homepage: "https://www.pcre.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+patches: [ "libpcre-dune.patch" ]
+build: ["dune" "build" "-p" name "-j" jobs]
+url {
+  src: "https://sourceforge.net/projects/pcre/files/pcre/8.45/pcre-8.45.tar.gz/download"
+  checksum: [
+    "sha256=4e6ce03e0336e8b4a3d6c2b70b1c5e18590a5673a98186da90d4f33c23defc09"
+    "sha512=4c539ad6d64c3ae295b46c85f08fd75e341136fd5e7afd9f8fc9205c70395739129157baf5d044c889dc88f82a33d46dc83c38f8b8bebf6af96d426fd0044b4a"
+  ]
+}

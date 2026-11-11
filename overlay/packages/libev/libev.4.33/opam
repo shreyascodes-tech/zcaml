@@ -1,0 +1,26 @@
+opam-version: "2.0"
+synopsis: "libev, built from source by dune"
+description: """
+libev's C library, compiled with the context's C compiler: unlike
+conf-libev, which needs it installed on the system, it cross-compiles. A
+library with no modules: depending on it gives C stubs ev.h and links it.
+Its config.h picks the backend per platform: epoll and inotify on Linux,
+kqueue on macOS, select on Windows."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["Marc Lehmann"]
+license: "BSD-2-Clause"
+homepage: "http://software.schmorp.de/pkg/libev.html"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+patches: [ "libev-dune.patch" ]
+build: ["dune" "build" "-p" name "-j" jobs]
+url {
+  src: "https://dist.schmorp.de/libev/libev-4.33.tar.gz"
+  checksum: [
+    "sha256=507eb7b8d1015fbec5b935f34ebed15bf346bed04a11ab82b8eee848c4205aea"
+    "sha512=c662a65360115e0b2598e3e8824cf7b33360c43a96ac9233f6b6ea2873a10102551773cad0e89e738541e75af9fd4f3e3c11cd2f251c5703aa24f193128b896b"
+  ]
+}

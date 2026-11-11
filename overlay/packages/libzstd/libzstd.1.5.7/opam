@@ -1,0 +1,25 @@
+opam-version: "2.0"
+synopsis: "Zstandard, built from source by dune"
+description: """
+Zstandard's C library, compiled with the context's C compiler: unlike
+conf-zstd, which needs it installed on the system, it cross-compiles. A
+library with no modules: depending on it gives C stubs zstd's headers and
+links it."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["Yann Collet" "Meta Platforms, Inc. and affiliates"]
+license: "BSD-3-Clause"
+homepage: "https://facebook.github.io/zstd/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+patches: [ "libzstd-dune.patch" ]
+build: ["dune" "build" "-p" name "-j" jobs]
+url {
+  src: "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz"
+  checksum: [
+    "sha256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+    "sha512=b4de208f179b68d4c6454139ca60d66ed3ef3893a560d6159a056640f83d3ee67cdf6ffb88971cdba35449dba4b597eaa8b4ae908127ef7fd58c89f40bf9a705"
+  ]
+}

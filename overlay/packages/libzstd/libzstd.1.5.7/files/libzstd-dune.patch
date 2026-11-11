@@ -1,0 +1,69 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:10:28.446627426 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name libzstd)
++(package
++ (name libzstd)
++ (allow_empty))
+diff -ruN a/lib/dune b/lib/dune
+--- a/lib/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/lib/dune	2026-11-10 11:10:26.059941459 +0530
+@@ -0,0 +1,56 @@
++; zstd, as a library with no modules: depending on it compiles C stubs
++; with its headers and links it. The sources are in subdirectories, which
++; (include_subdirs unqualified) puts on the foreign stubs' search path.
++(include_subdirs unqualified)
++
++(library
++ (name libzstd)
++ (public_name libzstd)
++ (modules)
++ (foreign_stubs
++  (language c)
++  (names
++   ; common
++   debug
++   entropy_common
++   error_private
++   fse_decompress
++   pool
++   threading
++   xxhash
++   zstd_common
++   ; compress
++   fse_compress
++   hist
++   huf_compress
++   zstd_compress
++   zstd_compress_literals
++   zstd_compress_sequences
++   zstd_compress_superblock
++   zstd_double_fast
++   zstd_fast
++   zstd_lazy
++   zstd_ldm
++   zstd_opt
++   zstd_preSplit
++   zstdmt_compress
++   ; decompress
++   huf_decompress
++   zstd_ddict
++   zstd_decompress
++   zstd_decompress_block
++   ; dictBuilder
++   cover
++   divsufsort
++   fastcover
++   zdict)
++  (flags
++   :standard
++   -DXXH_NAMESPACE=ZSTD_
++   -DDEBUGLEVEL=0
++   -DZSTD_LEGACY_SUPPORT=0
++   ; huf_decompress_amd64.S is assembly, which dune's foreign stubs don't
++   ; take; zstd's portable C does the same work.
++   -DZSTD_DISABLE_ASM)
++  (include_dirs common compress decompress dictBuilder))
++ (install_c_headers zstd zdict zstd_errors))

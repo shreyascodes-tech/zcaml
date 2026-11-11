@@ -1,0 +1,94 @@
+diff -ruN a/config.h b/config.h
+--- a/config.h	1970-01-01 05:30:00.000000000 +0530
++++ b/config.h	2026-11-10 11:24:26.093603976 +0530
+@@ -0,0 +1,50 @@
++/* config.h for zcaml: what libev's configure would define, without
++   configure. libev picks its backends from these HAVE_* macros, and the
++   defaults it falls back to without them depend on the C library (glibc's
++   __GLIBC__), which musl and Windows don't have. */
++#ifndef ZCAML_LIBEV_CONFIG_H
++#define ZCAML_LIBEV_CONFIG_H
++
++#define HAVE_SELECT 1
++#define HAVE_SYS_SELECT_H 1
++#define HAVE_INTTYPES_H 1
++#define HAVE_STDINT_H 1
++#define HAVE_STDLIB_H 1
++#define HAVE_STRING_H 1
++#define HAVE_STRINGS_H 1
++#define HAVE_SYS_TYPES_H 1
++#define HAVE_SYS_STAT_H 1
++#define STDC_HEADERS 1
++
++#if defined(__linux__)
++# define HAVE_CLOCK_GETTIME 1
++# define HAVE_NANOSLEEP 1
++# define HAVE_POLL 1
++# define HAVE_POLL_H 1
++# define HAVE_EPOLL_CTL 1
++# define HAVE_SYS_EPOLL_H 1
++# define HAVE_INOTIFY_INIT 1
++# define HAVE_SYS_INOTIFY_H 1
++# define HAVE_SIGNALFD 1
++# define HAVE_SYS_SIGNALFD_H 1
++# define HAVE_EVENTFD 1
++# define HAVE_SYS_EVENTFD_H 1
++# define HAVE_SYS_TIMERFD_H 1
++# define HAVE_UNISTD_H 1
++# define HAVE_DLFCN_H 1
++#elif defined(__APPLE__)
++# define HAVE_CLOCK_GETTIME 1
++# define HAVE_NANOSLEEP 1
++# define HAVE_POLL 1
++# define HAVE_POLL_H 1
++# define HAVE_KQUEUE 1
++# define HAVE_SYS_EVENT_H 1
++# define HAVE_UNISTD_H 1
++# define HAVE_DLFCN_H 1
++#elif defined(_WIN32)
++/* Windows has no poll, epoll, kqueue, inotify, nanosleep or clock_gettime;
++   select is Winsock's select, which ev_select.c uses with
++   EV_SELECT_IS_WINSOCKET, and sleeping is ev.c's Sleep(). */
++#endif
++
++#endif
+diff -ruN a/dune b/dune
+--- a/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/dune	2026-11-10 11:13:08.824602004 +0530
+@@ -0,0 +1,27 @@
++; libev, as a library with no modules: depending on it compiles C stubs
++; with its headers and links it. ev.c includes the backend it selects
++; (ev_epoll.c, ev_select.c, ...) and, on Windows, ev_win32.c, so only
++; ev.c and event.c are compiled.
++(library
++ (name libev)
++ (public_name libev)
++ (modules)
++ (foreign_stubs
++  (language c)
++  (names ev event)
++  (extra_deps
++   ev_vars.h
++   ev_wrap.h
++   ev_epoll.c
++   ev_iouring.c
++   ev_kqueue.c
++   ev_linuxaio.c
++   ev_poll.c
++   ev_port.c
++   ev_select.c
++   ev_win32.c))
++ (install_c_headers ev event))
++
++(install
++ (section lib)
++ (files ev++.h))
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:12:52.984471954 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name libev)
++(package
++ (name libev)
++ (allow_empty))

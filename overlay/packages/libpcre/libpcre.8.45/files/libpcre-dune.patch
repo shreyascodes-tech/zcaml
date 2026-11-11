@@ -1,0 +1,95 @@
+diff -ruN a/dune b/dune
+--- a/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/dune	2026-11-10 11:25:54.221017709 +0530
+@@ -0,0 +1,67 @@
++; PCRE, as a library with no modules: depending on it compiles C stubs with
++; its headers and links it. config.h, pcre.h and pcre_chartables.c are what
++; configure would generate; the .generic and .dist files are the defaults
++; upstream ships for builds without it. JIT stays off: it needs executable
++; memory, which a cross target may not have.
++(rule
++ (targets config.h)
++ (deps config.h.generic)
++ (action
++  (copy %{deps} %{targets})))
++
++(rule
++ (targets pcre.h)
++ (deps pcre.h.generic)
++ (action
++  (copy %{deps} %{targets})))
++
++(rule
++ (targets pcre_chartables.c)
++ (deps pcre_chartables.c.dist)
++ (action
++  (copy %{deps} %{targets})))
++
++(library
++ (name libpcre)
++ (public_name libpcre)
++ (modules)
++ (foreign_stubs
++  (language c)
++  (names
++   pcre_byte_order
++   pcre_chartables
++   pcre_compile
++   pcre_config
++   pcre_dfa_exec
++   pcre_exec
++   pcre_fullinfo
++   pcre_get
++   pcre_globals
++   pcre_jit_compile
++   pcre_maketables
++   pcre_newline
++   pcre_ord2utf8
++   pcre_refcount
++   pcre_string_utils
++   pcre_study
++   pcre_tables
++   pcre_ucd
++   pcre_valid_utf8
++   pcre_version
++   pcre_xclass)
++  (extra_deps pcre_internal.h ucp.h)
++  (flags
++   :standard
++   -DHAVE_CONFIG_H
++   -DSUPPORT_PCRE8
++   ; pcre-ocaml uses UTF-8 and Unicode properties, as distro builds do.
++   -DSUPPORT_UTF
++   -DSUPPORT_UCP
++   ; pcre.h's Windows declarations: a static library, not a DLL.
++   -DPCRE_STATIC)))
++
++(install
++ (section lib)
++ (files
++  (pcre.h as pcre.h)
++  (pcreposix.h as pcreposix.h)))
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:17:12.393286963 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name libpcre)
++(package
++ (name libpcre)
++ (allow_empty))
+diff -ruN a/pcre.h.generic b/pcre.h.generic
+--- a/pcre.h.generic	2021-06-15 21:43:44.000000000 +0530
++++ b/pcre.h.generic	2026-11-10 11:25:59.490251162 +0530
+@@ -51,6 +51,11 @@
+ export setting is defined in pcre_internal.h, which includes this file. So we
+ don't change existing definitions of PCRE_EXP_DECL and PCRECPP_EXP_DECL. */
+ 
++/* zcaml: PCRE is built as a static library, so Windows applications must not
++import its symbols from a DLL. */
++
++#define PCRE_STATIC 1
++
+ #if defined(_WIN32) && !defined(PCRE_STATIC)
+ #  ifndef PCRE_EXP_DECL
+ #    define PCRE_EXP_DECL  extern __declspec(dllimport)

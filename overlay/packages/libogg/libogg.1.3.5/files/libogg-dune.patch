@@ -1,0 +1,59 @@
+diff -ruN a/dune b/dune
+--- a/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/dune	2026-11-10 11:14:09.338646585 +0530
+@@ -0,0 +1,20 @@
++; libogg, as a library with no modules: depending on it compiles C stubs
++; with its headers and links it. Its headers keep their <ogg/...> names,
++; which is how libogg's own and its consumers' sources include them.
++(include_subdirs unqualified)
++
++(library
++ (name libogg)
++ (public_name libogg)
++ (modules)
++ (foreign_stubs
++  (language c)
++  (names bitwise framing)
++  (include_dirs include)))
++
++(install
++ (section lib)
++ (files
++  (include/ogg/ogg.h as ogg/ogg.h)
++  (include/ogg/os_types.h as ogg/os_types.h)
++  (include/ogg/config_types.h as ogg/config_types.h)))
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:13:38.064842514 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name libogg)
++(package
++ (name libogg)
++ (allow_empty))
+diff -ruN a/include/ogg/config_types.h b/include/ogg/config_types.h
+--- a/include/ogg/config_types.h	1970-01-01 05:30:00.000000000 +0530
++++ b/include/ogg/config_types.h	2026-11-10 11:13:31.394787601 +0530
+@@ -0,0 +1,22 @@
++/* config_types.h for zcaml: what libogg's configure would substitute, without
++   configure. Only the generic (non-Windows, non-macOS) branch of
++   <ogg/os_types.h> includes this, and all three of those headers exist. */
++#ifndef __CONFIG_TYPES_H__
++#define __CONFIG_TYPES_H__
++
++#define INCLUDE_INTTYPES_H 1
++#define INCLUDE_STDINT_H 1
++#define INCLUDE_SYS_TYPES_H 1
++
++#include <inttypes.h>
++#include <stdint.h>
++#include <sys/types.h>
++
++typedef int16_t ogg_int16_t;
++typedef uint16_t ogg_uint16_t;
++typedef int32_t ogg_int32_t;
++typedef uint32_t ogg_uint32_t;
++typedef int64_t ogg_int64_t;
++typedef uint64_t ogg_uint64_t;
++
++#endif
