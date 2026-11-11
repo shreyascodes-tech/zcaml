@@ -1,0 +1,454 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:58:07.595190917 +0530
+@@ -0,0 +1,7 @@
++(lang dune 3.0)
++(name ocamlfind)
++(version 1.9.8)
++(package
++ (name ocamlfind)
++ (synopsis "A library manager for OCaml")
++ (depends (ocaml (>= 3.08.0))))
+diff -ruN a/site-lib-src/dune b/site-lib-src/dune
+--- a/site-lib-src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/site-lib-src/dune	2026-11-10 11:58:07.593010299 +0530
+@@ -0,0 +1,7 @@
++; findlib generates META files for the compiler's own libraries into the
++; site-lib.  On OCaml 5 the only one it adds is the bytes compatibility
++; package; the others have their own META files in the standard library.
++(install
++ (package ocamlfind)
++ (section lib_root)
++ (files (bytes/META.in as bytes/META)))
+diff -ruN a/src/findlib/META b/src/findlib/META
+--- a/src/findlib/META	1970-01-01 05:30:00.000000000 +0530
++++ b/src/findlib/META	2026-11-10 11:58:07.593704069 +0530
+@@ -0,0 +1,35 @@
++# specifications for "findlib":
++description = "Package manager"
++requires = "findlib.internal"
++requires(toploop) += "findlib.top"
++requires(create_toploop) += "findlib.top"
++version = "1.9.8"
++
++package "internal" (
++  version = "1.9.8"
++  description = "Package manager"
++  requires = ""
++  archive(byte) = "findlib.cma"
++  archive(native) = "findlib.cmxa"
++  plugin(byte) = "findlib.cma"
++  plugin(native) = "findlib.cmxs"
++)
++
++package "dynload" (
++  version = "1.9.8"
++  description = "Package manager dynamic loader"
++  requires = "findlib dynlink"
++  archive(byte) = "findlib_dynload.cma"
++  archive(native) = "findlib_dynload.cmxa"
++  plugin(byte) = "findlib_dynload.cma"
++  plugin(native) = "findlib_dynload.cmxs"
++  linkopts = "-linkall"
++)
++
++package "top" (
++  version = "1.9.8"
++  description = "Package manager toplevel support"
++  requires = "findlib.internal"
++  archive(byte) = "findlib_top.cma"
++  archive(native) = "findlib_top.cmxa"
++)
+diff -ruN a/src/findlib/dune b/src/findlib/dune
+--- a/src/findlib/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/findlib/dune	2026-11-10 11:58:07.593704069 +0530
+@@ -0,0 +1,187 @@
++; findlib's libraries and the ocamlfind tool, built by dune.  configure and
++; make generated findlib_config.ml, topfind, META, findlib.conf and
++; ocaml_args.ml with sed and the tools/ programs; the rules below do the same.
++
++(library
++ (name findlib)
++ (public_name ocamlfind.findlib)
++ (wrapped false)
++ (modules
++  fl_compat
++  fl_split
++  findlib_config
++  fl_metatoken
++  fl_meta
++  fl_metascanner
++  fl_topo
++  fl_package_base
++  findlib
++  fl_args
++  fl_lint)
++ (libraries unix)
++ (flags (:standard -w -6-27-32-33-50)))
++
++(library
++ (name findlib_top)
++ (wrapped false)
++ (modules topfind)
++ (libraries findlib compiler-libs.common compiler-libs.toplevel)
++ (flags (:standard -w -6-27-32-33-50)))
++
++(library
++ (name findlib_dynload)
++ (wrapped false)
++ (modules fl_dynload)
++ (libraries findlib dynlink)
++ (flags (:standard -w -6-27-32-33-50)))
++
++(executable
++ (name frontend)
++ (public_name ocamlfind)
++ (package ocamlfind)
++ (modules frontend realpath ocaml_args)
++ (libraries findlib unix)
++ (flags (:standard -w -6-27-32-33-50)))
++
++(ocamllex fl_meta)
++
++(rule
++ (copy topfind.ml.in topfind.ml))
++
++(rule
++ (targets findlib_config.ml)
++ (deps findlib_config.mlp)
++ (action
++  (run
++   %{exe:../../tools/gen/gen.exe}
++   config
++   %{dep:findlib_config.mlp}
++   %{targets}
++   %{ocaml_where}
++   %{ocaml-config:system})))
++
++(rule
++ (targets topfind)
++ (deps topfind.in)
++ (action
++  (run
++   %{exe:../../tools/gen/gen.exe}
++   topfind
++   %{dep:topfind.in}
++   %{targets}
++   %{ocaml_where})))
++
++(rule
++ (targets findlib.conf)
++ (action
++  (run
++   %{exe:../../tools/gen/gen.exe}
++   conf
++   %{targets}
++   %{ocaml_where})))
++
++(rule
++ (targets ocaml_args.ml)
++ (action
++  (run
++   %{exe:../../tools/extract_args/extract_args.exe}
++   -o
++   %{targets}
++   ocamlc
++   ocamlcp
++   ocamloptp
++   ocamlmklib
++   ocamlmktop
++   ocamlopt
++   ocamldep
++   ocamldoc)))
++
++; The findlib package's files live in lib/findlib (findlib's site-lib layout),
++; not in lib/ocamlfind; install them at the root of the library directory.
++(install
++ (package ocamlfind)
++ (section lib_root)
++ (files
++  (findlib.cma as findlib/findlib.cma)
++  (findlib.cmxa as findlib/findlib.cmxa)
++  (findlib.cmxs as findlib/findlib.cmxs)
++  (findlib.a as findlib/findlib.a)
++  (findlib.mli as findlib/findlib.mli)
++  (findlib_config.ml as findlib/findlib_config.ml)
++  (topfind.mli as findlib/topfind.mli)
++  (fl_package_base.mli as findlib/fl_package_base.mli)
++  (fl_metascanner.mli as findlib/fl_metascanner.mli)
++  (fl_dynload.mli as findlib/fl_dynload.mli)
++  (findlib_top.cma as findlib/findlib_top.cma)
++  (findlib_top.cmxa as findlib/findlib_top.cmxa)
++  (findlib_top.cmxs as findlib/findlib_top.cmxs)
++  (findlib_top.a as findlib/findlib_top.a)
++  (findlib_dynload.cma as findlib/findlib_dynload.cma)
++  (findlib_dynload.cmxa as findlib/findlib_dynload.cmxa)
++  (findlib_dynload.cmxs as findlib/findlib_dynload.cmxs)
++  (findlib_dynload.a as findlib/findlib_dynload.a)
++  (META as findlib/META)
++  (findlib.conf as findlib.conf)
++  (topfind as toplevel/topfind)))
++
++(rule
++ (targets inst_fl_compat.cmi inst_fl_compat.cmx inst_fl_split.cmi inst_fl_split.cmx inst_findlib_config.cmi inst_findlib_config.cmx inst_fl_metatoken.cmi inst_fl_metatoken.cmx inst_fl_meta.cmi inst_fl_meta.cmx inst_fl_metascanner.cmi inst_fl_metascanner.cmx inst_fl_topo.cmi inst_fl_topo.cmx inst_fl_package_base.cmi inst_fl_package_base.cmx inst_findlib.cmi inst_findlib.cmx inst_fl_args.cmi inst_fl_args.cmx inst_fl_lint.cmi inst_fl_lint.cmx inst_topfind.cmi inst_topfind.cmx inst_fl_dynload.cmi inst_fl_dynload.cmx)
++ (action
++  (progn
++  (copy %{cmi:fl_compat} inst_fl_compat.cmi)
++  (copy %{cmx:fl_compat} inst_fl_compat.cmx)
++  (copy %{cmi:fl_split} inst_fl_split.cmi)
++  (copy %{cmx:fl_split} inst_fl_split.cmx)
++  (copy %{cmi:findlib_config} inst_findlib_config.cmi)
++  (copy %{cmx:findlib_config} inst_findlib_config.cmx)
++  (copy %{cmi:fl_metatoken} inst_fl_metatoken.cmi)
++  (copy %{cmx:fl_metatoken} inst_fl_metatoken.cmx)
++  (copy %{cmi:fl_meta} inst_fl_meta.cmi)
++  (copy %{cmx:fl_meta} inst_fl_meta.cmx)
++  (copy %{cmi:fl_metascanner} inst_fl_metascanner.cmi)
++  (copy %{cmx:fl_metascanner} inst_fl_metascanner.cmx)
++  (copy %{cmi:fl_topo} inst_fl_topo.cmi)
++  (copy %{cmx:fl_topo} inst_fl_topo.cmx)
++  (copy %{cmi:fl_package_base} inst_fl_package_base.cmi)
++  (copy %{cmx:fl_package_base} inst_fl_package_base.cmx)
++  (copy %{cmi:findlib} inst_findlib.cmi)
++  (copy %{cmx:findlib} inst_findlib.cmx)
++  (copy %{cmi:fl_args} inst_fl_args.cmi)
++  (copy %{cmx:fl_args} inst_fl_args.cmx)
++  (copy %{cmi:fl_lint} inst_fl_lint.cmi)
++  (copy %{cmx:fl_lint} inst_fl_lint.cmx)
++  (copy %{cmi:topfind} inst_topfind.cmi)
++  (copy %{cmx:topfind} inst_topfind.cmx)
++  (copy %{cmi:fl_dynload} inst_fl_dynload.cmi)
++  (copy %{cmx:fl_dynload} inst_fl_dynload.cmx))))
++
++(install
++ (package ocamlfind)
++ (section lib_root)
++ (files
++  (inst_fl_compat.cmi as findlib/fl_compat.cmi)
++  (inst_fl_compat.cmx as findlib/fl_compat.cmx)
++  (inst_fl_split.cmi as findlib/fl_split.cmi)
++  (inst_fl_split.cmx as findlib/fl_split.cmx)
++  (inst_findlib_config.cmi as findlib/findlib_config.cmi)
++  (inst_findlib_config.cmx as findlib/findlib_config.cmx)
++  (inst_fl_metatoken.cmi as findlib/fl_metatoken.cmi)
++  (inst_fl_metatoken.cmx as findlib/fl_metatoken.cmx)
++  (inst_fl_meta.cmi as findlib/fl_meta.cmi)
++  (inst_fl_meta.cmx as findlib/fl_meta.cmx)
++  (inst_fl_metascanner.cmi as findlib/fl_metascanner.cmi)
++  (inst_fl_metascanner.cmx as findlib/fl_metascanner.cmx)
++  (inst_fl_topo.cmi as findlib/fl_topo.cmi)
++  (inst_fl_topo.cmx as findlib/fl_topo.cmx)
++  (inst_fl_package_base.cmi as findlib/fl_package_base.cmi)
++  (inst_fl_package_base.cmx as findlib/fl_package_base.cmx)
++  (inst_findlib.cmi as findlib/findlib.cmi)
++  (inst_findlib.cmx as findlib/findlib.cmx)
++  (inst_fl_args.cmi as findlib/fl_args.cmi)
++  (inst_fl_args.cmx as findlib/fl_args.cmx)
++  (inst_fl_lint.cmi as findlib/fl_lint.cmi)
++  (inst_fl_lint.cmx as findlib/fl_lint.cmx)
++  (inst_topfind.cmi as findlib/topfind.cmi)
++  (inst_topfind.cmx as findlib/topfind.cmx)
++  (inst_fl_dynload.cmi as findlib/fl_dynload.cmi)
++  (inst_fl_dynload.cmx as findlib/fl_dynload.cmx)))
+diff -ruN a/src/findlib/findlib_config.mlp b/src/findlib/findlib_config.mlp
+--- a/src/findlib/findlib_config.mlp	2024-11-17 04:30:17.000000000 +0530
++++ b/src/findlib/findlib_config.mlp	2026-11-10 11:58:07.593704069 +0530
+@@ -52,7 +52,12 @@
+   | false -> None
+   | true -> Some path
+ 
+-let default = "@CONFIGFILE@"
++let default =
++  (* The configuration file installed next to this tool: ocamlfind is always
++     on PATH when it runs, so its own directory tells us the prefix. *)
++  match find_in_path "ocamlfind" with
++  | Some dir -> Filename.concat dir "lib/findlib.conf"
++  | None -> "@CONFIGFILE@"
+ let fallback = Option.value ~default
+ 
+ let rec try_vars = function
+diff -ruN a/src/findlib/realpath.ml b/src/findlib/realpath.ml
+--- a/src/findlib/realpath.ml	1970-01-01 05:30:00.000000000 +0530
++++ b/src/findlib/realpath.ml	2026-11-10 11:58:07.593704069 +0530
+@@ -0,0 +1,2 @@
++(* Unix.realpath, which configure probed for; OCaml 4.13 and up has it. *)
++let realpath = Unix.realpath
+diff -ruN a/src/findlib/topfind.in b/src/findlib/topfind.in
+--- a/src/findlib/topfind.in	2024-11-17 04:30:17.000000000 +0530
++++ b/src/findlib/topfind.in	2026-11-10 11:58:07.593704069 +0530
+@@ -27,15 +27,6 @@
+   | true -> Some path
+ in
+ 
+-let install_dir_from_ocaml_toplevel_path path =
+-  let exe_dir = Filename.dirname path in
+-  let install_dir = Filename.dirname exe_dir in
+-  let config_path = findlib_conf_of_path install_dir in
+-  match Sys.file_exists config_path with
+-  | true -> Some install_dir
+-  | false -> None
+-in
+-
+ let fl_split_path_separator =
+   match Sys.os_type with
+     | "Unix" | "BeOS"   -> ':'
+@@ -76,6 +67,17 @@
+     | false -> None) v
+ in
+ 
++let install_dir_from_ocaml_toplevel_path paths =
++  (* OCAMLTOP_INCLUDE_PATH is <prefix>/lib/toplevel, as dune sets it. *)
++  let v = string_split_on_char fl_split_path_separator paths in
++  list_find_map (fun path ->
++    let install_dir = Filename.dirname (Filename.dirname path) in
++    let config_path = findlib_conf_of_path install_dir in
++    match Sys.file_exists config_path with
++    | true -> Some install_dir
++    | false -> None) v
++in
++
+ let getenv_opt v = try Some (Sys.getenv v) with Not_found -> None in
+ 
+ let rec try_vars = function
+@@ -90,18 +92,19 @@
+ in
+ 
+ let location =
+-  match try_vars [
++  try_vars [
+     ("OPAM_SWITCH_PREFIX", install_dir_from_opam_switch_prefix);
+     ("CAML_LD_LIBRARY_PATH", install_dir_from_ld_library_path);
+     ("OCAML_TOPLEVEL_PATH", install_dir_from_ocaml_toplevel_path);
+-  ] with
+-  | Some location -> location
+-  | None -> "@SITELIB@"
++    ("OCAMLTOP_INCLUDE_PATH", install_dir_from_ocaml_toplevel_path);
++  ]
+ in
+ 
+-let findlib_directory = match @RELATIVE_PATHS@ with
+-  | true -> location / "lib" / "findlib"
+-  | false -> "@SITELIB@/findlib"
++(* The findlib package's directory: relative to the installation when we
++   found it, otherwise at the configured site-lib. *)
++let findlib_directory = match location with
++  | Some location -> location / "lib" / "findlib"
++  | None -> "@SITELIB@/findlib"
+ in
+ 
+ let () = Topdirs.dir_directory findlib_directory in
+diff -ruN a/tools/extract_args/dune b/tools/extract_args/dune
+--- a/tools/extract_args/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/tools/extract_args/dune	2026-11-10 11:58:07.594891081 +0530
+@@ -0,0 +1,6 @@
++(executable
++ (name extract_args)
++ (modules extract_args)
++ (libraries str))
++
++(ocamllex extract_args)
+diff -ruN a/tools/gen/dune b/tools/gen/dune
+--- a/tools/gen/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/tools/gen/dune	2026-11-10 11:58:07.595190917 +0530
+@@ -0,0 +1,3 @@
++(executable
++ (name gen)
++ (modules gen))
+diff -ruN a/tools/gen/gen.ml b/tools/gen/gen.ml
+--- a/tools/gen/gen.ml	1970-01-01 05:30:00.000000000 +0530
++++ b/tools/gen/gen.ml	2026-11-10 11:58:07.595190917 +0530
+@@ -0,0 +1,94 @@
++(* Generates the files that findlib's configure and make used sed for:
++   findlib_config.ml (from findlib_config.mlp), the topfind script (from
++   topfind.in), and findlib.conf. *)
++
++let read_file path =
++  let ch = open_in_bin path in
++  let n = in_channel_length ch in
++  let s = really_input_string ch n in
++  close_in ch;
++  s
++
++let write_file path s =
++  let ch = open_out_bin path in
++  output_string ch s;
++  close_out ch
++
++let replace_all ~sub ~by s =
++  let n = String.length sub in
++  let b = Buffer.create (String.length s) in
++  let rec loop i =
++    if i + n > String.length s then Buffer.add_substring b s i (String.length s - i)
++    else if String.sub s i n = sub then (Buffer.add_string b by; loop (i + n))
++    else (Buffer.add_char b s.[i]; loop (i + 1))
++  in
++  loop 0;
++  Buffer.contents b
++
++let strip_prefix p s =
++  let n = String.length p in
++  if String.length s >= n && String.sub s 0 n = p
++  then Some (String.sub s n (String.length s - n))
++  else None
++
++(* The findlib prefix is where lib/findlib.conf is installed: $FINDLIB_PREFIX
++   when the build sets it, otherwise the compiler's own library directory. *)
++let prefix default =
++  match Sys.getenv_opt "FINDLIB_PREFIX" with
++  | Some p -> p
++  | None -> default
++
++let substitute vars s =
++  List.fold_left (fun s (sub, by) -> replace_all ~sub ~by s) s vars
++
++(* findlib_config.mlp has two variants per line, `ax:` for the normal build
++   and `rx:` for a relocatable one; findlib's make keeps the `ax:` lines. *)
++let gen_config mlp out stdlib system =
++  let stdlib_esc = String.escaped stdlib in
++  let config_esc = String.escaped (Filename.concat (prefix stdlib) "findlib.conf") in
++  let vars =
++    [ ("@CONFIGFILE@", config_esc)
++    ; ("@CONFIGFILENAME@", "findlib.conf")
++    ; ("@STDLIB@", stdlib_esc)
++    ; ("@RELATIVE_PATHS@", "false")
++    ; ("@AUTOLINK@", "true")
++    ; ("@SYSTEM@", String.escaped system)
++    ; ("@CONFIG_FROM_STDLIB@", "")
++    ]
++  in
++  let body =
++    String.split_on_char '\n' (read_file mlp)
++    |> List.filter_map (fun line ->
++      if strip_prefix "rx:" line <> None then None
++      else Some (match strip_prefix "ax:" line with Some l -> l | None -> line))
++    |> String.concat "\n"
++  in
++  write_file out (substitute vars body)
++
++let gen_topfind inp out default =
++  let vars =
++    [ ("@SITELIB@", String.escaped (prefix default)); ("@RELATIVE_PATHS@", "false") ]
++  in
++  let body =
++    String.split_on_char '\n' (read_file inp)
++    |> List.filter_map (fun line ->
++      if strip_prefix "rx:" line <> None then None
++      else Some (match strip_prefix "4x:" line with Some l -> l | None -> line))
++    |> String.concat "\n"
++  in
++  write_file out (substitute vars body)
++
++let gen_conf out default =
++  let p = prefix default in
++  write_file out (Printf.sprintf "destdir=%S\npath=%S\n" p p)
++
++let () =
++  match Array.to_list Sys.argv with
++  | _ :: "config" :: mlp :: out :: stdlib :: system :: _ ->
++      gen_config mlp out stdlib system
++  | _ :: "topfind" :: inp :: out :: sitelib :: _ -> gen_topfind inp out sitelib
++  | _ :: "conf" :: out :: default :: _ -> gen_conf out default
++  | _ ->
++      prerr_endline
++        "usage: gen config|topfind|conf <input...> <output> [args]";
++      exit 2

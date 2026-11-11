@@ -1,0 +1,39 @@
+diff -ruN a/META.not-ocamlfind.template b/META.not-ocamlfind.template
+--- a/META.not-ocamlfind.template	1970-01-01 05:30:00.000000000 +0530
++++ b/META.not-ocamlfind.template	2026-11-10 11:51:59.191992729 +0530
+@@ -0,0 +1,4 @@
++# stub META file for "not-ocamlfind" frontend to "ocamlfind"
++requires = ""
++version = "0.15"
++description = "add-on commands for ocamlfind"
+diff -ruN a/dune b/dune
+--- a/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/dune	2026-11-10 11:51:59.191992729 +0530
+@@ -0,0 +1,17 @@
++(executable
++ (name main)
++ (public_name not-ocamlfind)
++ (modules fsmod frontend main)
++ (libraries str unix fmt rresult ocamlgraph camlp-streams ocamlfind.findlib)
++ (link_flags -linkall))
++
++(executable
++ (name papr_official)
++ (modules papr_official)
++ (libraries str unix compiler-libs.common)
++ (link_flags -linkall))
++
++(install
++ (package not-ocamlfind)
++ (section lib)
++ (files papr_official.exe))
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:51:59.191992729 +0530
+@@ -0,0 +1,6 @@
++(lang dune 3.0)
++(name not-ocamlfind)
++(version 0.15)
++(package
++ (name not-ocamlfind)
++ (synopsis "A small frontend for ocamlfind that adds a few useful commands"))
