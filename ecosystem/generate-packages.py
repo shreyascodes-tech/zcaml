@@ -669,6 +669,31 @@ TARGET_PATCHES = {
     'ldp_tls': 'x86_64-windows-gnu',
     # dose3 runs the target's bytecode on the build machine here.
     'opam-client': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    # Hard/native-only external libraries: GTK, X11/Xft, cairo, BLAS/LAPACK/
+    # OpenBLAS, ffmpeg, libpq, LLVM and libseccomp. Zig has no Fortran compiler,
+    # and these dependency trees are not reasonable vendoring targets.
+    'lablgtk': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'lablgtk3': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'lablgtk3-sourceview3': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'graphics': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'cairo2': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'lacaml': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'owl': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'nx': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'ffmpeg-avutil': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'postgresql': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'z3': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    'solo5': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    # Verified Windows failures that are upstream/tool-level, not zcaml:
+    # pcre's C stub uses long where caml_int_ptr is needed; camlidl's COM code
+    # is MSVC-oriented; async_ssl's async/core_unix deps are already win32-unsupported.
+    'async_ssl': 'x86_64-windows-gnu',
+    'pcre': 'x86_64-windows-gnu',
+    'camlidl': 'x86_64-windows-gnu',
+    # Upstream `available: os != "win32"`.
+    'ocsigenserver': 'x86_64-windows-gnu',
+    'bls12-381': 'x86_64-windows-gnu',
+
     # These build with make/ocamlbuild, which `build/dune/cross_pkg.ml` doesn't
     # redirect: they compile with the build machine's compiler and their target
     # link then mismatches the target stdlib.

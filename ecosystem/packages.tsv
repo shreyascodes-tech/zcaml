@@ -107,7 +107,7 @@ dream					system-libs
 ppx_let					ml-only
 optint					ml-only
 ppx_blob					ml-only
-pcre					system-libs
+pcre				x86_64-windows-gnu	system-libs
 miou				x86_64-windows-gnu	c-stubs
 extlib					ml-only
 yaml					c-stubs
@@ -176,7 +176,7 @@ hxd		-			ml-only
 not-ocamlfind					ml-only
 ounit		-			ml-only
 qcheck-core					ml-only
-camlidl					c-stubs
+camlidl				x86_64-windows-gnu	c-stubs
 cmarkit					ml-only
 iter					ml-only
 cpm					ml-only
@@ -192,7 +192,7 @@ cstruct-lwt					ml-only
 lambdasoup					ml-only
 rdf					ml-only
 js_of_ocaml-lwt				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
-async_ssl					system-libs
+async_ssl				x86_64-windows-gnu	system-libs
 ez_file					ml-only
 menhirSdk					ml-only
 stdune					c-stubs
@@ -207,16 +207,16 @@ camlp5-buildscripts					ml-only
 tls-mirage					ml-only
 lwt_log					ml-only
 curl				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
-cairo2					system-libs
+cairo2				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 linenoise					c-stubs
 trace					ml-only
 ANSITerminal					c-stubs
 posix-base				x86_64-windows-gnu	c-stubs
-lablgtk3					system-libs
+lablgtk3				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 current					system-libs
 fpath-sexp0					ml-only
-lablgtk					system-libs
-nx					system-libs
+lablgtk				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
+nx				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 odoc		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 dyn					ml-only
 uuseg					ml-only
@@ -254,10 +254,10 @@ gg					ml-only
 notty-community				x86_64-windows-gnu	c-stubs
 mnet					ml-only
 camomile					ml-only
-graphics					system-libs
+graphics				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 ocp-indent		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 oseq					ml-only
-owl					system-libs
+owl				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 decoders					ml-only
 opam-client				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 printbox-text					ml-only
@@ -350,8 +350,8 @@ ezjs_min				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 omake					c-stubs
 posix-types				x86_64-windows-gnu	c-stubs
 stk					ml-only
-z3					system-libs
-lablgtk3-sourceview3					system-libs
+z3				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
+lablgtk3-sourceview3				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 linol					ml-only
 ocplib-json-typed				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 pandoc					ml-only
@@ -392,9 +392,9 @@ bigstring					c-stubs
 bst					ml-only
 prometheus-app					ml-only
 brr				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
-ffmpeg-avutil					system-libs
+ffmpeg-avutil				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 irmin-pack					ml-only
-postgresql					system-libs
+postgresql				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 core_bench		-		x86_64-windows-gnu	ml-only
 current_git					ml-only
 gsl					system-libs
@@ -446,7 +446,7 @@ hashcons					ml-only
 httpcats					ml-only
 incr_map					ml-only
 mnet-tls					ml-only
-ocsigenserver					system-libs
+ocsigenserver				x86_64-windows-gnu	system-libs
 sendmail					ml-only
 directories					c-stubs
 http-lwt-client					ml-only
@@ -462,12 +462,12 @@ pgocaml					ml-only
 ppx_marshal_ext					ml-only
 bechamel					ml-only
 bhttp					ml-only
-bls12-381					ml-only
+bls12-381				x86_64-windows-gnu	ml-only
 broken					ml-only
 cohttp-lwt-jsoo				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 data-encoding					ml-only
 dkim					ml-only
-lacaml					system-libs
+lacaml				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 linol-lwt					ml-only
 mehari					ml-only
 msat					ml-only
@@ -490,7 +490,7 @@ spelll					ml-only
 opatch		-			ml-only
 dream-httpaf					ml-only
 curl_lwt				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
-solo5					system-libs
+solo5				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 httpaf-lwt-unix					ml-only
 safepass		unix,safepass			ml-only
 slice					ml-only
