@@ -1,37 +1,773 @@
-diff -ru a/src/c/dune b/src/c/dune
---- a/src/c/dune	2026-11-08 05:03:12.040240334 +0530
-+++ b/src/c/dune	2026-11-08 05:03:12.055574466 +0530
-@@ -82,7 +82,7 @@
-   (bash "cp -r vendor/configure/* vendor/libuv/")
-   (chdir vendor/libuv (progn
-    (bash
+diff -ruN a/src/c/dune b/src/c/dune
+--- a/src/c/dune	2024-09-05 21:05:01.000000000 +0530
++++ b/src/c/dune	2026-11-11 09:48:54.638049510 +0530
+@@ -3,12 +3,9 @@
+ (* To make this build verbose:
+
+    1. dune build -p luv -j 1 --verbose --no-buffer
+-   2. Remove --silent and --enable-silent-rules from sh configure
+-   3. Pass V=1 instead of V=0 to make
+-   4. Remove --silent --no-warnings from sh libtool
+-   5. Unwrap all the commands from (ignore-outputs ...) *)
++   2. Build with the C compiler's output (dune shows it for -j 1 --verbose) *)
+
+-let foreign_archives, uv_library_flag, include_dirs, i_option, install_h =
++let uv_library_flag, include_dirs, i_option, install_h, libuv_sources =
+   let use_system_libuv =
+     match Sys.getenv "LUV_USE_SYSTEM_LIBUV" with
+     | "yes" -> true
+@@ -17,17 +14,37 @@
+   in
+
+   if use_system_libuv then
+-    "",
+     "-luv",
+     "",
+     "",
+-    false
++    false,
++    ""
+   else
+-    "(foreign_archives uv)",
+     "",
+-    "(include_dirs vendor/libuv/include)",
++    "(include_dirs vendor/libuv/include vendor/libuv/src)",
+     "-I .",
+-    true
++    true,
++    {|
++   libuv-fs-poll libuv-idna libuv-inet libuv-random libuv-strscpy
++   libuv-strtok libuv-thread-common libuv-threadpool libuv-timer
++   libuv-uv-common libuv-uv-data-getter-setters libuv-version
++   libuv-unix-async libuv-unix-core libuv-unix-dl libuv-unix-fs
++   libuv-unix-getaddrinfo libuv-unix-getnameinfo libuv-unix-loop-watcher
++   libuv-unix-loop libuv-unix-pipe libuv-unix-poll libuv-unix-process
++   libuv-unix-random-devurandom libuv-unix-signal libuv-unix-stream
++   libuv-unix-tcp libuv-unix-thread libuv-unix-tty libuv-unix-udp
++   libuv-unix-proctitle libuv-linux-linux libuv-linux-procfs-exepath
++   libuv-linux-random-getrandom libuv-linux-random-sysctl-linux
++   libuv-darwin-darwin-proctitle libuv-darwin-darwin libuv-darwin-fsevents
++   libuv-darwin-random-getentropy libuv-darwin-bsd-ifaddrs
++   libuv-darwin-kqueue libuv-win-async libuv-win-core libuv-win-detect-wakeup
++   libuv-win-dl libuv-win-error libuv-win-fs-event libuv-win-fs
++   libuv-win-getaddrinfo libuv-win-getnameinfo libuv-win-handle
++   libuv-win-loop-watcher libuv-win-pipe libuv-win-poll
++   libuv-win-process-stdio libuv-win-process libuv-win-signal
++   libuv-win-snprintf libuv-win-stream libuv-win-tcp libuv-win-thread
++   libuv-win-tty libuv-win-udp libuv-win-util libuv-win-winapi
++   libuv-win-winsock|}
+
+ let () = Jbuild_plugin.V1.send @@ {|
+
+@@ -40,9 +57,8 @@
+  (libraries ctypes luv_c_function_descriptions threads)
+  (foreign_stubs
+   (language c)
+-  (names c_generated_functions helpers)
++  (names c_generated_functions helpers|}^ libuv_sources ^{|)
+   |}^ include_dirs ^{|)
+- |}^ foreign_archives ^{|
+  (c_library_flags |}^ uv_library_flag ^{| (:include extra_libs.sexp)))
+
+ |}^ (if not install_h then "" else {|
+@@ -74,36 +90,20 @@
+
+
+
+-; The vendored libuv.
++; libuv's sources are the libuv-*.c files in this directory, which include
++; vendor/libuv/src's C behind the target's preprocessor test, so one set of
++; stubs builds on every target: no configure, make or libtool.
++
+ (rule
+- (targets libuv.a dlluv%{ext_dll})
+- (deps (source_tree vendor))
+- (action (progn
+-  (bash "cp -r vendor/configure/* vendor/libuv/")
+-  (chdir vendor/libuv (progn
+-   (bash
 -    "sh configure --host `ocamlc -config | awk '/^host:/ {print $NF}'` \
-+    "sh configure --host %{ocaml-config:target} \
-       'CC=%{cc}' CFLAGS=-DNDEBUG --silent --enable-silent-rules")
-    (ignore-outputs (bash
-     "$([ '%{os_type}' = Unix ] && echo %{make} || echo make) V=0 -j 4 \
-@@ -94,12 +94,13 @@
-   (ignore-outputs (bash
-    "cp vendor/libuv/libuv.so.1.0.0 dlluv.so || \
-     cp vendor/libuv/libuv.1.dylib dlluv.so || \
+-      'CC=%{cc}' CFLAGS=-DNDEBUG --silent --enable-silent-rules")
+-   (ignore-outputs (bash
+-    "$([ '%{os_type}' = Unix ] && echo %{make} || echo make) V=0 -j 4 \
+-      -o aclocal.m4 -o Makefile.in -o configure \
+-      -o configure.status -o Makefile libuv.la"))
+-   (ignore-outputs (bash
+-    "sh libtool --silent --no-warnings --mode install cp libuv.la `pwd`"))))
+-  (bash "cp vendor/libuv/libuv.a .")
+-  (ignore-outputs (bash
+-   "cp vendor/libuv/libuv.so.1.0.0 dlluv.so || \
+-    cp vendor/libuv/libuv.1.dylib dlluv.so || \
 -    cp vendor/bin/libuv-1.dll dlluv.dll")))))
-+    cp vendor/bin/libuv-1.dll dlluv.dll || \
-+    touch dlluv%{ext_dll}")))))
- 
++ (targets extra_libs.sexp)
++ (enabled_if (= %{ocaml-config:system} "mingw64"))
++ (action
++  (write-file %{targets} "(-ldbghelp -liphlpapi -lole32 -lpsapi -luserenv)\n")))
+
  (rule
   (targets extra_libs.sexp)
-  (action (ignore-outputs (bash "\
+- (action (ignore-outputs (bash "\
 -   if ocamlc -config | grep mingw; then \
-+   if echo %{ocaml-config:system} | grep mingw; then \
-      echo '(-ldbghelp -liphlpapi -lole32 -lpsapi -luserenv)' > extra_libs.sexp; \
-    else \
-      echo '()' > extra_libs.sexp; \
-diff -ru a/src/c/windows_version.h b/src/c/windows_version.h
---- a/src/c/windows_version.h	2026-11-08 05:03:12.040240334 +0530
-+++ b/src/c/windows_version.h	2026-11-08 05:03:12.054926451 +0530
+-     echo '(-ldbghelp -liphlpapi -lole32 -lpsapi -luserenv)' > extra_libs.sexp; \
+-   else \
+-     echo '()' > extra_libs.sexp; \
+-   fi"))))
++ (enabled_if (<> %{ocaml-config:system} "mingw64"))
++ (action (write-file %{targets} "()\n")))
+
+
+
+@@ -130,19 +130,27 @@
+ ;   https://github.com/avsm/ocaml-yaml/blob/master/types/stubgen/jbuild#L20
+ (rule
+  (targets generate_types_step_2.exe)
++ (enabled_if (= %{ocaml-config:ccomp_type} "msvc"))
++ (deps (:c generate_types_step_2.c) helpers.h shims.h)
++ (action
++  (run
++   %{cc}
++   %{c}
++   -I %{lib:ctypes:.}
++   -I %{ocaml_where}
++   |}^ i_option ^{| /Fe%{targets})))
++
++(rule
++ (targets generate_types_step_2.exe)
++ (enabled_if (<> %{ocaml-config:ccomp_type} "msvc"))
+  (deps (:c generate_types_step_2.c) helpers.h shims.h)
+- (action (bash "\
+-  if [ '%{ocaml-config:ccomp_type}' = 'msvc' ]; then \
+-    %{cc} %{c} \
+-    -I '%{lib:ctypes:.}' \
+-    -I '%{ocaml_where}' \
+-    |}^ i_option ^{| /Fe\"%{targets}\"; \
+-  else \
+-    %{cc} %{c} \
+-    -I '%{lib:ctypes:.}' \
+-    -I '%{ocaml_where}' \
+-    |}^ i_option ^{| -o %{targets}; \
+-  fi")))
++ (action
++  (run
++   %{cc}
++   %{c}
++   -I %{lib:ctypes:.}
++   -I %{ocaml_where}
++   |}^ i_option ^{| -o %{targets})))
+
+ (rule
+  (with-stdout-to luv_c_generated_types.ml
+diff -ruN a/src/c/libuv-darwin-bsd-ifaddrs.c b/src/c/libuv-darwin-bsd-ifaddrs.c
+--- a/src/c/libuv-darwin-bsd-ifaddrs.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-darwin-bsd-ifaddrs.c	2026-11-11 08:09:34.609195192 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__APPLE__)
++#include "vendor/libuv/src/unix/bsd-ifaddrs.c"
++#endif
+diff -ruN a/src/c/libuv-darwin-darwin-proctitle.c b/src/c/libuv-darwin-darwin-proctitle.c
+--- a/src/c/libuv-darwin-darwin-proctitle.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-darwin-darwin-proctitle.c	2026-11-11 08:09:34.608952153 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__APPLE__)
++#include "vendor/libuv/src/unix/darwin-proctitle.c"
++#endif
+diff -ruN a/src/c/libuv-darwin-darwin.c b/src/c/libuv-darwin-darwin.c
+--- a/src/c/libuv-darwin-darwin.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-darwin-darwin.c	2026-11-11 08:09:34.609023908 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__APPLE__)
++#include "vendor/libuv/src/unix/darwin.c"
++#endif
+diff -ruN a/src/c/libuv-darwin-fsevents.c b/src/c/libuv-darwin-fsevents.c
+--- a/src/c/libuv-darwin-fsevents.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-darwin-fsevents.c	2026-11-11 08:09:34.609085815 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__APPLE__)
++#include "vendor/libuv/src/unix/fsevents.c"
++#endif
+diff -ruN a/src/c/libuv-darwin-kqueue.c b/src/c/libuv-darwin-kqueue.c
+--- a/src/c/libuv-darwin-kqueue.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-darwin-kqueue.c	2026-11-11 08:09:34.609242652 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__APPLE__)
++#include "vendor/libuv/src/unix/kqueue.c"
++#endif
+diff -ruN a/src/c/libuv-darwin-random-getentropy.c b/src/c/libuv-darwin-random-getentropy.c
+--- a/src/c/libuv-darwin-random-getentropy.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-darwin-random-getentropy.c	2026-11-11 08:09:34.609145067 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__APPLE__)
++#include "vendor/libuv/src/unix/random-getentropy.c"
++#endif
+diff -ruN a/src/c/libuv-fs-poll.c b/src/c/libuv-fs-poll.c
+--- a/src/c/libuv-fs-poll.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-fs-poll.c	2026-11-11 08:09:34.606339104 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/fs-poll.c"
+diff -ruN a/src/c/libuv-idna.c b/src/c/libuv-idna.c
+--- a/src/c/libuv-idna.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-idna.c	2026-11-11 08:09:34.606430728 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/idna.c"
+diff -ruN a/src/c/libuv-inet.c b/src/c/libuv-inet.c
+--- a/src/c/libuv-inet.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-inet.c	2026-11-11 08:09:34.606513113 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/inet.c"
+diff -ruN a/src/c/libuv-linux-linux.c b/src/c/libuv-linux-linux.c
+--- a/src/c/libuv-linux-linux.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-linux-linux.c	2026-11-11 08:09:34.608668176 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__linux__)
++#include "vendor/libuv/src/unix/linux.c"
++#endif
+diff -ruN a/src/c/libuv-linux-procfs-exepath.c b/src/c/libuv-linux-procfs-exepath.c
+--- a/src/c/libuv-linux-procfs-exepath.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-linux-procfs-exepath.c	2026-11-11 08:09:34.608741695 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__linux__)
++#include "vendor/libuv/src/unix/procfs-exepath.c"
++#endif
+diff -ruN a/src/c/libuv-linux-random-getrandom.c b/src/c/libuv-linux-random-getrandom.c
+--- a/src/c/libuv-linux-random-getrandom.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-linux-random-getrandom.c	2026-11-11 08:09:34.608810054 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__linux__)
++#include "vendor/libuv/src/unix/random-getrandom.c"
++#endif
+diff -ruN a/src/c/libuv-linux-random-sysctl-linux.c b/src/c/libuv-linux-random-sysctl-linux.c
+--- a/src/c/libuv-linux-random-sysctl-linux.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-linux-random-sysctl-linux.c	2026-11-11 08:09:34.608880307 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(__linux__)
++#include "vendor/libuv/src/unix/random-sysctl-linux.c"
++#endif
+diff -ruN a/src/c/libuv-random.c b/src/c/libuv-random.c
+--- a/src/c/libuv-random.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-random.c	2026-11-11 08:09:34.606584709 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/random.c"
+diff -ruN a/src/c/libuv-strscpy.c b/src/c/libuv-strscpy.c
+--- a/src/c/libuv-strscpy.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-strscpy.c	2026-11-11 08:09:34.606662065 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/strscpy.c"
+diff -ruN a/src/c/libuv-strtok.c b/src/c/libuv-strtok.c
+--- a/src/c/libuv-strtok.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-strtok.c	2026-11-11 08:09:34.606729282 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/strtok.c"
+diff -ruN a/src/c/libuv-thread-common.c b/src/c/libuv-thread-common.c
+--- a/src/c/libuv-thread-common.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-thread-common.c	2026-11-11 08:09:34.606798753 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/thread-common.c"
+diff -ruN a/src/c/libuv-threadpool.c b/src/c/libuv-threadpool.c
+--- a/src/c/libuv-threadpool.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-threadpool.c	2026-11-11 08:09:34.606871390 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/threadpool.c"
+diff -ruN a/src/c/libuv-timer.c b/src/c/libuv-timer.c
+--- a/src/c/libuv-timer.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-timer.c	2026-11-11 08:09:34.606939659 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/timer.c"
+diff -ruN a/src/c/libuv-unix-async.c b/src/c/libuv-unix-async.c
+--- a/src/c/libuv-unix-async.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-async.c	2026-11-11 08:09:34.607224358 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/async.c"
++#endif
+diff -ruN a/src/c/libuv-unix-core.c b/src/c/libuv-unix-core.c
+--- a/src/c/libuv-unix-core.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-core.c	2026-11-11 08:09:34.607297396 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/core.c"
++#endif
+diff -ruN a/src/c/libuv-unix-dl.c b/src/c/libuv-unix-dl.c
+--- a/src/c/libuv-unix-dl.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-dl.c	2026-11-11 08:09:34.607366676 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/dl.c"
++#endif
+diff -ruN a/src/c/libuv-unix-fs.c b/src/c/libuv-unix-fs.c
+--- a/src/c/libuv-unix-fs.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-fs.c	2026-11-11 08:09:34.607437360 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/fs.c"
++#endif
+diff -ruN a/src/c/libuv-unix-getaddrinfo.c b/src/c/libuv-unix-getaddrinfo.c
+--- a/src/c/libuv-unix-getaddrinfo.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-getaddrinfo.c	2026-11-11 08:09:34.607506771 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/getaddrinfo.c"
++#endif
+diff -ruN a/src/c/libuv-unix-getnameinfo.c b/src/c/libuv-unix-getnameinfo.c
+--- a/src/c/libuv-unix-getnameinfo.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-getnameinfo.c	2026-11-11 08:09:34.607576273 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/getnameinfo.c"
++#endif
+diff -ruN a/src/c/libuv-unix-loop-watcher.c b/src/c/libuv-unix-loop-watcher.c
+--- a/src/c/libuv-unix-loop-watcher.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-loop-watcher.c	2026-11-11 08:09:34.607645714 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/loop-watcher.c"
++#endif
+diff -ruN a/src/c/libuv-unix-loop.c b/src/c/libuv-unix-loop.c
+--- a/src/c/libuv-unix-loop.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-loop.c	2026-11-11 08:09:34.607717890 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/loop.c"
++#endif
+diff -ruN a/src/c/libuv-unix-pipe.c b/src/c/libuv-unix-pipe.c
+--- a/src/c/libuv-unix-pipe.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-pipe.c	2026-11-11 08:09:34.607785368 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/pipe.c"
++#endif
+diff -ruN a/src/c/libuv-unix-poll.c b/src/c/libuv-unix-poll.c
+--- a/src/c/libuv-unix-poll.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-poll.c	2026-11-11 08:09:34.607886078 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/poll.c"
++#endif
+diff -ruN a/src/c/libuv-unix-process.c b/src/c/libuv-unix-process.c
+--- a/src/c/libuv-unix-process.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-process.c	2026-11-11 08:09:34.607985987 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/process.c"
++#endif
+diff -ruN a/src/c/libuv-unix-proctitle.c b/src/c/libuv-unix-proctitle.c
+--- a/src/c/libuv-unix-proctitle.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-proctitle.c	2026-11-11 08:09:34.608589497 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/proctitle.c"
++#endif
+diff -ruN a/src/c/libuv-unix-random-devurandom.c b/src/c/libuv-unix-random-devurandom.c
+--- a/src/c/libuv-unix-random-devurandom.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-random-devurandom.c	2026-11-11 08:09:34.608061249 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/random-devurandom.c"
++#endif
+diff -ruN a/src/c/libuv-unix-signal.c b/src/c/libuv-unix-signal.c
+--- a/src/c/libuv-unix-signal.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-signal.c	2026-11-11 08:09:34.608131392 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/signal.c"
++#endif
+diff -ruN a/src/c/libuv-unix-stream.c b/src/c/libuv-unix-stream.c
+--- a/src/c/libuv-unix-stream.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-stream.c	2026-11-11 08:09:34.608200653 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/stream.c"
++#endif
+diff -ruN a/src/c/libuv-unix-tcp.c b/src/c/libuv-unix-tcp.c
+--- a/src/c/libuv-unix-tcp.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-tcp.c	2026-11-11 08:09:34.608272899 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/tcp.c"
++#endif
+diff -ruN a/src/c/libuv-unix-thread.c b/src/c/libuv-unix-thread.c
+--- a/src/c/libuv-unix-thread.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-thread.c	2026-11-11 08:09:34.608342961 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/thread.c"
++#endif
+diff -ruN a/src/c/libuv-unix-tty.c b/src/c/libuv-unix-tty.c
+--- a/src/c/libuv-unix-tty.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-tty.c	2026-11-11 08:09:34.608447429 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/tty.c"
++#endif
+diff -ruN a/src/c/libuv-unix-udp.c b/src/c/libuv-unix-udp.c
+--- a/src/c/libuv-unix-udp.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-unix-udp.c	2026-11-11 08:09:34.608521429 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if !defined(_WIN32)
++#include "vendor/libuv/src/unix/udp.c"
++#endif
+diff -ruN a/src/c/libuv-uv-common.c b/src/c/libuv-uv-common.c
+--- a/src/c/libuv-uv-common.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-uv-common.c	2026-11-11 08:09:34.607011646 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/uv-common.c"
+diff -ruN a/src/c/libuv-uv-data-getter-setters.c b/src/c/libuv-uv-data-getter-setters.c
+--- a/src/c/libuv-uv-data-getter-setters.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-uv-data-getter-setters.c	2026-11-11 08:09:34.607081437 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/uv-data-getter-setters.c"
+diff -ruN a/src/c/libuv-version.c b/src/c/libuv-version.c
+--- a/src/c/libuv-version.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-version.c	2026-11-11 08:09:34.607153814 +0530
+@@ -0,0 +1,3 @@
++#include "plat.h"
++
++#include "vendor/libuv/src/version.c"
+diff -ruN a/src/c/libuv-win-async.c b/src/c/libuv-win-async.c
+--- a/src/c/libuv-win-async.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-async.c	2026-11-11 08:09:34.609297385 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/async.c"
++#endif
+diff -ruN a/src/c/libuv-win-core.c b/src/c/libuv-win-core.c
+--- a/src/c/libuv-win-core.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-core.c	2026-11-11 08:09:34.609357298 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/core.c"
++#endif
+diff -ruN a/src/c/libuv-win-detect-wakeup.c b/src/c/libuv-win-detect-wakeup.c
+--- a/src/c/libuv-win-detect-wakeup.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-detect-wakeup.c	2026-11-11 08:09:34.609423313 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/detect-wakeup.c"
++#endif
+diff -ruN a/src/c/libuv-win-dl.c b/src/c/libuv-win-dl.c
+--- a/src/c/libuv-win-dl.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-dl.c	2026-11-11 08:09:34.609490801 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/dl.c"
++#endif
+diff -ruN a/src/c/libuv-win-error.c b/src/c/libuv-win-error.c
+--- a/src/c/libuv-win-error.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-error.c	2026-11-11 08:09:34.609560943 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/error.c"
++#endif
+diff -ruN a/src/c/libuv-win-fs-event.c b/src/c/libuv-win-fs-event.c
+--- a/src/c/libuv-win-fs-event.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-fs-event.c	2026-11-11 08:09:34.609632829 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/fs-event.c"
++#endif
+diff -ruN a/src/c/libuv-win-fs.c b/src/c/libuv-win-fs.c
+--- a/src/c/libuv-win-fs.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-fs.c	2026-11-11 08:09:34.609697471 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/fs.c"
++#endif
+diff -ruN a/src/c/libuv-win-getaddrinfo.c b/src/c/libuv-win-getaddrinfo.c
+--- a/src/c/libuv-win-getaddrinfo.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-getaddrinfo.c	2026-11-11 08:09:34.609767824 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/getaddrinfo.c"
++#endif
+diff -ruN a/src/c/libuv-win-getnameinfo.c b/src/c/libuv-win-getnameinfo.c
+--- a/src/c/libuv-win-getnameinfo.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-getnameinfo.c	2026-11-11 08:09:34.609836584 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/getnameinfo.c"
++#endif
+diff -ruN a/src/c/libuv-win-handle.c b/src/c/libuv-win-handle.c
+--- a/src/c/libuv-win-handle.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-handle.c	2026-11-11 08:09:34.609904352 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/handle.c"
++#endif
+diff -ruN a/src/c/libuv-win-loop-watcher.c b/src/c/libuv-win-loop-watcher.c
+--- a/src/c/libuv-win-loop-watcher.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-loop-watcher.c	2026-11-11 08:09:34.609971048 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/loop-watcher.c"
++#endif
+diff -ruN a/src/c/libuv-win-pipe.c b/src/c/libuv-win-pipe.c
+--- a/src/c/libuv-win-pipe.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-pipe.c	2026-11-11 08:09:34.610044036 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/pipe.c"
++#endif
+diff -ruN a/src/c/libuv-win-poll.c b/src/c/libuv-win-poll.c
+--- a/src/c/libuv-win-poll.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-poll.c	2026-11-11 08:09:34.610111073 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/poll.c"
++#endif
+diff -ruN a/src/c/libuv-win-process-stdio.c b/src/c/libuv-win-process-stdio.c
+--- a/src/c/libuv-win-process-stdio.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-process-stdio.c	2026-11-11 08:09:34.610177468 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/process-stdio.c"
++#endif
+diff -ruN a/src/c/libuv-win-process.c b/src/c/libuv-win-process.c
+--- a/src/c/libuv-win-process.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-process.c	2026-11-11 08:09:34.610248132 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/process.c"
++#endif
+diff -ruN a/src/c/libuv-win-signal.c b/src/c/libuv-win-signal.c
+--- a/src/c/libuv-win-signal.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-signal.c	2026-11-11 08:09:34.610317242 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/signal.c"
++#endif
+diff -ruN a/src/c/libuv-win-snprintf.c b/src/c/libuv-win-snprintf.c
+--- a/src/c/libuv-win-snprintf.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-snprintf.c	2026-11-11 08:09:34.610386092 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/snprintf.c"
++#endif
+diff -ruN a/src/c/libuv-win-stream.c b/src/c/libuv-win-stream.c
+--- a/src/c/libuv-win-stream.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-stream.c	2026-11-11 08:09:34.610454712 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/stream.c"
++#endif
+diff -ruN a/src/c/libuv-win-tcp.c b/src/c/libuv-win-tcp.c
+--- a/src/c/libuv-win-tcp.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-tcp.c	2026-11-11 08:09:34.610524193 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/tcp.c"
++#endif
+diff -ruN a/src/c/libuv-win-thread.c b/src/c/libuv-win-thread.c
+--- a/src/c/libuv-win-thread.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-thread.c	2026-11-11 08:09:34.610591761 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/thread.c"
++#endif
+diff -ruN a/src/c/libuv-win-tty.c b/src/c/libuv-win-tty.c
+--- a/src/c/libuv-win-tty.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-tty.c	2026-11-11 08:09:34.610658577 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/tty.c"
++#endif
+diff -ruN a/src/c/libuv-win-udp.c b/src/c/libuv-win-udp.c
+--- a/src/c/libuv-win-udp.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-udp.c	2026-11-11 08:09:34.610731315 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/udp.c"
++#endif
+diff -ruN a/src/c/libuv-win-util.c b/src/c/libuv-win-util.c
+--- a/src/c/libuv-win-util.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-util.c	2026-11-11 08:09:34.610798993 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/util.c"
++#endif
+diff -ruN a/src/c/libuv-win-winapi.c b/src/c/libuv-win-winapi.c
+--- a/src/c/libuv-win-winapi.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-winapi.c	2026-11-11 08:09:34.610865378 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/winapi.c"
++#endif
+diff -ruN a/src/c/libuv-win-winsock.c b/src/c/libuv-win-winsock.c
+--- a/src/c/libuv-win-winsock.c	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/libuv-win-winsock.c	2026-11-11 08:09:34.610938386 +0530
+@@ -0,0 +1,5 @@
++#include "plat.h"
++
++#if defined(_WIN32)
++#include "vendor/libuv/src/win/winsock.c"
++#endif
+diff -ruN a/src/c/plat.h b/src/c/plat.h
+--- a/src/c/plat.h	1970-01-01 05:30:00.000000000 +0530
++++ b/src/c/plat.h	2026-11-11 08:09:34.611011955 +0530
+@@ -0,0 +1,31 @@
++/* What libuv's configure puts on the command line, without configure. Every
++   libuv-*.c includes this before its source, so these come before any system
++   header. NDEBUG is what luv's configure passed to libuv; the ctypes stubs
++   below are built without it, as before. */
++#ifndef LUV_LIBUV_PLATFORM_CONFIG_H
++#define LUV_LIBUV_PLATFORM_CONFIG_H
++
++#define NDEBUG 1
++
++#define _FILE_OFFSET_BITS 64
++#define _LARGEFILE_SOURCE 1
++
++#if defined(__linux__)
++#  define _GNU_SOURCE 1
++#  define _POSIX_C_SOURCE 200112
++#endif
++
++#if defined(__APPLE__)
++#  define _DARWIN_UNLIMITED_SELECT 1
++#  define _DARWIN_USE_64_BIT_INODE 1
++#endif
++
++#if defined(_WIN32)
++#  ifndef _WIN32_WINNT
++#    define _WIN32_WINNT 0x0602
++#  endif
++#  define WIN32_LEAN_AND_MEAN 1
++#  define _CRT_DECLARE_NONSTDC_NAMES 0
++#endif
++
++#endif
+diff -ruN a/src/c/windows_version.h b/src/c/windows_version.h
+--- a/src/c/windows_version.h	2024-09-05 21:05:01.000000000 +0530
++++ b/src/c/windows_version.h	2026-11-11 08:09:34.616349281 +0530
 @@ -9,7 +9,7 @@
  #define LUV_WINDOWS_VERSION_H_
- 
+
  #ifdef _WIN32
 -#include <WinSDKVer.h>
 +#include <winsdkver.h>
