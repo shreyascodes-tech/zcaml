@@ -1,0 +1,30 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:19:20.713116916 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name astring)
++(version 0.8.5)
++(package (name astring))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:15:20.222337286 +0530
+@@ -0,0 +1,18 @@
++(library
++ (name astring)
++ (public_name astring)
++ (modules astring_unsafe astring_base astring_escape astring_char astring_sub
++   astring_string astring)
++ (flags :standard -w -27)
++ (wrapped false))
++
++(library
++ (name astring_top)
++ (public_name astring.top)
++ (libraries compiler-libs.toplevel astring)
++ (modules astring_top)
++ (wrapped false))
++
++(install
++ (section lib)
++ (files astring_top_init.ml))

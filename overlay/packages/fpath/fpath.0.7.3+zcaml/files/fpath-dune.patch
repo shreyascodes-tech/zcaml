@@ -1,0 +1,30 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:19:20.715331979 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name fpath)
++(version 0.7.3)
++(package (name fpath))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:16:03.956292985 +0530
+@@ -0,0 +1,18 @@
++(library
++ (name fpath)
++ (public_name fpath)
++ (libraries astring)
++ (modules fpath)
++ (flags :standard -w -6-27-32-33-39)
++ (wrapped false))
++
++(library
++ (name fpath_top)
++ (public_name fpath.top)
++ (libraries compiler-libs.toplevel astring.top fpath)
++ (modules fpath_top)
++ (wrapped false))
++
++(install
++ (section lib)
++ (files fpath_top_init.ml))

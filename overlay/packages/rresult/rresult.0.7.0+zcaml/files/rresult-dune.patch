@@ -1,0 +1,28 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:19:20.710720951 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name rresult)
++(version 0.7.0)
++(package (name rresult))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:13:24.954734610 +0530
+@@ -0,0 +1,16 @@
++(library
++ (name rresult)
++ (public_name rresult)
++ (modules rresult)
++ (wrapped false))
++
++(library
++ (name rresult_top)
++ (public_name rresult.top)
++ (libraries compiler-libs.toplevel rresult)
++ (modules rresult_top)
++ (wrapped false))
++
++(install
++ (section lib)
++ (files rresult_top_init.ml))

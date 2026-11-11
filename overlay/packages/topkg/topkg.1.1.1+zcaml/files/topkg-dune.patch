@@ -1,0 +1,21 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:30:55.510157008 +0530
+@@ -0,0 +1,5 @@
++(lang dune 3.0)
++(name topkg)
++(version 1.1.1)
++(package (name topkg))
++(package (name topkg-care) (allow_empty))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:30:16.240782468 +0530
+@@ -0,0 +1,8 @@
++(library
++ (name topkg)
++ (public_name topkg)
++ (modules topkg topkg_build topkg_cmd topkg_codec topkg_conf topkg_distrib
++   topkg_fexts topkg_fpath topkg_install topkg_ipc topkg_log topkg_main
++   topkg_opam topkg_os topkg_pkg topkg_publish topkg_result topkg_string
++   topkg_test topkg_vcs)
++ (wrapped false))
