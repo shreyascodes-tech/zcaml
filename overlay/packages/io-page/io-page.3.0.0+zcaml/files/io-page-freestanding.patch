@@ -1,0 +1,99 @@
+--- a/dune-project
++++ b/dune-project
+@@ -1,4 +1,4 @@
+-(lang dune 2.6)
++(lang dune 3.14)
+ (name io-page)
+ (version v3.0.0)
+ (formatting disabled)
+--- /dev/null
++++ b/freestanding/config/discover.ml
+@@ -0,0 +1,37 @@
++(* The freestanding stubs are copied from the normal library, but must be
++   compiled with ocaml-freestanding's headers. Its pkg-config Cflags include the
++   freestanding caml/ and the -include override that redirects libc; the
++   freestanding value of OCaml's c_compiler supplies the matching compiler.
++   With no ocaml-freestanding package, dune installs an empty archive, as the
++   upstream Makefile did, instead of host-compiled stubs. *)
++let () =
++  let open Configurator.V1 in
++  main ~name:"io-page-freestanding" (fun c ->
++    (* Upstream's `PKG_CONFIG_PATH ?=` only defaults when it is unset; an
++       explicitly empty value must stay empty. *)
++    (match (Sys.getenv_opt "PKG_CONFIG_PATH", Sys.getenv_opt "OPAM_SWITCH_PREFIX") with
++     | None, Some prefix -> Unix.putenv "PKG_CONFIG_PATH" (prefix ^ "/lib/pkgconfig")
++     | _ -> ());
++    (* Upstream ran pkg-config literally; don't prefer pkgconf over zcaml's. *)
++    (match Sys.getenv_opt "PKG_CONFIG" with
++     | Some _ -> ()
++     | None -> Unix.putenv "PKG_CONFIG" "pkg-config");
++    let conf =
++      match Pkg_config.get c with
++      | None -> None
++      | Some pc -> Pkg_config.query pc ~package:"ocaml-freestanding"
++    in
++    let enabled = match conf with None -> false | Some _ -> true in
++    let cflags =
++      match conf with
++      | None -> []
++      | Some { Pkg_config.cflags; _ } -> cflags
++    in
++    let write name contents =
++      let oc = open_out name in
++      output_string oc contents;
++      close_out oc
++    in
++    write "enabled" (if enabled then "true" else "false");
++    write "disabled" (if enabled then "false" else "true");
++    Flags.write_sexp "c_flags.sexp" cflags)
+--- /dev/null
++++ b/freestanding/config/dune
+@@ -0,0 +1,8 @@
++(executable
++ (name discover)
++ (libraries dune-configurator unix))
++
++(rule
++ (targets enabled disabled c_flags.sexp)
++ (action
++  (run ./discover.exe)))
+--- a/freestanding/dune
++++ b/freestanding/dune
+@@ -1,12 +1,21 @@
+ (copy_files# ../lib/*.c)
+ 
++(foreign_library
++ (archive_name iopage_freestanding_stubs)
++ (language c)
++ (names stub_alloc_pages stub_get_addr)
++ (enabled_if %{read:config/enabled})
++ (flags
++  :standard
++  (:include config/c_flags.sexp)))
++
+ (rule
+- (deps Makefile stub_alloc_pages.c stub_get_addr.c)
+  (targets libiopage_freestanding_stubs.a)
++ (enabled_if %{read:config/disabled})
+  (action
+-  (no-infer
+-   (progn
+-    (run %{make})))))
++  (with-stdout-to
++   %{targets}
++   (echo "!<arch>\n"))))
+ 
+ (install
+  (package io-page)
+--- a/io-page.opam
++++ b/io-page.opam
+@@ -10,7 +10,8 @@
+ depends: [
+   "conf-pkg-config" {build}
+   "ocaml" {>= "4.08.0"}
+-  "dune" {>= "2.6"}
++  "dune" {>= "3.14"}
++  "dune-configurator" {build}
+   "cstruct" {>= "2.0.0"}
+   "ounit" {with-test}
+ ]
