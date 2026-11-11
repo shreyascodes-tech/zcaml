@@ -1,0 +1,23 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:24:56.650529531 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name uunf)
++(version 18.0.0)
++(package (name uunf))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:25:36.693477110 +0530
+@@ -0,0 +1,11 @@
++(library
++ (name uunf)
++ (public_name uunf)
++ (modules uunf_fmt uunf_tmap uunf_tmapbool uunf_tmapbyte uunf_data uunf
++   uunf_string)
++ (flags :standard -w -32)
++ (wrapped false))
++
++(deprecated_library_name
++ (old_public_name uunf.string)
++ (new_public_name uunf))

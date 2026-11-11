@@ -1,0 +1,28 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:25:47.854297029 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name gg)
++(version 1.0.0)
++(package (name gg))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:25:47.859526109 +0530
+@@ -0,0 +1,16 @@
++(library
++ (name gg)
++ (public_name gg)
++ (modules gg)
++ (wrapped false))
++
++(library
++ (name gg_top)
++ (public_name gg.top)
++ (libraries compiler-libs.toplevel gg)
++ (modules gg_top)
++ (wrapped false))
++
++(install
++ (section lib)
++ (files gg_top_init.ml))

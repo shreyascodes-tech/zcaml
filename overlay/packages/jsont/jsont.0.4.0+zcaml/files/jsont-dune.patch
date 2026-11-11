@@ -1,0 +1,50 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:29:31.288161941 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name jsont)
++(version 0.4.0)
++(package (name jsont))
+diff -ruN -x _build -x '*.install' a/src/brr/dune b/src/brr/dune
+--- a/src/brr/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/brr/dune	2026-11-10 11:29:31.291381381 +0530
+@@ -0,0 +1,7 @@
++(library
++ (name jsont_brr)
++ (public_name jsont.brr)
++ (optional)
++ (modules jsont_brr)
++ (libraries jsont brr)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/bytesrw/dune b/src/bytesrw/dune
+--- a/src/bytesrw/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/bytesrw/dune	2026-11-10 11:29:31.290422730 +0530
+@@ -0,0 +1,7 @@
++(library
++ (name jsont_bytesrw)
++ (public_name jsont.bytesrw)
++ (optional)
++ (modules jsont_bytesrw)
++ (libraries jsont bytesrw)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:29:31.289364322 +0530
+@@ -0,0 +1,5 @@
++(library
++ (name jsont)
++ (public_name jsont)
++ (modules jsont_base jsont)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/typegist/dune b/src/typegist/dune
+--- a/src/typegist/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/typegist/dune	2026-11-10 11:29:31.292346002 +0530
+@@ -0,0 +1,7 @@
++(library
++ (name jsont_typegist)
++ (public_name jsont.typegist)
++ (optional)
++ (modules jsont_typegist)
++ (libraries jsont typegist)
++ (wrapped false))

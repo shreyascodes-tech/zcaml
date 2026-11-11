@@ -1,0 +1,24 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:25:58.091050544 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name uuseg)
++(version 18.0.0)
++(package (name uuseg))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:25:58.094324405 +0530
+@@ -0,0 +1,12 @@
++(library
++ (name uuseg)
++ (public_name uuseg)
++ (modules uuseg_base uuseg_buf uuseg_grapheme_cluster uuseg_word uuseg_sentence
++   uuseg_line_break uuseg uuseg_string)
++ (libraries uucp)
++ (flags :standard -w -50-39-37-32-27)
++ (wrapped false))
++
++(deprecated_library_name
++ (old_public_name uuseg.string)
++ (new_public_name uuseg))
