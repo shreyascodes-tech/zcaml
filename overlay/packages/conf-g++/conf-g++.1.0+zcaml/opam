@@ -1,0 +1,13 @@
+opam-version: "2.0"
+synopsis: "Virtual package for the g++ compiler, which zcaml provides as zig c++"
+description: """
+zcaml compiles C++ with `zig c++`, so no separate system g++ is needed.
+Unlike conf-g++, which runs the build machine's `g++`, this package is an
+empty check: it succeeds because the toolchain already has one."""
+maintainer: "unixjunkie@sdf.org"
+authors: "Francois Berenger"
+homepage: "https://github.com/ocaml/opam-repository"
+bug-reports: "https://github.com/ocaml/opam-repository/issues"
+license: "GPL-2.0-or-later"
+build: []
+flags: conf

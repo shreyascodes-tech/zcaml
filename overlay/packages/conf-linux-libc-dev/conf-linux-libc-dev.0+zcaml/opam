@@ -1,0 +1,15 @@
+opam-version: "2.0"
+synopsis: "Virtual package for the Linux kernel headers, which zig ships"
+description: """
+Zig ships the Linux UAPI headers (`linux/stddef.h`, `linux/fs.h`,
+`linux/seccomp.h`, ...), so the build machine does not need a system
+linux-libc-dev. Unlike conf-linux-libc-dev, which preprocesses a test with
+the system's `cc`, this package is an empty check."""
+maintainer: "Markus W. Weissmann <markus.weissmann@in.tum.de>"
+authors: ["Markus W. Weissmann <markus.weissmann@in.tum.de>"]
+homepage: "https://kernel.org/"
+bug-reports: "https://github.com/ocaml/opam-repository/issues"
+license: ["GPL-2.0-only"]
+available: [os = "linux"]
+build: []
+flags: conf
