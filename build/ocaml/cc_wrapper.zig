@@ -34,8 +34,9 @@
 //! `CreateProcessW` on Windows, and nothing of `std.Io`, panics or stack traces.
 //!
 //! With `binutils`, the same program is a multicall wrapper for `zig`'s plain tools:
-//! `ar`, `ranlib`, ... It takes the tool from its own name (`ar`, `zcaml-ar-<target>`)
-//! and runs `zig <tool>` with no target flags or SDK. Installed for the host only.
+//! `ar`, `ranlib`, `objcopy`, `dlltool`, `lib`, and `rc`. It takes the tool from its
+//! own name (`ar`, `zcaml-ar-<target>`) and runs `zig <tool>` with no target flags or
+//! SDK. Installed for the host only.
 const std = @import("std");
 const builtin = @import("builtin");
 /// `args`: the target's `zig cc` flags. `macos_sdk`, `windows`: whether the target

@@ -1,0 +1,223 @@
+diff --git a/main_posix.c b/main_posix.c
+index d98ebfd..be1904d 100644
+--- a/main_posix.c
++++ b/main_posix.c
+@@ -148,6 +148,70 @@ static s8 s8getenv_(char *k)
+     return s8fromcstr((u8 *)getenv(k));
+ }
+ 
++// The search path implied by OCAMLPATH, ':'-joined: each entry itself, then
++// <entry>/<name> for every name under it, all with a pkgconfig suffix. dune pkg
++// sets OCAMLPATH to its dependencies' lib directories, and each dependency
++// installs pkg-config files as <lib>/<package>/pkgconfig/<name>.pc.
++static s8 ocamlpath_libdir_(arena *perm, s8 ocamlpath)
++{
++    // Reserve a scratch region at the top for null-terminated entry paths,
++    // leaving the rest of the arena to grow the output at the bottom. Both
++    // are arena-backed: running out is reported as out of memory, never a
++    // silently truncated search path.
++    iz scratchcap = ocamlpath.len + 8;
++    byte *scratchbeg = new(perm, byte, scratchcap);
++    arena scratch = *perm;
++    scratch.beg = scratchbeg;
++    scratch.end = scratchbeg + scratchcap;
++
++    u8buf out = newmembuf(perm);
++    b32 first = 1;
++
++    s8 path = ocamlpath;
++    while (path.len) {
++        cut c = s8cut(path, ':');
++        s8 entry = c.head;
++        path = c.tail;
++        if (!entry.len) {
++            continue;
++        }
++
++        if (!first) {
++            printu8(&out, ':');
++        }
++        first = 0;
++        prints8(&out, entry);
++        prints8(&out, S("/pkgconfig"));
++
++        scratch.beg = scratchbeg;
++        u8buf z = newmembuf(&scratch);
++        prints8(&z, entry);
++        printu8(&z, 0);
++        s8 entryz = finalize(&z);
++
++        DIR *d = opendir((char *)entryz.s);
++        if (!d) {
++            continue;
++        }
++        for (struct dirent *e; (e = readdir(d));) {
++            s8 name = s8fromcstr((u8 *)e->d_name);
++            if (s8equals(name, S(".")) || s8equals(name, S(".."))) {
++                continue;
++            }
++            if (!first) {
++                printu8(&out, ':');
++            }
++            first = 0;
++            prints8(&out, entry);
++            prints8(&out, S("/"));
++            prints8(&out, name);
++            prints8(&out, S("/pkgconfig"));
++        }
++        closedir(d);
++    }
++    return finalize(&out);
++}
++
+ int main(int argc, char **argv)
+ {
+     config *conf = newconfig_();
+@@ -166,7 +230,12 @@ int main(int argc, char **argv)
+     conf->envpath = s8getenv_("PKG_CONFIG_PATH");
+     conf->fixedpath = s8getenv_("PKG_CONFIG_LIBDIR");
+     if (!conf->fixedpath.s) {
+-        conf->fixedpath = S(pkg_config_path);
++        // OCAMLPATH replaces the compile-time path: searching /usr/lib/pkgconfig
++        // would let a cross build pick up the host's packages.
++        s8 ocamlpath = s8getenv_("OCAMLPATH");
++        conf->fixedpath = ocamlpath.s
++            ? ocamlpath_libdir_(&conf->perm, ocamlpath)
++            : S(pkg_config_path);
+     }
+     conf->sys_incpath = s8getenv_("PKG_CONFIG_SYSTEM_INCLUDE_PATH");
+     if (!conf->sys_incpath.s) {
+diff --git a/main_windows.c b/main_windows.c
+index b45ef74..5301807 100644
+--- a/main_windows.c
++++ b/main_windows.c
+@@ -9,6 +9,12 @@
+ #  define PKG_CONFIG_PREFIX
+ #endif
+ 
++// dune installs pkg-config files as <lib>/<package>/pkgconfig/<name>.pc, one
++// level deeper than --define-prefix assumes, so it must be off by default here.
++#ifndef PKG_CONFIG_DEFINE_PREFIX
++#  define PKG_CONFIG_DEFINE_PREFIX 1
++#endif
++
+ // For communication with os_write()
+ struct os {
+     struct {
+@@ -302,6 +308,80 @@ static s8 makepath_(arena *perm, s8 base, s8 lib, s8 share)
+     return s;
+ }
+ 
++// The search path implied by OCAMLPATH, ';'-joined: each entry itself, then
++// <entry>/<name> for every directory under it, all with a pkgconfig suffix.
++// dune pkg sets OCAMLPATH to its dependencies' lib directories, and each
++// dependency installs pkg-config files as <lib>/<package>/pkgconfig/<name>.pc.
++static s8 ocamlpath_libdir_(arena *perm, s8 ocamlpath)
++{
++    // Reserve a scratch region at the top for one entry's UTF-16 conversions,
++    // leaving the rest of the arena to grow the output at the bottom. Both
++    // are arena-backed: running out is reported as out of memory, never a
++    // silently truncated search path.
++    iz scratchcap = 4*ocamlpath.len + 4096;
++    byte *scratchbeg = new(perm, byte, scratchcap);
++    arena scratch = *perm;
++    scratch.beg = scratchbeg;
++    scratch.end = scratchbeg + scratchcap;
++
++    u8buf out = newmembuf(perm);
++    b32 first = 1;
++
++    s8 path = ocamlpath;
++    while (path.len) {
++        cut c = s8cut(path, ';');
++        s8 entry = c.head;
++        path = c.tail;
++        if (!entry.len) {
++            continue;
++        }
++
++        if (!first) {
++            printu8(&out, ';');
++        }
++        first = 0;
++        prints8(&out, entry);
++        prints8(&out, S("/pkgconfig"));
++
++        scratch.beg = scratchbeg;
++        scratch.end = scratchbeg + scratchcap;
++        u8buf g = newmembuf(&scratch);
++        prints8(&g, entry);
++        prints8(&g, S("/*\0"));
++        s8 glob = finalize(&g);
++        s16 wide = towide_(&scratch, glob);
++
++        finddata fd = {0};
++        iptr h = FindFirstFileW(wide.s, &fd);
++        if (h == -1) {
++            continue;
++        }
++        do {
++            if (!(fd.attr & FILE_ATTRIBUTE_DIRECTORY)) {
++                continue;
++            }
++            s16 name = {0};
++            name.s = fd.name;
++            for (; name.s[name.len]; name.len++) {}
++            byte *saveend = scratch.end;
++            s8 n = fromwide_(&scratch, name);
++            if (!s8equals(n, S(".")) && !s8equals(n, S(".."))) {
++                if (!first) {
++                    printu8(&out, ';');
++                }
++                first = 0;
++                prints8(&out, entry);
++                prints8(&out, S("/"));
++                prints8(&out, n);
++                prints8(&out, S("/pkgconfig"));
++            }
++            scratch.end = saveend;
++        } while (FindNextFileW(h, &fd));
++        FindClose(h);
++    }
++    return finalize(&out);
++}
++
+ static config *newconfig_(os *ctx)
+ {
+     arena perm = newarena_(1<<22);
+@@ -324,7 +404,7 @@ void mainCRTStartup(void)
+ 
+     config *conf = newconfig_(ctx);
+     conf->delim = ';';
+-    conf->define_prefix = 1;
++    conf->define_prefix = PKG_CONFIG_DEFINE_PREFIX;
+     arena *perm = &conf->perm;
+ 
+     u8 **argv = new(perm, u8 *, CMDLINE_ARGV_MAX);
+@@ -341,7 +421,12 @@ void mainCRTStartup(void)
+     conf->envpath = fromenv_(perm, L"PKG_CONFIG_PATH");
+     conf->fixedpath = fromenv_(perm, L"PKG_CONFIG_LIBDIR");
+     if (!conf->fixedpath.s) {
+-        conf->fixedpath = conf->pc_path;
++        // OCAMLPATH replaces the compile-time path: searching the host's
++        // pkgconfig would let a cross build pick up its packages.
++        s8 ocamlpath = fromenv_(perm, L"OCAMLPATH");
++        conf->fixedpath = ocamlpath.s
++            ? ocamlpath_libdir_(perm, ocamlpath)
++            : conf->pc_path;
+     }
+     conf->top_builddir = fromenv_(perm, L"PKG_CONFIG_TOP_BUILD_DIR");
+     conf->sys_incpath  = conf->pc_sysincpath;
+diff --git a/src/miniwin32.h b/src/miniwin32.h
+index 66db467..7b52503 100644
+--- a/src/miniwin32.h
++++ b/src/miniwin32.h
+@@ -7,6 +7,8 @@ typedef unsigned short  char16_t;
+ typedef char16_t        c16;
+ 
+ enum {
++    FILE_ATTRIBUTE_DIRECTORY = 0x10,
++
+     FILE_ATTRIBUTE_NORMAL = 0x80,
+ 
+     FILE_SHARE_ALL = 7,

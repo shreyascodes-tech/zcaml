@@ -145,7 +145,8 @@ need an SDK when using Apple frameworks; the planned CLI will handle SDK setup.
 ## How it works
 
 zcaml builds upstream OCaml with Zig and provides target-specific wrappers around
-`zig cc` and `zig c++`, plus `ar` and `ranlib` that run `zig ar` and `zig ranlib`.
+`zig cc` and `zig c++`, plus `ar`, `ranlib`, `objcopy`, `dlltool`, `lib`, and `rc`
+that run the corresponding Zig tools.
 
 Its Dune integration cross-compiles package dependencies while keeping build-time
 tools, such as PPX rewriters, runnable on the development machine. The overlay

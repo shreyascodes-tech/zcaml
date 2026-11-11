@@ -1,5 +1,6 @@
 const std = @import("std");
 const Ocaml = @import("build/ocaml/ocaml.zig");
+const Platform = @import("build/ocaml/platform.zig");
 const Tools = @import("build/ocaml/tools.zig");
 const Dune = @import("build/dune/dune.zig");
 
@@ -7,6 +8,7 @@ pub fn build(b: *std.Build) !void {
     const check_step = b.step("check", "compile the build's Zig programs, without installing them (for ZLS)");
     Ocaml.addCheck(b, check_step);
     Dune.addCheck(b, check_step);
+    check_step.dependOn(&buildPkgConfig(b, .init(b, Ocaml.resolveTarget(b, "native"))).step);
 
     const gen_step = b.step("generate", "generate OCaml version manifests from upstream Makefiles");
     const update_src = b.addUpdateSourceFiles();
@@ -104,6 +106,8 @@ pub fn build(b: *std.Build) !void {
 
             const toolchain = ocaml.build(host, target);
             toolchain.addInstall(b.getInstallStep(), sub_path);
+            addBinutilsInstall(b, b.getInstallStep(), toolchain, sub_path);
+            addPkgConfigInstall(b, b.getInstallStep(), toolchain, sub_path);
 
             const targets: []const []const u8 = dune_targets orelse if (target_opt) |t| &.{t} else &.{};
             const macos_sdk = duneMacosSdk(b, targets) catch return;
@@ -115,7 +119,10 @@ pub fn build(b: *std.Build) !void {
                 const host = Ocaml.resolveTarget(b, pair.host);
                 const target = Ocaml.resolveTarget(b, pair.target);
                 const tc = ocaml.build(host, target);
-                tc.addInstall(matrix_step, defaultSubPath(b, version, host, target));
+                const sub_path = defaultSubPath(b, version, host, target);
+                tc.addInstall(matrix_step, sub_path);
+                addBinutilsInstall(b, matrix_step, tc, sub_path);
+                addPkgConfigInstall(b, matrix_step, tc, sub_path);
             }
         }
         return;
@@ -169,6 +176,72 @@ fn installDune(b: *std.Build, step: *std.Build.Step, dune: Dune, native_tc: std.
     const exe = dune.bootstrap(native_tc, tc, target);
     const dest = b.fmt("dune/{s}/bin/dune{s}", .{ name, if (target.result.os.tag == .windows) ".exe" else "" });
     step.dependOn(&b.addInstallFileWithDir(exe, .prefix, dest).step);
+}
+
+/// The rest of `cc_wrapper.zig`'s `binutils` multicall; `Toolchain.layout` installs
+/// `ar` and `ranlib` itself. All of them run on the host and take no target flags.
+/// `strip` and `objdump` are left out until Zig 0.17 can implement them: its
+/// `objcopy` has no ELF->ELF mode and its `objdump` is still a stub, so installing
+/// them would shadow working host tools with broken ones.
+const binutils_tools = [_][]const u8{ "objcopy", "dlltool", "lib", "rc" };
+
+/// Install the host's binutils wrapper as the plain tool names and as
+/// `zcaml-<tool>-<target>`, beside `ar` and `ranlib`.
+fn addBinutilsInstall(b: *std.Build, step: *std.Build.Step, tc: Ocaml.Toolchain, sub_path: []const u8) void {
+    const exe = tc.binutils.getEmittedBin();
+    const host_exe = tc.host_rt.platform.exeExt();
+    const target = tc.target_rt.platform.triplet;
+    for (binutils_tools) |tool| {
+        step.dependOn(&b.addInstallFileWithDir(exe, .prefix, b.fmt("{s}/bin/{s}{s}", .{ sub_path, tool, host_exe })).step);
+        step.dependOn(&b.addInstallFileWithDir(exe, .prefix, b.fmt("{s}/bin/zcaml-{s}-{s}{s}", .{ sub_path, tool, target, host_exe })).step);
+    }
+}
+
+var pkg_configs: std.StringHashMapUnmanaged(*std.Build.Step.Compile) = .empty;
+
+/// The patched u-config (`vendor/u-config`) for `host` to run. Its OCAMLPATH
+/// change searches `<entry>/<name>/pkgconfig` when `PKG_CONFIG_LIBDIR` is unset,
+/// which is where dune pkg's dependencies install their `.pc` files.
+fn buildPkgConfig(b: *std.Build, host: Platform) *std.Build.Step.Compile {
+    if (pkg_configs.get(host.triplet)) |exe| return exe;
+    const windows = host.is_windows;
+    const mod = b.createModule(.{
+        .target = host.resolved,
+        .optimize = .ReleaseSmall,
+        .link_libc = !windows,
+        .strip = true,
+        // As upstream's mingw recipe: no unwind tables in the no-CRT image.
+        .unwind_tables = if (windows) .none else null,
+    });
+    mod.addCSourceFile(.{
+        .file = b.path(if (windows) "vendor/u-config/main_windows.c" else "vendor/u-config/main_posix.c"),
+        .flags = if (windows) &.{
+            // dune's `<lib>/<package>/pkgconfig` is one level deeper than
+            // --define-prefix assumes.
+            "-DPKG_CONFIG_DEFINE_PREFIX=0",
+            "-fno-builtin",
+        } else &.{},
+    });
+    const exe = b.addExecutable(.{ .name = "pkg-config", .root_module = mod });
+    if (windows) {
+        // No CRT: upstream's entry point, kernel32 only, and compiler-rt's
+        // memset/memcpy plus the vendored wcslen. Zig-only, no system mingw.
+        mod.addCSourceFile(.{ .file = b.path("vendor/u-config/win32_shim.c"), .flags = &.{} });
+        mod.linkSystemLibrary("kernel32", .{});
+        exe.entry = .{ .symbol_name = "mainCRTStartup" };
+        exe.link_gc_sections = true;
+    }
+    pkg_configs.put(b.allocator, host.triplet, exe) catch @panic("OOM");
+    return exe;
+}
+
+/// Install the host's `pkg-config` and `pkg-config-zcaml`, beside `ar` and
+/// `ranlib`. A copy of one binary, as for the binutils wrappers.
+fn addPkgConfigInstall(b: *std.Build, step: *std.Build.Step, tc: Ocaml.Toolchain, sub_path: []const u8) void {
+    const exe = buildPkgConfig(b, tc.host_rt.platform).getEmittedBin();
+    const host_exe = tc.host_rt.platform.exeExt();
+    step.dependOn(&b.addInstallFileWithDir(exe, .prefix, b.fmt("{s}/bin/pkg-config{s}", .{ sub_path, host_exe })).step);
+    step.dependOn(&b.addInstallFileWithDir(exe, .prefix, b.fmt("{s}/bin/pkg-config-zcaml{s}", .{ sub_path, host_exe })).step);
 }
 
 /// `zstd` is configured per target, so the OCaml build gets it as a function.
