@@ -35,7 +35,7 @@ permissions:
 env:
   ZIG_VERSION: "0.17.0"
   # What scripts/cross-env.sh's lock directory is for: OCaml 5.5.1.
-  OCAML_TAG: "ocaml-v5.5.1-12"
+  OCAML_TAG: "ocaml-v5.5.1-13"
   OCAML_VERSION: "5.5.1"
   DUNE_TAG: "dune-v3.24.2-zcaml.4"
   NATIVE: x86_64-linux-gnu

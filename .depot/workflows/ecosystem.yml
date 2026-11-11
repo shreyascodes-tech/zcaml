@@ -28,7 +28,7 @@ on:
         description: "OCaml release (ocaml-v*) to build with"
         required: false
         type: string
-        default: "ocaml-v5.5.1-12"
+        default: "ocaml-v5.5.1-13"
       dune_tag:
         description: "dune release (dune-v*) to build with; default: this checkout's"
         required: false
@@ -53,7 +53,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     env:
-      OCAML_TAG: ${{ inputs.ocaml_tag || 'ocaml-v5.5.1-12' }}
+      OCAML_TAG: ${{ inputs.ocaml_tag || 'ocaml-v5.5.1-13' }}
       DUNE_TAG: ${{ inputs.dune_tag }}
       TARGETS: ${{ inputs.targets || 'aarch64-linux-gnu x86_64-windows-gnu' }}
       PACKAGES: ${{ inputs.packages }}
