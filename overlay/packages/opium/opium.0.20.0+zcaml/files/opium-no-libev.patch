@@ -1,0 +1,11 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	2020-12-10 00:56:14.000000000 +0530
++++ b/dune-project	2026-11-10 11:18:45.426121785 +0530
+@@ -47,7 +47,6 @@
+   (lwt
+    (>= 5.3.0))
+   httpaf-lwt-unix
+-  conf-libev
+   logs
+   fmt
+   mtime

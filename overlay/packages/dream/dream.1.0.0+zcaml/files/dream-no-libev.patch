@@ -1,0 +1,11 @@
+diff -ruN a/dream.opam b/dream.opam
+--- a/dream.opam	2026-10-07 14:36:01.000000000 +0530
++++ b/dream.opam	2026-11-10 11:18:45.425650906 +0530
+@@ -53,7 +53,6 @@
+   "camlp-streams"
+   "caqti" {>= "3.0.0"}
+   "caqti-lwt" {>= "3.0.0"}
+-  ("conf-libev" {os != "win32"} | "ocaml" {os = "win32"})
+   "cstruct" {>= "6.0.0"}
+   "digestif" {>= "0.7"}  # to_raw_string.
+   "dream-httpaf" {= version}

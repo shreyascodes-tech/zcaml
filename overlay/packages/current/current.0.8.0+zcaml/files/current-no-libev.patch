@@ -1,0 +1,11 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	2026-09-28 19:23:53.000000000 +0530
++++ b/dune-project	2026-11-10 11:18:45.425785610 +0530
+@@ -56,7 +56,6 @@
+   (astring (>= 0.8.5))
+   bos
+   (cmdliner (>= 1.1.0))
+-  (conf-libev (<> :os win32))
+   (current_incr (>= 0.6.1))
+   duration
+   (fmt (>= 0.8.9))
