@@ -1,0 +1,86 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-11 12:09:52.269273492 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name brr)
++(version 0.0.9)
++(package (name brr))
+diff -ruN -x _build -x '*.install' a/src/console/dune b/src/console/dune
+--- a/src/console/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/console/dune	2026-11-11 12:10:05.309243628 +0530
+@@ -0,0 +1,20 @@
++(executable
++ (name ocaml_console)
++ (modules ocaml_console)
++ (libraries brr brr.ocaml_poke brr.ocaml_poke_ui)
++ (modes js)
++ (js_of_ocaml
++  (flags
++   (:standard --pretty --source-map-inline))))
++
++(install
++ (section share)
++ (files
++  (devtools.html as console/devtools.html)
++  (devtools.js as console/devtools.js)
++  (highlight.pack.js as console/highlight.pack.js)
++  (manifest.json as console/manifest.json)
++  (ocaml.png as console/ocaml.png)
++  (ocaml_console.css as console/ocaml_console.css)
++  (ocaml_console.html as console/ocaml_console.html)
++  (ocaml_console.bc.js as console/ocaml_console.js)))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-11 12:09:52.269533303 +0530
+@@ -0,0 +1,7 @@
++(library
++ (name brr)
++ (public_name brr)
++ (modules jv jstr fut brr brr_css brr_io brr_canvas brr_webgpu brr_webaudio
++   brr_webcrypto brr_webmidi brr_webworkers)
++ (libraries js_of_ocaml-compiler.runtime)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/ocaml_poke/dune b/src/ocaml_poke/dune
+--- a/src/ocaml_poke/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/ocaml_poke/dune	2026-11-11 12:09:52.271132594 +0530
+@@ -0,0 +1,6 @@
++(library
++ (name brr_ocaml_poke)
++ (public_name brr.ocaml_poke)
++ (modules brr_ocaml_poke)
++ (libraries brr)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/ocaml_poke_ui/dune b/src/ocaml_poke_ui/dune
+--- a/src/ocaml_poke_ui/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/ocaml_poke_ui/dune	2026-11-11 12:09:52.271363030 +0530
+@@ -0,0 +1,6 @@
++(library
++ (name brr_ocaml_poke_ui)
++ (public_name brr.ocaml_poke_ui)
++ (modules brr_ocaml_poke_ui)
++ (libraries brr brr.ocaml_poke)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/poke/dune b/src/poke/dune
+--- a/src/poke/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/poke/dune	2026-11-11 12:35:37.956847952 +0530
+@@ -0,0 +1,9 @@
++(library
++ (name brr_poke)
++ (public_name brr.poke)
++ (modules brr_poke)
++ (libraries brr js_of_ocaml-compiler.runtime js_of_ocaml-toplevel)
++ ; js_of_ocaml >= 6.5 deprecates JsooTop; keep the >= 6.0.1 name.
++ (flags
++  (:standard -w -3))
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/poked/dune b/src/poked/dune
+--- a/src/poked/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/poked/dune	2026-11-11 12:10:05.309243628 +0530
+@@ -0,0 +1,6 @@
++(library
++ (name brr_poked)
++ (public_name brr.poked)
++ (modules brr_poked)
++ (libraries brr.poke)
++ (wrapped false))

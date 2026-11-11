@@ -1,0 +1,68 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:27:34.548504465 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name bytesrw)
++(version 0.4.1)
++(package (name bytesrw))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:27:34.552906368 +0530
+@@ -0,0 +1,5 @@
++(library
++ (name bytesrw)
++ (public_name bytesrw)
++ (modules bytesrw bytesrw_fmt bytesrw_hex bytesrw_utf)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/sysrandom/dune b/src/sysrandom/dune
+--- a/src/sysrandom/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/sysrandom/dune	2026-11-10 11:27:34.555171186 +0530
+@@ -0,0 +1,9 @@
++(library
++ (name bytesrw_sysrandom)
++ (public_name bytesrw.sysrandom)
++ (modules bytesrw_sysrandom)
++ (libraries bytesrw)
++ (foreign_stubs
++  (language c)
++  (names bytesrw_sysrandom_stubs))
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/unix/dune b/src/unix/dune
+--- a/src/unix/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/unix/dune	2026-11-10 11:27:34.554100242 +0530
+@@ -0,0 +1,6 @@
++(library
++ (name bytesrw_unix)
++ (public_name bytesrw.unix)
++ (modules bytesrw_unix)
++ (libraries bytesrw unix)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/zlib/dune b/src/zlib/dune
+--- a/src/zlib/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/zlib/dune	2026-11-10 11:27:51.528571223 +0530
+@@ -0,0 +1,10 @@
++(library
++ (name bytesrw_zlib)
++ (public_name bytesrw.zlib)
++ (optional)
++ (modules bytesrw_zlib)
++ (libraries bytesrw libz)
++ (foreign_stubs
++  (language c)
++  (names bytesrw_zlib_stubs))
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/zstd/dune b/src/zstd/dune
+--- a/src/zstd/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/zstd/dune	2026-11-10 11:36:49.640097836 +0530
+@@ -0,0 +1,10 @@
++(library
++ (name bytesrw_zstd)
++ (public_name bytesrw.zstd)
++ (optional)
++ (modules bytesrw_zstd)
++ (libraries bytesrw libzstd)
++ (foreign_stubs
++  (language c)
++  (names bytesrw_zstd_stubs))
++ (wrapped false))
