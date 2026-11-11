@@ -1,0 +1,24 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	2026-09-23 15:30:04.000000000 +0530
++++ b/dune-project	2026-11-10 11:20:15.377452070 +0530
+@@ -57,7 +57,7 @@
+     (ott (and (>= 0.28) :build))
+     (lem (>= "2018-12-14"))
+     (linksem (>= "0.3"))
+-    conf-gmp
++    gmp
+     (yojson (>= 1.6.0))
+     (pprint (>= 20220103))))
+ 
+diff -ruN a/libsail.opam b/libsail.opam
+--- a/libsail.opam	2026-09-23 15:30:04.000000000 +0530
++++ b/libsail.opam	2026-11-10 11:20:15.377713884 +0530
+@@ -38,7 +38,7 @@
+   "ott" {>= "0.28" & build}
+   "lem" {>= "2018-12-14"}
+   "linksem" {>= "0.3"}
+-  "conf-gmp"
++  "gmp"
+   "yojson" {>= "1.6.0"}
+   "pprint" {>= "20220103"}
+   "odoc" {with-doc}

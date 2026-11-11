@@ -1,0 +1,149 @@
+--- a/dune-project
++++ b/dune-project
+@@ -1,4 +1,4 @@
+-(lang dune 3.7)
++(lang dune 3.19)
+ (formatting (enabled_for ocaml))
+ (cram enable)
+ (using ctypes 0.3)
+--- a/src/lib_bls12_381/dune
++++ b/src/lib_bls12_381/dune
+@@ -18,36 +18,72 @@
+  (foreign_archives blst)
+  (foreign_stubs
+   (language c)
+-  (flags (-Wall -Wextra :standard (:include c_flags_blst.sexp)))
++  (flags (-Wall -Wextra -D__BLST_PORTABLE__ :standard))
+   (names blst_wrapper blst_bindings_stubs))
+  (c_library_flags (-Wall -Wextra :standard -lpthread)))
+ 
+ (copy_files libblst/bindings/blst.h)
+ 
+-(copy_files libblst/bindings/blst_extended.h)
+-
+ (copy_files libblst/bindings/blst_aux.h)
+ 
+-(data_only_dirs libblst)
++(copy_files
++ (files libblst/src/*)
++ (only_sources true))
++
++(foreign_library
++ (archive_name blst)
++ (language c)
++ (flags (-Wall -Wextra -Wno-missing-braces -D__BLST_PORTABLE__ :standard))
++ (names server)
++ (extra_objects assembly)
++ (extra_deps
++  blst_extended.c
++  aggregate.c
++  bulk_addition.c
++  client_min_pk.c
++  client_min_sig.c
++  consts.c
++  e1.c
++  e2.c
++  exp.c
++  exports.c
++  fp12_tower.c
++  hash_to_field.c
++  keygen.c
++  map_to_g1.c
++  map_to_g2.c
++  multi_scalar.c
++  pairing.c
++  rb_tree.c
++  recip.c
++  server.c
++  sqrt.c
++  vect.c
++  consts.h
++  ec_mult.h
++  ec_ops.h
++  errors.h
++  fields.h
++  no_asm.h
++  point.h
++  recip-addchain.h
++  sha256.h
++  sqrt-addchain.h
++  vect.h))
+ 
+ (rule
+- (deps (source_tree libblst) build_blst.sh blst_extended.c blst_extended.h)
+- (targets libblst.a dllblst.so c_flags_blst.sexp)
++ (targets assembly.o)
++ (deps (source_tree libblst/build))
+  (action
+-  (no-infer
+-   (progn
+-    (run cp blst_extended.c libblst/src/blst_extended.c)
+-    (run cp blst_extended.h libblst/bindings/blst_extended.h)
+-    (run sh build_blst.sh)
+-    (run cp libblst/libblst.a libblst.a)
+-    (ignore-stderr
+-     (with-accepted-exit-codes
+-      (or 0 1)
+-      (run cp libblst/libblst.so dllblst.so)))
+-    (ignore-stderr
+-     (with-accepted-exit-codes
+-      (or 0 1)
+-      (run cp libblst/libblst.dylib dllblst.so)))))))
++  (run
++   %{cc}
++   -c
++   -D__BLST_PORTABLE__
++   -I
++   libblst/build
++   -o
++   %{targets}
++   libblst/build/assembly.S)))
+ 
+ (rule
+  (mode fallback)
+@@ -58,26 +94,25 @@
+   (glob_files *.h))
+  (targets blst.wasm blst.js)
+  (action
+-  (progn
+-   (run cp -f blst_extended.c libblst/src/)
+-   (run
+-    emcc
+-    -Os
+-    -o blst.js
+-    -I libblst/src/
+-    libblst/src/server.c
+-    %{dep:blst_wrapper.c}
+-    -DENABLE_EMSCRIPTEN_STUBS
+-    -DENABLE_MODULE_RECOVERY
+-    -s ALLOW_MEMORY_GROWTH=1
+-    -s WASM=1
+-    -s MALLOC=emmalloc
+-    -s EXPORT_ES6=0
+-    -s FILESYSTEM=0
+-    -s MODULARIZE=1
+-    -s EXPORT_NAME='_BLS12381'
+-    -s EXPORTED_FUNCTIONS=@needed-wasm-names
+-    --no-entry))))
++  (run
++   emcc
++   -Os
++   -o blst.js
++   -I .
++   -I libblst/src/
++   libblst/src/server.c
++   %{dep:blst_wrapper.c}
++   -DENABLE_EMSCRIPTEN_STUBS
++   -DENABLE_MODULE_RECOVERY
++   -s ALLOW_MEMORY_GROWTH=1
++   -s WASM=1
++   -s MALLOC=emmalloc
++   -s EXPORT_ES6=0
++   -s FILESYSTEM=0
++   -s MODULARIZE=1
++   -s EXPORT_NAME='_BLS12381'
++   -s EXPORTED_FUNCTIONS=@needed-wasm-names
++   --no-entry)))
+ 
+ (executable
+  (name gen_wasm_needed_names)
