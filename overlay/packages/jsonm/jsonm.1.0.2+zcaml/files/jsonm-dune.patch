@@ -1,0 +1,19 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:20:48.498432630 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name jsonm)
++(version 1.0.2)
++(package (name jsonm))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:20:48.500641982 +0530
+@@ -0,0 +1,7 @@
++(library
++ (name jsonm)
++ (public_name jsonm)
++ (libraries uutf)
++ (modules jsonm)
++ (flags :standard -w -6-27-32-39)
++ (wrapped false))

@@ -1,0 +1,17 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:20:48.728434567 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name hmap)
++(version 0.8.1)
++(package (name hmap))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:20:48.731297301 +0530
+@@ -0,0 +1,5 @@
++(library
++ (name hmap)
++ (public_name hmap)
++ (modules hmap)
++ (wrapped false))

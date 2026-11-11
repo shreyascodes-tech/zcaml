@@ -1,0 +1,17 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:20:48.038428757 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name uuidm)
++(version 0.9.10)
++(package (name uuidm))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:20:48.041762118 +0530
+@@ -0,0 +1,5 @@
++(library
++ (name uuidm)
++ (public_name uuidm)
++ (modules uuidm)
++ (wrapped false))
