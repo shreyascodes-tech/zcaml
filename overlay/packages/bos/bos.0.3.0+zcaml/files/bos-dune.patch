@@ -1,0 +1,45 @@
+diff -ruN -x _build -x '*.install' a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-10 11:20:19.424854593 +0530
+@@ -0,0 +1,4 @@
++(lang dune 3.0)
++(name bos)
++(version 0.3.0)
++(package (name bos))
+diff -ruN -x _build -x '*.install' a/src/dune b/src/dune
+--- a/src/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/dune	2026-11-10 11:20:19.426599309 +0530
+@@ -0,0 +1,8 @@
++(library
++ (name bos)
++ (public_name bos)
++ (libraries rresult astring fpath fmt unix logs)
++ (modules bos bos_base bos_cmd bos_log bos_os_arg bos_os_cmd bos_os_dir
++   bos_os_env bos_os_file bos_os_path bos_os_tmp bos_os_u bos_pat)
++ (flags :standard -w -6-27-33-39)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/setup/dune b/src/setup/dune
+--- a/src/setup/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/setup/dune	2026-11-10 11:20:19.427631568 +0530
+@@ -0,0 +1,6 @@
++(library
++ (name bos_setup)
++ (public_name bos.setup)
++ (libraries fmt.tty logs.fmt bos)
++ (modules bos_setup)
++ (wrapped false))
+diff -ruN -x _build -x '*.install' a/src/top/dune b/src/top/dune
+--- a/src/top/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/src/top/dune	2026-11-10 11:20:19.428675379 +0530
+@@ -0,0 +1,11 @@
++(library
++ (name bos_top)
++ (public_name bos.top)
++ (libraries compiler-libs.toplevel rresult.top astring.top fpath.top fmt.top
++   logs.top bos)
++ (modules bos_top)
++ (wrapped false))
++
++(install
++ (section lib)
++ (files (bos_top_init.ml as top/bos_top_init.ml)))
