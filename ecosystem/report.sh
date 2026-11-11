@@ -8,8 +8,11 @@ work="$1"
 results="$work/results.tsv"
 
 # <package>'s <stage> result: ok, fail, skip, or nothing (not reached).
+# selected.txt can constrain a package (`ctypes-foreign>=0.24.0`), but
+# results.tsv has the bare name: look up without the constraint.
 result() {
-  awk -F '\t' -v p="$1" -v s="$2" '$1 == p && $2 == s { print $3 }' "$results"
+  local package="${1%%[<>=]*}"
+  awk -F '\t' -v p="$package" -v s="$2" '$1 == p && $2 == s { print $3 }' "$results"
 }
 
 # How many packages' <stage> was <result>, default ok.

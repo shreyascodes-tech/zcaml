@@ -9,7 +9,9 @@
 # lock, native, then build:<target> and run:<target> for each of $TARGETS, but
 # `build:<target> skip` for a !<target>, which the package doesn't support. The
 # first failure stops the package (a target's build failure, only that target),
-# its log is <work-dir>/<package>/<stage, with - for :>.log.
+# its log is <work-dir>/<package>/<stage, with - for :>.log. `lock` fails when
+# the lock file lacks a solution for a platform the package is built for, which
+# `dune pkg lock`'s exit status doesn't say: it exits 0 with a partial solution.
 #
 # DUNE_JOBS is each dune build's -j (default 2, as probes share the machine).
 # PROBE_LOCK_ONLY=1 stops after the lock, which warms the repositories.
@@ -94,11 +96,56 @@ run() {
 }
 export -f run
 
+# Whether the lock file solved for <target>'s platform. Its
+# `solved_for_platforms` lists the ones it did solve, one
+# `((arch ...) (os ...) ...)` each. Takes the target's triple, whose arch and os
+# are opam's, as scripts/cross-env.sh's platform() writes them.
+locked() {
+  local target="$1" arch os
+  case "$target" in
+    aarch64-*) arch=arm64 ;;
+    x86_64-*) arch=x86_64 ;;
+    *) arch="${target%%-*}" ;;
+  esac
+  case "$target" in
+    *-linux-*) os=linux ;;
+    *-windows-*) os=win32 ;;
+    *-macos-*) os=macos ;;
+    *) os="${target#*-}"; os="${os%%-*}" ;;
+  esac
+  sed -n '/^(solved_for_platforms/,/^$/p' dune.lock/lock.dune |
+    grep -oE '\((arch|os) [^)]+\)' |
+    paste -d' ' - - |
+    grep -qxF "(arch $arch) (os $os)"
+}
+
+# `dune pkg lock`, and that it solved for every platform the package is built
+# for: a target it has no solution for is only a warning, and that target's
+# build then fails with "lockdir does not contain a solution". Exported: `stage`
+# runs it through `timeout`, a separate process.
+lock() {
+  dune pkg lock || return
+  local target
+  for target in "$@"; do
+    locked "$target" || {
+      echo "dune pkg lock solved no platform for $target" >&2
+      return 1
+    }
+  done
+}
+export -f locked lock
+
 if [[ "${PROBE_LOCK_ONLY:-}" == 1 ]]; then
   dune pkg lock >/dev/null 2>&1 || exit 0
   exit 0
 fi
-stage lock dune pkg lock || exit 0
+# The native platform, x86_64-linux-gnu, is cross-env.sh's, then each target's,
+# but not a !<target>'s: the package isn't built for it, so it needn't lock.
+lock_targets=(x86_64-linux-gnu)
+for target in $TARGETS; do
+  [[ "$unsupported" == *" $target "* ]] || lock_targets+=("$target")
+done
+stage lock bash -c 'lock "$@"' lock "${lock_targets[@]}" || exit 0
 
 dune_jobs="${DUNE_JOBS:-2}"
 stage native dune build -j "$dune_jobs" ./bin/main.exe || exit 0
