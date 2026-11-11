@@ -238,31 +238,68 @@ let () =
        " (c_library_flags -lws2_32 -lcrypt32 -luserenv -ladvapi32 -lgdi32 -lbcrypt)\n"
      else "")
 
-(* The pkg-config file ssl and anything else built against OpenSSL uses. *)
-let extra_libs =
+(* The pkg-config files ssl and anything else built against OpenSSL use.
+   The package installs only static archives, so the dependencies that a
+   shared OpenSSL would carry in DT_NEEDED (libcrypto, and the system
+   libraries) must be in the plain Libs too: dune-configurator and other
+   consumers query --libs without --static. *)
+let system_libs =
   if os = "windows" then
     [ "-lws2_32"; "-lcrypt32"; "-luserenv"; "-ladvapi32"; "-lgdi32"; "-lbcrypt" ]
   else if os = "linux" then [ "-ldl"; "-pthread" ]
   else []
 
-let pc_contents =
+let pc_prefix =
   "prefix=${pcfiledir}/..\n"
   ^ "exec_prefix=${prefix}\n"
   ^ "libdir=${prefix}\n"
   ^ "includedir=${prefix}\n"
+
+let pc_header name description =
+  pc_prefix
   ^ "\n"
-  ^ "Name: OpenSSL\n"
-  ^ "Description: OpenSSL 4.1.0 built from source by dune\n"
-  ^ "Version: 4.1.0\n"
-  ^ "Libs: -L${libdir} -lssl -lcrypto "
-  ^ String.concat " " extra_libs
-  ^ "\n"
+  ^ "Name: "
+  ^ name
+  ^ "\nDescription: "
+  ^ description
+  ^ "\nVersion: 4.1.0\n"
+
+let libcrypto_pc =
+  pc_header
+    "OpenSSL-libcrypto"
+    "OpenSSL 4.1.0 cryptography library, built from source by dune"
+  ^ "Libs: -L${libdir} -lcrypto"
+  ^ (if system_libs = [] then "\n"
+     else " " ^ String.concat " " system_libs ^ "\n")
   ^ "Cflags: -I${includedir}\n"
 
+let libssl_pc =
+  pc_header
+    "OpenSSL-libssl"
+    "OpenSSL 4.1.0's Secure Sockets Layer and cryptography libraries, built \
+     from source by dune"
+  ^ "Requires: libcrypto\nLibs: -L${libdir} -lssl\n"
+  ^ "Cflags: -I${includedir}\n"
+
+let openssl_pc = pc_header "OpenSSL" "OpenSSL 4.1.0 built from source by dune"
+  ^ "Requires: libssl libcrypto\n"
+
+let pc_files =
+  [
+    ("libcrypto.pc", libcrypto_pc);
+    ("libssl.pc", libssl_pc);
+    ("openssl.pc", openssl_pc);
+  ]
+
 let () =
-  emit
-    "(rule\n (targets openssl.pc)\n (action (write-file openssl.pc %s)))\n"
-    ("\"" ^ String.escaped pc_contents ^ "\"")
+  List.iter
+    (fun (name, contents) ->
+      emit
+        "(rule\n (targets %s)\n (action (write-file %s %s)))\n"
+        name
+        name
+        ("\"" ^ String.escaped contents ^ "\""))
+    pc_files
 
 (* Public headers: the generated configuration headers shadow upstream's
    templates. Dune installs them under lib/libopenssl/<path>. *)
@@ -316,8 +353,14 @@ let () =
       header_entries :=
         Printf.sprintf "(%s as %s)" target (quote rel) :: !header_entries)
     headers;
+  let pc_entries =
+    List.map
+      (fun (name, _) -> Printf.sprintf "(%s as pkgconfig/%s)" name name)
+      pc_files
+  in
   emit
-    "(install\n (package libopenssl)\n (section lib)\n (files\n  (openssl.pc as pkgconfig/openssl.pc)\n  %s))\n"
+    "(install\n (package libopenssl)\n (section lib)\n (files\n  %s\n  %s))\n"
+    (String.concat "\n  " pc_entries)
     (String.concat "\n  " (List.rev !header_entries))
 
 let () = Jbuild_plugin.V1.send (Buffer.contents out)

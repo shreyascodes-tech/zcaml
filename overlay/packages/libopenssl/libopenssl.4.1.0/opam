@@ -3,8 +3,8 @@ synopsis: "OpenSSL, built from source by dune"
 description: """
 OpenSSL 4.1.0's libssl and libcrypto, compiled from the tarball zig-openssl
 pins with the context's C compiler. Unlike conf-libssl, it cross-compiles. A
-library with no modules, plus the headers and pkg-config file that consumers
-of conf-libssl use."""
+library with no modules, plus the headers and the openssl, libssl and libcrypto
+pkg-config files that consumers of conf-libssl use."""
 maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
 authors: ["The OpenSSL Project"]
 license: "Apache-2.0"
