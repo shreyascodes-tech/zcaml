@@ -1,0 +1,74 @@
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	2025-11-11 23:32:17.000000000 +0530
++++ b/dune-project	2026-11-10 11:17:58.621745653 +0530
+@@ -27,6 +27,5 @@
+   (ocaml
+    (>= 4.08))
+   dune-compiledb
+-  dune-configurator
+-  (conf-libpcre2-8 :build)
++  libpcre2
+   (ounit2 :with-test)))
+diff -ruN a/lib/config/Makefile b/lib/config/Makefile
+--- a/lib/config/Makefile	2025-11-11 23:32:17.000000000 +0530
++++ b/lib/config/Makefile	1970-01-01 05:30:00.000000000 +0530
+@@ -1,9 +0,0 @@
+-TARGETS = discover.bc
+-
+-.PHONY: all clean
+-
+-all:
+-	@dune build $(TARGETS)
+-
+-clean:
+-	@dune clean
+diff -ruN a/lib/config/discover.ml b/lib/config/discover.ml
+--- a/lib/config/discover.ml	2025-11-11 23:32:17.000000000 +0530
++++ b/lib/config/discover.ml	1970-01-01 05:30:00.000000000 +0530
+@@ -1,14 +0,0 @@
+-let () =
+-  let module C = Configurator.V1 in
+-  C.main ~name:"pcre2" (fun c ->
+-      let default : C.Pkg_config.package_conf =
+-        { libs = [ "-lpcre2-8" ]; cflags = [] }
+-      in
+-      let conf =
+-        match C.Pkg_config.get c with
+-        | None -> default
+-        | Some pc ->
+-            Option.value (C.Pkg_config.query pc ~package:"libpcre2-8") ~default
+-      in
+-      C.Flags.write_sexp "c_flags.sexp" conf.cflags;
+-      C.Flags.write_sexp "c_library_flags.sexp" conf.libs)
+diff -ruN a/lib/config/dune b/lib/config/dune
+--- a/lib/config/dune	2025-11-11 23:32:17.000000000 +0530
++++ b/lib/config/dune	1970-01-01 05:30:00.000000000 +0530
+@@ -1,4 +0,0 @@
+-(executables
+- (names discover)
+- (libraries dune.configurator)
+- (modes byte exe))
+diff -ruN a/lib/dune b/lib/dune
+--- a/lib/dune	2025-11-11 23:32:17.000000000 +0530
++++ b/lib/dune	2026-11-10 11:17:58.624617848 +0530
+@@ -1,18 +1,11 @@
+ (library
+  (public_name pcre2)
++ (libraries libpcre2)
+  (foreign_stubs
+   (language c)
+   (names pcre2_stubs)
+   (flags
+    (:standard)
+-   (:include c_flags.sexp)
+    -O2
+    -fPIC
+-   -DPIC))
+- (c_library_flags
+-  (:include c_library_flags.sexp)))
+-
+-(rule
+- (targets c_flags.sexp c_library_flags.sexp)
+- (action
+-  (run ./config/discover.exe)))
++   -DPIC)))
