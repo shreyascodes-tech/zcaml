@@ -11,7 +11,7 @@ homepage: "https://github.com/libffi/libffi"
 bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
 depends: [
   "ocaml"
-  "dune" {>= "3.0"}
+  "dune" {>= "3.19"}
 ]
 patches: [ "libffi-dune.patch" ]
 build: ["dune" "build" "-p" name "-j" jobs]
