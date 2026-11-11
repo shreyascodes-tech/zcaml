@@ -1,0 +1,135 @@
+diff -ruN a/compiler/dune b/compiler/dune
+--- a/compiler/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/compiler/dune	2026-11-11 12:24:17.986546840 +0530
+@@ -0,0 +1,60 @@
++; camlidl preprocesses .idl files by default.  Use the C compiler of the
++; toolchain that builds it, run as a C preprocessor: the .idl input needs
++; -x c, since a compiler driver otherwise takes the extension for a linker
++; input.  -prepro overrides this command; -nocpp skips preprocessing.
++(rule
++ (target config.ml)
++ (action
++  (with-stdout-to config.ml
++   (progn
++    (echo "(* Compile-time configuration *)\n")
++    (echo "\n")
++    (echo "(* How to invoke the C preprocessor; -prepro overrides it, -nocpp skips it. *)\n")
++    (echo "let cpp = \"%{ocaml-config:c_compiler} -x c -E\"\n")
++    (echo "\n")
++    (echo "(* The C names for 64-bit signed and unsigned integers *)\n")
++    (echo "\n")
++    (echo "let (int64_type, uint64_type) =\n")
++    (echo "  match Sys.os_type with\n")
++    (echo "    \"Win32\" -> (\"__int64\", \"unsigned __int64\")\n")
++    (echo "  | _       -> (\"long long\", \"unsigned long long\")\n")))))
++
++(executable
++ (name main)
++ (public_name camlidl)
++ (package camlidl)
++ (modules
++  config
++  utils
++  clflags
++  prefix
++  lexpr
++  cvttyp
++  variables
++  idlarray
++  idltypes
++  struct
++  enum
++  union
++  cvtval
++  structdecl
++  enumdecl
++  uniondecl
++  typedef
++  funct
++  constdecl
++  intf
++  file
++  predef
++  linenum
++  parse_aux
++  parser_midl
++  lexer_midl
++  parse
++  fixlabels
++  normalize
++  main)
++ (modules_without_implementation idltypes))
++
++(ocamllex linenum lexer_midl)
++(ocamlyacc parser_midl)
+diff -ruN a/compiler/parse.ml b/compiler/parse.ml
+--- a/compiler/parse.ml	2025-06-13 17:28:28.000000000 +0530
++++ b/compiler/parse.ml	2026-11-11 12:21:10.184332494 +0530
+@@ -46,15 +46,21 @@
+   else begin
+     let tempfile = Filename.temp_file "camlidl" ".idl" in
+     try
++      (* The command goes through the shell: quote file names and preprocessor
++         arguments, which may contain spaces (notably temp files on Windows). *)
+       if Sys.command
+            (sprintf "%s %s %s %s > %s"
+                     !Clflags.preprocessor
+                     (String.concat " "
+-                        (List.map (fun s -> "-I" ^ s) !Clflags.search_path))
++                        (List.map
++                           (fun s -> Filename.quote ("-I" ^ s))
++                           !Clflags.search_path))
+                     (String.concat " "
+-                        (List.map (fun s -> "-D" ^ s) !Clflags.prepro_defines))
+-                    filename
+-                    tempfile)
++                        (List.map
++                           (fun s -> Filename.quote ("-D" ^ s))
++                           !Clflags.prepro_defines))
++                    (Filename.quote filename)
++                    (Filename.quote tempfile))
+          <> 0
+        then error "error during preprocessing";
+        let r = read_source_file filename tempfile in
+diff -ruN a/dune-project b/dune-project
+--- a/dune-project	1970-01-01 05:30:00.000000000 +0530
++++ b/dune-project	2026-11-11 12:09:26.252884792 +0530
+@@ -0,0 +1,3 @@
++(lang dune 3.0)
++(name camlidl)
++(version 1.13)
+diff -ruN a/lib/dune b/lib/dune
+--- a/lib/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/lib/dune	2026-11-11 12:09:26.258885339 +0530
+@@ -0,0 +1,7 @@
++; The COM support library.  It links camlidl's C runtime, as upstream's
++; -dllib -lcamlidl -cclib -lcamlidl did.
++(library
++ (name com)
++ (public_name camlidl)
++ (modules com)
++ (libraries libcamlidl))
+diff -ruN a/runtime/dune b/runtime/dune
+--- a/runtime/dune	1970-01-01 05:30:00.000000000 +0530
++++ b/runtime/dune	2026-11-11 12:09:26.265552068 +0530
+@@ -0,0 +1,20 @@
++; The C runtime that camlidl's generated stubs call, as a library with no
++; modules: depending on it gives C stubs camlidlruntime.h and links it.
++(library
++ (name libcamlidl)
++ (public_name camlidl.runtime)
++ (modules)
++ (foreign_stubs
++  (language c)
++  (names idlalloc comintf comerror)
++  (flags :standard -Wall -g))
++ (install_c_headers camlidlruntime))
++
++; Upstream installs the C runtime as libcamlidl.a and the header in caml/, so
++; generated stubs can include <caml/camlidlruntime.h> and link -lcamlidl.
++(install
++ (package camlidl)
++ (section lib_root)
++ (files
++  (liblibcamlidl_stubs.a as camlidl/libcamlidl.a)
++  (camlidlruntime.h as camlidl/caml/camlidlruntime.h)))
