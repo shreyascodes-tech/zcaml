@@ -1,0 +1,8 @@
+; The sources gmp builds: zig-gmp's generated tree and the zon that records
+; which GMP tarball they belong to.
+(install
+ (package zig-gmp)
+ (section lib)
+ (files
+  build.zig.zon
+  (glob_files_rec generated/*)))

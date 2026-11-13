@@ -1,0 +1,5 @@
+(lang dune 3.23)
+(name zig-gmp)
+(package
+ (name zig-gmp)
+ (allow_empty))

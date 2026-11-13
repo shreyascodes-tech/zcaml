@@ -1,0 +1,265 @@
+(* -*- tuareg -*- *)
+(*
+   Builds GMP from the GMP tarball and zig-gmp's generated sources.
+
+   Dune runs this file while loading the package. It parses
+   zig-gmp/generated/manifest.txt, selects the platform from ocamlc -config,
+   and emits the compile rules, the foreign library and the public header.
+   Nothing but dune, the OCaml toolchain and its C compiler is involved: the
+   assembly is already m4-expanded and the configuration headers are
+   generated.
+*)
+
+type manifest = {
+  mutable cflags : string list;
+  (* (root, dir) in search order; root is platform, shared or source. *)
+  mutable includes : (string * string) list;
+  mutable shared_dir : string;
+  (* Relative to the GMP source tree and to shared_dir. *)
+  mutable common_c : string list;
+  mutable common_shared : string list;
+  mutable platforms : platform list;
+}
+
+and platform = {
+  arch : string;
+  os : string;
+  abis : string list;
+  variant : string;
+  gen_dir : string;
+  mutable assembly_dir : string;
+  mutable cflag : string list;
+  (* Relative to the GMP source tree, shared_dir, gen_dir and assembly_dir. *)
+  mutable source : string list;
+  mutable shared : string list;
+  mutable generated_c : string list;
+  mutable generated_asm : string list;
+}
+
+let split_on c s = List.filter (( <> ) "") (String.split_on_char c s)
+
+let split line =
+  String.map (function '\t' | '\r' -> ' ' | c -> c) line |> split_on ' '
+
+let parse_manifest path =
+  let m =
+    {
+      cflags = [];
+      includes = [];
+      shared_dir = "";
+      common_c = [];
+      common_shared = [];
+      platforms = [];
+    }
+  in
+  let current () =
+    match m.platforms with
+    | p :: _ -> p
+    | [] -> failwith "manifest: record before platform"
+  in
+  let ic = open_in path in
+  (try
+     while true do
+       match split (input_line ic) with
+       | [] -> ()
+       | first :: _ when first.[0] = '#' -> ()
+       | ("version" | "upstream" | "triple") :: _ -> ()
+       (* The "c" variant's extra sources; we build the "asm" one. *)
+       | ("fallback-c" | "fallback-shared") :: _ -> ()
+       | "cflags" :: flags -> m.cflags <- m.cflags @ flags
+       | [ "include"; root; dir ] -> m.includes <- m.includes @ [ (root, dir) ]
+       | [ "shared-dir"; dir ] -> m.shared_dir <- dir
+       | [ "common-c"; path ] -> m.common_c <- path :: m.common_c
+       | [ "common-generated"; path ] ->
+         m.common_shared <- path :: m.common_shared
+       | [ "platform"; arch; os; abis; variant; gen_dir ] ->
+         m.platforms <-
+           {
+             arch;
+             os;
+             abis = split_on ',' abis;
+             variant;
+             gen_dir;
+             assembly_dir = "";
+             cflag = [];
+             source = [];
+             shared = [];
+             generated_c = [];
+             generated_asm = [];
+           }
+           :: m.platforms
+       | [ "assembly-dir"; dir ] -> (current ()).assembly_dir <- dir
+       | [ "cflag"; flag ] ->
+         let p = current () in
+         p.cflag <- p.cflag @ [ flag ]
+       | [ "source"; path ] ->
+         let p = current () in
+         p.source <- path :: p.source
+       | [ "shared"; path ] ->
+         let p = current () in
+         p.shared <- path :: p.shared
+       | [ "generated-c"; path ] ->
+         let p = current () in
+         p.generated_c <- path :: p.generated_c
+       | [ "generated-asm"; path ] ->
+         let p = current () in
+         p.generated_asm <- path :: p.generated_asm
+       | kind :: _ -> failwith ("manifest: unknown record " ^ kind)
+     done
+   with End_of_file -> close_in ic);
+  m
+
+let config = Jbuild_plugin.V1.ocamlc_config
+let config key = try List.assoc key config with Not_found -> ""
+
+let absolute path =
+  if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path
+  else path
+
+(* Substituted from zig-gmp's install directory. *)
+let zig_gmp = absolute "%{zig-gmp:lib}%"
+
+(* The GMP tarball is this package's own source. *)
+let gmp_src = absolute "."
+
+let arch =
+  match config "architecture" with
+  | "amd64" -> "x86_64"
+  | "arm64" -> "aarch64"
+  | "riscv" -> "riscv64"
+  | "power" -> "powerpc64le"
+  | arch -> arch
+
+let os =
+  match config "system" with
+  | "linux" -> "linux"
+  | "macosx" -> "macos"
+  | "mingw64" -> "windows"
+  | system -> system
+
+let contains s sub =
+  let n = String.length sub in
+  let rec go i =
+    i + n <= String.length s && (String.sub s i n = sub || go (i + 1))
+  in
+  go 0
+
+(* zig-gmp's ABI names: the C library on Linux, MinGW on Windows. *)
+let abi =
+  match os with
+  | "linux" -> if contains (config "target") "musl" then "musl" else "gnu"
+  | "windows" -> "gnu"
+  | _ -> "none"
+
+let manifest = parse_manifest (Filename.concat zig_gmp "generated/manifest.txt")
+
+let platform =
+  match
+    List.find_opt
+      (fun p ->
+        p.arch = arch && p.os = os && p.variant = "asm" && List.mem abi p.abis)
+      manifest.platforms
+  with
+  | Some p -> p
+  | None ->
+    failwith
+      (Printf.sprintf "zig-gmp has no generated sources for %s-%s-%s" arch os
+         abi)
+
+let in_zig_gmp dir = Filename.concat zig_gmp dir
+let shared_root = in_zig_gmp manifest.shared_dir
+let generated_root = in_zig_gmp platform.gen_dir
+let assembly_root = in_zig_gmp platform.assembly_dir
+
+(* Dune strings, for any value with characters dune would split on. *)
+let quote s =
+  let safe c =
+    match c with
+    | ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';' | '\\' | '\'' -> false
+    | _ -> true
+  in
+  if s <> "" && String.for_all safe s then s
+  else "\"" ^ String.escaped s ^ "\""
+
+let words xs = String.concat " " (List.map quote xs)
+
+let include_flags =
+  List.concat_map
+    (fun (root, dir) ->
+      let root =
+        match root with
+        | "platform" -> generated_root
+        | "shared" -> shared_root
+        | "source" -> gmp_src
+        | root -> failwith ("manifest: unknown include root " ^ root)
+      in
+      [ "-I"; (if dir = "." then root else Filename.concat root dir) ])
+    manifest.includes
+
+(* GMP's own -O2, and position-independent code for shared stubs that link
+   libgmp.a; Windows code is always relocatable. *)
+let pic = if os = "windows" then [] else [ "-fPIC" ]
+let c_flags = manifest.cflags @ platform.cflag @ [ "-O2" ] @ pic
+
+let out = Buffer.create (1024 * 1024)
+let emit fmt = Printf.ksprintf (Buffer.add_string out) fmt
+let objects = ref []
+
+let emit_compile flags source =
+  let name = Printf.sprintf "o_%d" (List.length !objects) in
+  let obj = name ^ ".o" in
+  emit
+    "(rule\n (targets %s)\n (deps %s)\n (action\n  (run %%%%{ocaml-config:c_compiler} %s -c %s -o %s)))\n"
+    obj (quote source) (words flags) (quote source) obj;
+  objects := name :: !objects
+
+let () =
+  let c root paths =
+    List.iter
+      (fun path ->
+        emit_compile (include_flags @ c_flags) (Filename.concat root path))
+      (List.rev paths)
+  in
+  c gmp_src manifest.common_c;
+  c shared_root manifest.common_shared;
+  c gmp_src platform.source;
+  c shared_root platform.shared;
+  c generated_root platform.generated_c;
+  (* Already m4-expanded and preprocessed: plain .s for the assembler. *)
+  List.iter
+    (fun path -> emit_compile pic (Filename.concat assembly_root path))
+    (List.rev platform.generated_asm);
+  emit
+    "(foreign_library\n (archive_name gmp)\n (language c)\n (names)\n (extra_objects %s))\n"
+    (words (List.rev !objects));
+  (* The configured gmp.h, which C stubs include and zarith's configure reads
+     as %{lib:gmp:gmp.h}. *)
+  let gmp_h = Filename.concat generated_root "gmp.h" in
+  emit "(rule\n (targets gmp.h)\n (deps %s)\n (action (copy %s gmp.h)))\n"
+    (quote gmp_h) (quote gmp_h);
+  emit
+    "(library\n (name gmp)\n (public_name gmp)\n (modules)\n (install_c_headers gmp)\n (foreign_archives gmp))\n"
+
+(* The pkg-config file conf-gmp's consumers use, in lib/gmp/pkgconfig: the
+   toolchain's pkg-config finds it through OCAMLPATH, and it points at
+   lib/gmp, where dune installs libgmp.a and gmp.h. *)
+let gmp_pc =
+  "prefix=${pcfiledir}/..\n"
+  ^ "exec_prefix=${prefix}\n"
+  ^ "libdir=${prefix}\n"
+  ^ "includedir=${prefix}\n"
+  ^ "\n"
+  ^ "Name: GNU MP\n"
+  ^ "Description: GNU Multiple Precision Arithmetic Library, built by dune\n"
+  ^ "URL: https://gmplib.org\n"
+  ^ "Version: 6.3.0\n"
+  ^ "Libs: -L${libdir} -lgmp\n"
+  ^ "Cflags: -I${includedir}\n"
+
+let () =
+  emit "(rule\n (targets gmp.pc)\n (action (write-file gmp.pc %s)))\n"
+    ("\"" ^ String.escaped gmp_pc ^ "\"");
+  emit
+    "(install\n (package gmp)\n (section lib)\n (files (gmp.pc as pkgconfig/gmp.pc)))\n"
+
+let () = Jbuild_plugin.V1.send (Buffer.contents out)

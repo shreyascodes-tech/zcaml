@@ -1,0 +1,20 @@
+opam-version: "2.0"
+synopsis: "GMP, from gmp, for packages built with pkg-config"
+description: """
+The GMP that gmp builds, found by dune-configurator with the toolchain's
+pkg-config. Unlike conf-gmp, which needs a GMP installed on the system, it
+cross-compiles: pkg-config searches OCAMLPATH, so it finds gmp's gmp.pc in the
+same dune package build."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: "Torbjörn Granlund and contributors"
+license: ["LGPL-3.0-or-later" "GPL-2.0-or-later"]
+homepage: "https://gmplib.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "gmp" {>= "6.3.0-2+zcaml"}
+]
+setenv: [
+  [ PKG_CONFIG = "pkg-config" ]
+]
+build: []
+flags: conf

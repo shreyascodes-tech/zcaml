@@ -29,7 +29,8 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `cmdliner.2.1.1+zcaml` | [dune-universe](https://github.com/dune-universe/opam-overlays)'s dune port, and the `cmdliner` tool, which the port leaves out (`cmdliner-tool.patch`) | upstream builds with make and `ocaml build.ml`, for the build machine only; packages' builds run the tool (`cmdliner install tool-support`) |
 | `cmdliner.1.3.0+zcaml` | cmdliner 1.3.0's own dune build | upstream's opam builds with make; `cohttp-lwt-unix.5.x` requires `cmdliner < 2.0.0`, so the 2.1.1 dune port can't be selected and the make build installs a host-built library |
 | `ptime.1.2.0+zcaml`, `mtime.2.2.0+zcaml` | dune-universe's dune ports | upstream builds with topkg, which asks the build machine's `uname` for `-lrt`, which Windows doesn't have |
-| `gmp.6.3.0-2+zcaml` | [ocaml-gmp](https://github.com/mirage/ocaml-gmp), linked statically (`gmp-static.patch`) | ocaml-gmp installs `libgmp.so` next to `libgmp.a`, so programs need it at run time; on Windows it builds a DLL, which GMP can't build with a static library |
+| `zig-gmp.6.3.0` | [zig-gmp](https://github.com/shreyassanthu77/zig-gmp)'s generated sources (configured headers, tables, m4-expanded assembly) and text manifest | new: `gmp` needs GMP's configure, make and m4 output, which the source tarball doesn't have |
+| `gmp.6.3.0-2+zcaml` | GMP 6.3.0, built by dune from GNU's tarball and `zig-gmp`'s sources, with `libgmp.a`, `gmp.h` and `gmp.pc`: the `gmp` library [ocaml-gmp](https://github.com/mirage/ocaml-gmp) has | ocaml-gmp runs GMP's `configure` and `make` with `sh` and `m4` (`conf-m4`), installs `libgmp.so` next to `libgmp.a`, and on Windows builds a DLL, which GMP can't build with a static library; ours needs only dune, OCaml and the C compiler |
 | `zarith.1.14+zcaml` | [mirage's dune port](https://github.com/mirage/Zarith), with `gmp` (`zarith-static.patch`) | upstream needs the system's GMP (`conf-gmp`), which a cross build has none of |
 | `re2.v0.17.0+zcaml` | builds its vendored RE2 as a dune `foreign_library` with `zig c++` (`re2-cc.patch`) | upstream builds it with the build machine's `g++`/make; the dune build needs no make, `cp`, or `uname` |
 | `ocaml_intrinsics.v0.17.0+zcaml` | a probe for aarch64's CRC instructions that can pass (`ocaml_intrinsics-crc.patch`) | it tries `__crc32ud`, which no compiler has, so builds for aarch64 without `+crc` and `crc_stubs.c` fails (`Target not supported`); `-mcpu=generic+crc` rather than `-march=armv8-a+crc`, which gcc and clang take but `zig cc` doesn't; and it says it's for x86_64 but not Windows only, which it builds and runs on, as for arm64 with the probe |
@@ -68,9 +69,6 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `merlin-lib.5.9+zcaml` | `CreateNamedPipeA` and `OpenEventA` (`merlin-lib-unicode.patch`) | OCaml on Windows defines `UNICODE`, so they're the `W` functions, which take `LPCWSTR`, not OCaml strings |
 | `ocaml-index.5.9+zcaml` | with either `merlin-lib` | upstream's needs `merlin-lib` of exactly its version, and `ocaml-lsp-server` needs it (`post`) |
 
-`gmp` has no `substs`: dune pkg applies them before `patches` (opam, after),
-and its own `src/dune` writes `src/build.sh` too.
-
 ## Dune ports and vendored libraries
 
 | package | what | why |
@@ -106,23 +104,26 @@ and its own `src/dune` writes `src/build.sh` too.
 | `conf-c++.1.0+zcaml`, `conf-g++.1.0+zcaml` | empty conf packages: zcaml compiles C++ with `zig c++` | upstream's `conf-c++`/`conf-g++` run the build machine's `c++`/`g++`, which a cross build has none of |
 | `conf-linux-libc-dev.0+zcaml` | an empty conf package: Zig ships the Linux UAPI headers | upstream preprocesses a test with the system's `cc` and needs `linux-libc-dev` installed |
 | `conf-zlib.1` | an empty conf package with `PKG_CONFIG=pkg-config`, depending on `libz`, at the same version as upstream | upstream needs zlib installed on the build machine; the toolchain's `pkg-config` answers from `libz`'s `zlib.pc`, which it finds in `OCAMLPATH`; the same-version overlay package replaces upstream's system check |
+| `conf-gmp.5`, `conf-gmp-powm-sec.4` | empty conf packages depending on `gmp`, at the same versions as upstream; `conf-gmp` sets `PKG_CONFIG=pkg-config` | upstream checks for the system's GMP (and its `mpz_powm_sec`), which a cross build has none of; the toolchain's `pkg-config` answers from `gmp`'s `gmp.pc`. Consumers that pass a bare `-lgmp` (`secp256k1-internal`) still don't link, and `gmpxx.h` (`class_group_vdf`) isn't built |
 | `conf-pkg-config.5` | an empty conf package at the same version as upstream: zcaml's toolchains install a patched [u-config](https://github.com/skeeto/u-config) as `pkg-config` in their bin directories | upstream's `conf-pkg-config` checks for a system `pkg-config`, which a cross build host may not have; ours searches `OCAMLPATH` for a dune pkg build's packages |
 
 ## pkg-config
 
 The toolchains install a patched `u-config` as `pkg-config` (also available as
-`pkg-config-zcaml`). `conf-zlib` and `conf-libssl` set `PKG_CONFIG=pkg-config`;
-its queries read the vendored libraries' `.pc` files through `OCAMLPATH`.
+`pkg-config-zcaml`). `conf-zlib`, `conf-libssl` and `conf-gmp` set
+`PKG_CONFIG=pkg-config`; its queries read the vendored libraries' `.pc` files
+through `OCAMLPATH`.
 
-`conf-zlib`, `conf-libssl` and `conf-pkg-config` use the same version numbers as
-upstream, in the first repository. When a name and version appear in more than
+`conf-zlib`, `conf-libssl`, `conf-gmp`, `conf-gmp-powm-sec` and
+`conf-pkg-config` use the same version numbers as upstream, in the first
+repository. When a name and version appear in more than
 one repository, dune pkg takes the first repository's package, so the overlay's
 empty conf package wins without a project pin; upstream's system check never
 runs. This is why the overlay must stay ahead of the default repositories.
 
-New upstream `conf-zlib`, `conf-libssl`, and `conf-pkg-config` versions need
-matching overlay entries. Packages patched to depend directly on vendored
-libraries need no conf package.
+New upstream `conf-zlib`, `conf-libssl`, `conf-gmp`, `conf-gmp-powm-sec` and
+`conf-pkg-config` versions need matching overlay entries. Packages patched to
+depend directly on vendored libraries need no conf package.
 
 ## Pre-built dev tools
 

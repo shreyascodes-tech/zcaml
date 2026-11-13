@@ -1,0 +1,17 @@
+opam-version: "2.0"
+synopsis: "GMP with mpz_powm_sec, from gmp"
+description: """
+The GMP that gmp builds, GMP 6.3.0, which has the constant-time modular
+exponentiation mpz_powm_sec. Unlike conf-gmp-powm-sec, which checks the
+system's GMP, it cross-compiles."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: "Torbjörn Granlund and contributors"
+license: ["LGPL-3.0-or-later" "GPL-2.0-or-later"]
+homepage: "https://gmplib.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "conf-gmp"
+  "gmp" {>= "6.3.0-2+zcaml"}
+]
+build: []
+flags: conf

@@ -1,0 +1,25 @@
+opam-version: "2.0"
+synopsis: "GMP 6.3.0's generated sources, from zig-gmp"
+description: """
+zig-gmp's checked-in generated C sources, headers, m4-expanded assembly and
+manifest for GMP 6.3.0, installed for gmp to build from. The manifest is plain
+text: it lists the sources, compiler definitions and include directories, so
+neither configure, make nor m4 is needed."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["zig-gmp contributors"]
+license: ["LGPL-3.0-or-later" "GPL-2.0-or-later"]
+homepage: "https://github.com/shreyassanthu77/zig-gmp"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+substs: [ "dune" "dune-project" ]
+build: ["dune" "build" "-p" name "-j" jobs "@install"]
+url {
+  src: "https://github.com/shreyassanthu77/zig-gmp/archive/2722d38382e78fba13cee476b8729e47a6dd3852.tar.gz"
+  checksum: [
+    "sha256=552099e706dd7c26b25432dcb379f740b17db8b499122395ec33a6edfbdc5d96"
+    "sha512=8f9ad8c9cbe5b0856613c7661fe78f7ef9924a11e9cb740a8f3063c2ba14656970bcd5909b9f71fbe4d3202e27a37e0c34ce1a991434f189bdcaabdbf153887f"
+  ]
+}
