@@ -616,6 +616,10 @@ PATCHES.update({
 PATCHES.update({
     'vlt': ('', 'threads,vlt', '', '', 'ml-only'),
     'safepass': ('', 'unix,safepass', '', '', 'ml-only'),
+    # Packages without a library of their own name.
+    'rocq-runtime': ('', 'rocq-runtime.kernel', '', '', 'system-libs'),
+    'coq-core': ('', 'coq-core.kernel', '', '', 'ml-only'),
+    'frama-c': ('', 'frama-c.kernel', '', '', 'c-stubs'),
 })
 
 # Additional target exclusions. Multiple targets are comma-separated.
@@ -664,7 +668,7 @@ TARGET_PATCHES = {
     # Platform-specific C stubs.
     'irmin-watcher': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # Through irmin-watcher, which builds cf (macOS's CoreFoundation) here.
-    'current_git': 'x86_64-windows-gnu',
+    'current_git': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'inotify': 'x86_64-windows-gnu',
     'eio_posix': 'x86_64-windows-gnu',
     'mirage-xen': 'aarch64-linux-gnu,x86_64-windows-gnu',

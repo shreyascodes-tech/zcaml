@@ -322,7 +322,7 @@ posix-errno				x86_64-windows-gnu	c-stubs
 apron					c-stubs
 coq					c-stubs
 diffast-etc		-			ml-only
-frama-c					c-stubs
+frama-c		frama-c.kernel			c-stubs
 jsonaf					ml-only
 ocaml-syntax-shims		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 bin_prot					c-stubs
@@ -335,7 +335,7 @@ httpun					ml-only
 ocf_ppx					ml-only
 h1					ml-only
 dolmen_type					ml-only
-rocq-runtime					system-libs
+rocq-runtime		rocq-runtime.kernel			system-libs
 ocplib-simplex					ml-only
 tsdl-image					system-libs
 diffast-langs-common					ml-only
@@ -395,7 +395,7 @@ ffmpeg-avutil				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 irmin-pack					ml-only
 postgresql					system-libs
 core_bench		-		x86_64-windows-gnu	ml-only
-current_git				x86_64-windows-gnu	ml-only
+current_git				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 gsl					system-libs
 shell				x86_64-windows-gnu	system-libs
 bsdowl				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
@@ -430,7 +430,7 @@ rio					ml-only
 streamable					ml-only
 alt-ergo		-			ml-only
 conan					ml-only
-coq-core					ml-only
+coq-core		coq-core.kernel			ml-only
 domain_shims					ml-only
 mlgmpidl					system-libs
 MlFront_Core					ml-only
