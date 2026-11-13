@@ -6,6 +6,6 @@ homepage: "https://github.com/ocaml/ocaml-lsp"
 available: os = "linux" & arch = "x86_64" & os-distribution != "alpine"
 depends: [ "ocaml" {>= "5.5" & < "5.6~"} ]
 url {
-  src: "https://github.com/shreyascodes-tech/zcaml/releases/download/ocaml-lsp-server-v1.28.1-zcaml.1/ocaml-lsp-server-1.28.1-zcaml.1-x86_64-linux-gnu.tar.gz"
+  src: "https://github.com/zcaml/zcaml/releases/download/ocaml-lsp-server-v1.28.1-zcaml.1/ocaml-lsp-server-1.28.1-zcaml.1-x86_64-linux-gnu.tar.gz"
   checksum: "sha256=35a5df06ddfef4fd306f181fe56f3ee58331b5cab00fffcdad83cf8d21b3d7b7"
 }

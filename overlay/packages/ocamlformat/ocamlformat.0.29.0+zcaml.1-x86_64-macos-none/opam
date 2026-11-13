@@ -5,6 +5,6 @@ license: "MIT"
 homepage: "https://github.com/ocaml-ppx/ocamlformat"
 available: os = "macos" & arch = "x86_64"
 url {
-  src: "https://github.com/shreyascodes-tech/zcaml/releases/download/ocamlformat-v0.29.0-zcaml.1/ocamlformat-0.29.0-zcaml.1-x86_64-macos-none.tar.gz"
+  src: "https://github.com/zcaml/zcaml/releases/download/ocamlformat-v0.29.0-zcaml.1/ocamlformat-0.29.0-zcaml.1-x86_64-macos-none.tar.gz"
   checksum: "sha256=35d1509569443961c57ef8f0edd9d60c7dc90f939540c9baf6514bcfe48f8581"
 }

@@ -123,7 +123,7 @@ fn addCrossHooks(io: Io, arena: std.mem.Allocator, work: []const u8) !void {
         \\"Internal error! Please report to https://github.com/ocaml/dune/issues, \
     ,
         \\"Internal error! This is zcaml's dune, with changes: please report to \
-        \\                https://github.com/shreyascodes-tech/zcaml/issues (or \
+        \\                https://github.com/zcaml/zcaml/issues (or \
         \\                https://github.com/ocaml/dune/issues, if upstream dune fails too), \
     );
     // A context with a findlib toolchain compiles with it, not the lock directory's

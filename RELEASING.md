@@ -90,14 +90,14 @@ pre-built table and commit to `main`.
 ## The overlay
 
 [`overlay.yml`](.github/workflows/overlay.yml) mirrors `overlay/` to
-[`zcaml-overlay`](https://github.com/shreyascodes-tech/zcaml-overlay)'s `main` on
+[`zcaml-overlay`](https://github.com/zcaml/zcaml-overlay)'s `main` on
 each push to `main` that changes it (`git subtree split`, fast-forward only,
 with the `OVERLAY_DEPLOY_KEY` deploy key); `gh workflow run overlay.yml` retries
 it. It doesn't test packages: run the affected ones through the ecosystem probes
 first, on Depot CI:
 
 ```sh
-depot ci dispatch --repo shreyascodes-tech/zcaml --workflow ecosystem.yml --ref main \
+depot ci dispatch --repo zcaml/zcaml --workflow ecosystem.yml --ref main \
   --input packages="<packages>"
 ```
 

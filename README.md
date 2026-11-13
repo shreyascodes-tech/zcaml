@@ -37,14 +37,14 @@ tools' and packages' build requirements.
 ### Download the tools
 
 Prebuilt binaries are available in
-[Releases](https://github.com/shreyascodes-tech/zcaml/releases):
+[Releases](https://github.com/zcaml/zcaml/releases):
 
 | Tool | Release |
 |---|---|
-| OCaml | [5.5.1](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocaml-v5.5.1-13) |
-| Dune | [3.24.2+zcaml.4](https://github.com/shreyascodes-tech/zcaml/releases/tag/dune-v3.24.2-zcaml.4) |
-| OCaml-LSP | [1.28.1, for OCaml 5.5](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocaml-lsp-server-v1.28.1-zcaml.1) |
-| ocamlformat | [0.29.0](https://github.com/shreyascodes-tech/zcaml/releases/tag/ocamlformat-v0.29.0-zcaml.1) |
+| OCaml | [5.5.1](https://github.com/zcaml/zcaml/releases/tag/ocaml-v5.5.1-13) |
+| Dune | [3.24.2+zcaml.4](https://github.com/zcaml/zcaml/releases/tag/dune-v3.24.2-zcaml.4) |
+| OCaml-LSP | [1.28.1, for OCaml 5.5](https://github.com/zcaml/zcaml/releases/tag/ocaml-lsp-server-v1.28.1-zcaml.1) |
+| ocamlformat | [0.29.0](https://github.com/zcaml/zcaml/releases/tag/ocamlformat-v0.29.0-zcaml.1) |
 
 Choose the archive for your platform, extract it, and add its `bin` directory to
 `PATH`.
@@ -64,7 +64,7 @@ Add the repository ahead of Dune's default repositories in `dune-workspace`:
 ```lisp
 (repository
  (name zcaml)
- (url git+https://github.com/shreyascodes-tech/zcaml-overlay.git))
+ (url git+https://github.com/zcaml/zcaml-overlay.git))
 
 (lock_dir
  (repositories zcaml overlay upstream))
@@ -192,7 +192,7 @@ experience are welcome.
 See [Contributing](CONTRIBUTING.md) for setup, builds, and checks, and
 [Releasing](RELEASING.md) for distribution releases and overlay publication.
 
-[Open an issue](https://github.com/shreyascodes-tech/zcaml/issues) with your tool
+[Open an issue](https://github.com/zcaml/zcaml/issues) with your tool
 versions, host and target platforms, and a reproducer where possible.
 
 ## License

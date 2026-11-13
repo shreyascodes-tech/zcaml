@@ -1,6 +1,6 @@
 name: Overlay
 
-# overlay/ is shreyascodes-tech/zcaml-overlay's main branch, as dune needs an opam
+# overlay/ is zcaml/zcaml-overlay's main branch, as dune needs an opam
 # repository's packages/ at the root: its history, split out, pushed there. Only
 # ever a fast-forward: its commits are the same at each split.
 
@@ -34,4 +34,4 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" >"$key"
           chmod 600 "$key"
           GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes" \
-            git push git@github.com:shreyascodes-tech/zcaml-overlay.git "$split:refs/heads/main"
+            git push git@github.com:zcaml/zcaml-overlay.git "$split:refs/heads/main"

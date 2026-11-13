@@ -8,7 +8,7 @@ maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
 authors: ["Anthony Green" "libffi contributors"]
 license: "MIT"
 homepage: "https://github.com/libffi/libffi"
-bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+bug-reports: "https://github.com/zcaml/zcaml/issues"
 depends: [
   "ocaml"
   "dune" {>= "3.19"}

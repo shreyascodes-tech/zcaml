@@ -5,7 +5,7 @@ name: Ecosystem
 # one). The report is the run's summary; the logs are an artifact.
 #
 #   depot ci run --workflow .depot/workflows/ecosystem.yml
-#   depot ci dispatch --repo shreyascodes-tech/zcaml --workflow ecosystem.yml --ref main \
+#   depot ci dispatch --repo zcaml/zcaml --workflow ecosystem.yml --ref main \
 #     --input packages="lwt ptime"
 
 on:
@@ -40,7 +40,7 @@ on:
 
 env:
   ZIG_VERSION: "0.17.0"
-  RELEASES: https://github.com/shreyascodes-tech/zcaml/releases/download
+  RELEASES: https://github.com/zcaml/zcaml/releases/download
   NATIVE: x86_64-linux-gnu
 
 jobs:

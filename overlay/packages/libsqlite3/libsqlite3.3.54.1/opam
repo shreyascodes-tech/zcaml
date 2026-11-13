@@ -8,7 +8,7 @@ maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
 authors: ["D. Richard Hipp" "Dan Kennedy" "Joe Mistachkin"]
 license: "blessing"
 homepage: "https://sqlite.org"
-bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+bug-reports: "https://github.com/zcaml/zcaml/issues"
 depends: [
   "ocaml"
   "dune" {>= "3.0"}

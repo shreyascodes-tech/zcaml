@@ -127,7 +127,7 @@ On Depot CI, with released toolchains, for all of `ecosystem/packages.tsv`, a
 group, or some packages:
 
 ```sh
-depot ci dispatch --repo shreyascodes-tech/zcaml --workflow ecosystem.yml --ref main \
+depot ci dispatch --repo zcaml/zcaml --workflow ecosystem.yml --ref main \
   [--input group=ml-only] [--input packages="lwt zarith"]
 ```
 

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-repo=shreyascodes-tech/zcaml
+repo=zcaml/zcaml
 tag="$1"
 if [[ ! "$tag" =~ ^(.+)-v(.+)-zcaml\.([0-9]+)$ ]]; then
   echo "error: '$tag' isn't <package>-v<version>-zcaml.<revision>" >&2

@@ -10,18 +10,18 @@ Use it ahead of dune's default repositories, in `dune-workspace`:
 ```lisp
 (repository
  (name zcaml)
- (url git+https://github.com/shreyascodes-tech/zcaml-overlay.git))
+ (url git+https://github.com/zcaml/zcaml-overlay.git))
 
 (lock_dir
  (repositories zcaml overlay upstream))
 ```
 
 Then `dune pkg lock`, and `dune build -x <target>` with
-[zcaml](https://github.com/shreyascodes-tech/zcaml)'s dune and toolchains.
+[zcaml](https://github.com/zcaml/zcaml)'s dune and toolchains.
 Nothing here is specific to zcaml: native builds are as upstream's.
 
 This repository is a mirror of zcaml's
-[`overlay/`](https://github.com/shreyascodes-tech/zcaml/tree/main/overlay), where
+[`overlay/`](https://github.com/zcaml/zcaml/tree/main/overlay), where
 it's developed and tested (`ecosystem/`): send issues and changes there.
 
 | package | what | why |
@@ -145,5 +145,5 @@ compiler. With this repository, they download it instead, if it's one of these
 | `ocaml-lsp-server.1.28.1+zcaml.1-<host>` | OCaml 5.5 |
 
 One package per host, which `available` picks (musl's on Alpine), of
-[zcaml's release](https://github.com/shreyascodes-tech/zcaml/releases) of it:
+[zcaml's release](https://github.com/zcaml/zcaml/releases) of it:
 it sorts above the tool's version, which `.ocamlformat` asks for.
