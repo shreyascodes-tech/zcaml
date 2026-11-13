@@ -1,0 +1,247 @@
+(* -*- tuareg -*- *)
+(*
+   Builds libpq from the PostgreSQL tarball and zig-libpq's generated headers.
+
+   Dune runs this file while loading the package. It parses
+   zig-libpq/generated/manifest.txt, selects the platform from ocamlc -config,
+   and emits the compile rules, the foreign library, the public headers and
+   the pkg-config file. Nothing but dune, the OCaml toolchain and its C
+   compiler is involved: the configuration headers are generated, and
+   OpenSSL comes from libopenssl.
+*)
+
+(* libpq's sources are in three groups (libpq itself, and the parts of
+   PostgreSQL's libpgcommon and libpgport it uses), each with its own flags
+   and include directories. *)
+type group = {
+  mutable cflags : string list;
+  (* Relative to the PostgreSQL source tree, in search order. *)
+  mutable includes : string list;
+  (* Source, relative to the PostgreSQL source tree, and its own flags. *)
+  mutable sources : (string * string list) list;
+}
+
+type manifest = {
+  mutable shared_dir : string;
+  mutable gen_dir : string;
+  (* Path in the PostgreSQL source tree, install path. *)
+  mutable headers : (string * string) list;
+  mutable links : string list;
+  groups : (string, group) Hashtbl.t;
+}
+
+let split_on c s = List.filter (( <> ) "") (String.split_on_char c s)
+
+let split line =
+  String.map (function '\t' | '\r' -> ' ' | c -> c) line |> split_on ' '
+
+(* The records that apply to the platform [selects arch os abis]: those
+   above the first platform block, and those of the selected block. *)
+let parse_manifest path ~selects =
+  let m =
+    {
+      shared_dir = "";
+      gen_dir = "";
+      headers = [];
+      links = [];
+      groups = Hashtbl.create 3;
+    }
+  in
+  let group name =
+    match Hashtbl.find_opt m.groups name with
+    | Some g -> g
+    | None ->
+      let g = { cflags = []; includes = []; sources = [] } in
+      Hashtbl.add m.groups name g;
+      g
+  in
+  let selected = ref true in
+  let ic = open_in path in
+  (try
+     while true do
+       match split (input_line ic) with
+       | [] -> ()
+       | first :: _ when first.[0] = '#' -> ()
+       | ("version" | "postgresql" | "upstream" | "triple") :: _ -> ()
+       | [ "platform"; arch; os; abis; dir ] ->
+         selected := selects arch os (split_on ',' abis);
+         if !selected then m.gen_dir <- dir
+       | [ "shared-dir"; dir ] -> m.shared_dir <- dir
+       | [ "header"; path; name ] -> m.headers <- m.headers @ [ (path, name) ]
+       | ("link" | "cflag" | "include" | "source") :: _ when not !selected -> ()
+       | [ "link"; flag ] -> m.links <- m.links @ [ flag ]
+       | [ "cflag"; g; flag ] ->
+         let g = group g in
+         g.cflags <- g.cflags @ [ flag ]
+       | [ "include"; g; dir ] ->
+         let g = group g in
+         g.includes <- g.includes @ [ dir ]
+       | "source" :: g :: path :: flags ->
+         let g = group g in
+         g.sources <- (path, flags) :: g.sources
+       | kind :: _ -> failwith ("manifest: unknown record " ^ kind)
+     done
+   with End_of_file -> close_in ic);
+  m
+
+let config = Jbuild_plugin.V1.ocamlc_config
+let config key = try List.assoc key config with Not_found -> ""
+
+let absolute path =
+  if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path
+  else path
+
+(* Substituted from zig-libpq's and libopenssl's install directories. *)
+let zig_libpq = absolute "%{zig-libpq:lib}%"
+let libopenssl = absolute "%{libopenssl:lib}%"
+
+(* The PostgreSQL tarball is this package's own source. *)
+let pg_src = absolute "."
+
+let arch =
+  match config "architecture" with
+  | "amd64" -> "x86_64"
+  | "arm64" -> "aarch64"
+  | "riscv" -> "riscv64"
+  | "power" -> "powerpc64le"
+  | arch -> arch
+
+let os =
+  match config "system" with
+  | "linux" -> "linux"
+  | "macosx" -> "macos"
+  | "mingw64" -> "windows"
+  | system -> system
+
+let contains s sub =
+  let n = String.length sub in
+  let rec go i =
+    i + n <= String.length s && (String.sub s i n = sub || go (i + 1))
+  in
+  go 0
+
+(* zig-libpq's ABI names: the C library on Linux, MinGW on Windows. *)
+let abi =
+  match os with
+  | "linux" -> if contains (config "target") "musl" then "musl" else "gnu"
+  | "windows" -> "gnu"
+  | _ -> "none"
+
+let manifest =
+  parse_manifest
+    (Filename.concat zig_libpq "generated/manifest.txt")
+    ~selects:(fun a o abis -> a = arch && o = os && List.mem abi abis)
+
+let () =
+  if manifest.gen_dir = "" then
+    failwith
+      (Printf.sprintf "zig-libpq has no generated headers for %s-%s-%s" arch
+         os abi)
+
+(* Dune strings, for any value with characters dune would split on. *)
+let quote s =
+  let safe c =
+    match c with
+    | ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';' | '\\' | '\'' -> false
+    | _ -> true
+  in
+  if s <> "" && String.for_all safe s then s
+  else "\"" ^ String.escaped s ^ "\""
+
+let words xs = String.concat " " (List.map quote xs)
+
+(* PostgreSQL's -O2, and position-independent code for shared stubs that
+   link libpq.a; Windows code is always relocatable. *)
+let pic = if os = "windows" then [] else [ "-fPIC" ]
+
+let out = Buffer.create (256 * 1024)
+let emit fmt = Printf.ksprintf (Buffer.add_string out) fmt
+let objects = ref []
+
+let emit_compile flags source =
+  let name = Printf.sprintf "o_%d" (List.length !objects) in
+  let obj = name ^ ".o" in
+  emit
+    "(rule\n (targets %s)\n (deps %s)\n (action\n  (run %%%%{ocaml-config:c_compiler} %s -c %s -o %s)))\n"
+    obj (quote source) (words flags) (quote source) obj;
+  objects := name :: !objects
+
+let () =
+  let groups =
+    Hashtbl.to_seq manifest.groups
+    |> List.of_seq
+    |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+  in
+  List.iter
+    (fun (_, g) ->
+      (* Generated headers first, then the group's source directories, then
+         OpenSSL. *)
+      let includes =
+        [
+          Filename.concat zig_libpq manifest.gen_dir;
+          Filename.concat zig_libpq manifest.shared_dir;
+        ]
+        @ List.map (Filename.concat pg_src) g.includes
+        @ [ libopenssl ]
+      in
+      let include_flags = List.concat_map (fun d -> [ "-I"; d ]) includes in
+      List.iter
+        (fun (path, flags) ->
+          emit_compile
+            (include_flags @ g.cflags @ flags @ [ "-O2" ] @ pic)
+            (Filename.concat pg_src path))
+        (List.rev g.sources))
+    groups;
+  emit
+    "(foreign_library\n (archive_name pq)\n (language c)\n (names)\n (extra_objects %s))\n"
+    (words (List.rev !objects));
+  (* Named pq: an OCaml library named libpq would also make libpq.a. *)
+  emit
+    "(library\n (name pq)\n (public_name libpq)\n (modules)\n (foreign_archives pq)\n (libraries libopenssl)%s)\n"
+    (if manifest.links = [] then ""
+     else Printf.sprintf "\n (c_library_flags %s)" (words manifest.links))
+
+(* The public headers, installed under lib/libpq with their install paths. *)
+let () =
+  let entries =
+    List.mapi
+      (fun i (path, name) ->
+        let source = Filename.concat pg_src path in
+        let target = Printf.sprintf "h_%d" i in
+        emit "(rule\n (targets %s)\n (deps %s)\n (action (copy %s %s)))\n"
+          target (quote source) (quote source) target;
+        Printf.sprintf "(%s as %s)" target (quote name))
+      manifest.headers
+  in
+  emit "(install\n (package libpq)\n (section lib)\n (files\n  %s))\n"
+    (String.concat "\n  " entries)
+
+(* The pkg-config file conf-postgresql's consumers use, in
+   lib/libpq/pkgconfig: the toolchain's pkg-config finds it through
+   OCAMLPATH, and it points at lib/libpq, where dune installs libpq.a and the
+   headers. libpq.a is static, so what a shared libpq would carry in
+   DT_NEEDED (OpenSSL and the system libraries) is in the plain Libs and
+   Requires: consumers query --libs without --static. *)
+let libpq_pc =
+  "prefix=${pcfiledir}/..\n"
+  ^ "exec_prefix=${prefix}\n"
+  ^ "libdir=${prefix}\n"
+  ^ "includedir=${prefix}\n"
+  ^ "\n"
+  ^ "Name: libpq\n"
+  ^ "Description: PostgreSQL libpq library, built by dune\n"
+  ^ "URL: https://www.postgresql.org/\n"
+  ^ "Version: 18.7\n"
+  ^ "Requires: libssl libcrypto\n"
+  ^ "Libs: -L${libdir} -lpq"
+  ^ String.concat "" (List.map (fun f -> " " ^ f) manifest.links)
+  ^ "\n"
+  ^ "Cflags: -I${includedir}\n"
+
+let () =
+  emit "(rule\n (targets libpq.pc)\n (action (write-file libpq.pc %s)))\n"
+    ("\"" ^ String.escaped libpq_pc ^ "\"");
+  emit
+    "(install\n (package libpq)\n (section lib)\n (files (libpq.pc as pkgconfig/libpq.pc)))\n"
+
+let () = Jbuild_plugin.V1.send (Buffer.contents out)

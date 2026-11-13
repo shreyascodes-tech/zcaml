@@ -1,0 +1,5 @@
+(lang dune 3.23)
+(name zig-libpq)
+(package
+ (name zig-libpq)
+ (allow_empty))

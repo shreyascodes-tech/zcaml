@@ -1,0 +1,20 @@
+opam-version: "2.0"
+synopsis: "libpq, from libpq, for packages built with pkg-config"
+description: """
+The libpq that libpq builds, found by dune-configurator with the toolchain's
+pkg-config. Unlike conf-postgresql, which needs PostgreSQL's client library
+installed on the system, it cross-compiles: pkg-config searches OCAMLPATH, so
+it finds libpq's libpq.pc in the same dune package build."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: "The PostgreSQL Global Development Group"
+license: "PostgreSQL"
+homepage: "https://www.postgresql.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "libpq"
+]
+setenv: [
+  [ PKG_CONFIG = "pkg-config" ]
+]
+build: []
+flags: conf

@@ -670,7 +670,7 @@ TARGET_PATCHES = {
     # dose3 runs the target's bytecode on the build machine here.
     'opam-client': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # Hard/native-only external libraries: GTK, X11/Xft, cairo, BLAS/LAPACK/
-    # OpenBLAS, ffmpeg, libpq, LLVM and libseccomp. Zig has no Fortran compiler,
+    # OpenBLAS, ffmpeg, LLVM and libseccomp. Zig has no Fortran compiler,
     # and these dependency trees are not reasonable vendoring targets.
     'lablgtk': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'lablgtk3': 'aarch64-linux-gnu,x86_64-windows-gnu',
@@ -681,7 +681,6 @@ TARGET_PATCHES = {
     'owl': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'nx': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'ffmpeg-avutil': 'aarch64-linux-gnu,x86_64-windows-gnu',
-    'postgresql': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'z3': 'aarch64-linux-gnu,x86_64-windows-gnu',
     'solo5': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # Verified Windows failures that are upstream/tool-level, not zcaml:

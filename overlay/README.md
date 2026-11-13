@@ -43,6 +43,9 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 | `ssl.0.8.1+zcaml` | with `libopenssl` (`ssl-libopenssl.patch`): no discover or pkg-config | upstream finds OpenSSL with the build machine's `pkg-config` |
 | `async_ssl.v0.17.0+zcaml` | with `libopenssl` (`async_ssl-libopenssl.patch`): OpenSSL 4.1's symbols instead of running the target's discover, and engine calls as stubs | upstream finds OpenSSL with the build machine's `pkg-config`, and runs a target executable to discover its API |
 | `conf-libssl.1`–`conf-libssl.4` | empty conf packages with `PKG_CONFIG=pkg-config`, depending on `libopenssl`, at the same versions as upstream | older consumers we don't overlay (`scrypt`, `piaf.0.1.0`, `memtrace_viewer.0.14`), which find OpenSSL with the build machine's `pkg-config`; same-version packages in the first repository replace upstream's system checks |
+| `zig-libpq.18.7` | [zig-libpq](https://github.com/shreyassanthu77/zig-libpq)'s generated headers (`pg_config.h`, and the Perl-generated `errcodes.h`, `kwlist_d.h` and `pg_tablespace_d.h`) and text manifest | new: `libpq` needs PostgreSQL's meson configuration and generated headers, which the source tarball doesn't have |
+| `libpq.18.7` | PostgreSQL 18.7's libpq, built by dune from the tarball zig-libpq pins against `libopenssl`, with `libpq.a`, `libpq-fe.h` and `libpq.pc` | new: `conf-postgresql` checks for the system's libpq, which a cross build has none of |
+| `conf-postgresql.1`, `conf-postgresql.2` | empty conf packages with `PKG_CONFIG=pkg-config`, depending on `libpq`, at the same versions as upstream | upstream runs the build machine's `pg_config` or `pkg-config libpq`; the toolchain's `pkg-config` answers `postgresql`'s discover from `libpq`'s `libpq.pc`. Older `postgresql` versions that run `pg_config` themselves still don't build |
 | `conf-mingw-w64-gcc-i686.1+zcaml` | checks `x86_64-w64-mingw32-gcc`, from `conf-mingw-w64-gcc-x86_64` | upstream checks for a 32-bit mingw GCC (`i686-w64-mingw32-gcc`), which zcaml's 64-bit Windows toolchain doesn't have; packages such as `opam-core` require both the i686 and x86_64 checks on win32 |
 | `base_bigstring.v0.17.0+zcaml` | a `memmem` fallback (`base_bigstring-memmem.patch`) | upstream marks itself unavailable on Windows because mingw's C library has no `memmem`, which makes every `core_kernel`-family package unsolvable for win32 |
 | `index.1.6.2+zcaml` | `pread`/`pwrite` fallbacks on Windows (`index-win32.patch`) | mingw's CRT has no POSIX `pread`/`pwrite`, which `irmin-pack` pulls in |
@@ -110,20 +113,21 @@ it's developed and tested (`ecosystem/`): send issues and changes there.
 ## pkg-config
 
 The toolchains install a patched `u-config` as `pkg-config` (also available as
-`pkg-config-zcaml`). `conf-zlib`, `conf-libssl` and `conf-gmp` set
-`PKG_CONFIG=pkg-config`; its queries read the vendored libraries' `.pc` files
-through `OCAMLPATH`.
+`pkg-config-zcaml`). `conf-zlib`, `conf-libssl`, `conf-gmp` and
+`conf-postgresql` set `PKG_CONFIG=pkg-config`; its queries read the vendored
+libraries' `.pc` files through `OCAMLPATH`.
 
-`conf-zlib`, `conf-libssl`, `conf-gmp`, `conf-gmp-powm-sec` and
-`conf-pkg-config` use the same version numbers as upstream, in the first
-repository. When a name and version appear in more than
-one repository, dune pkg takes the first repository's package, so the overlay's
-empty conf package wins without a project pin; upstream's system check never
-runs. This is why the overlay must stay ahead of the default repositories.
+`conf-zlib`, `conf-libssl`, `conf-gmp`, `conf-gmp-powm-sec`, `conf-postgresql`
+and `conf-pkg-config` use the same version numbers as upstream, in the first
+repository. When a name and version appear in more than one repository, dune
+pkg takes the first repository's package, so the overlay's empty conf package
+wins without a project pin; upstream's system check never runs. This is why
+the overlay must stay ahead of the default repositories.
 
-New upstream `conf-zlib`, `conf-libssl`, `conf-gmp`, `conf-gmp-powm-sec` and
-`conf-pkg-config` versions need matching overlay entries. Packages patched to
-depend directly on vendored libraries need no conf package.
+New upstream `conf-zlib`, `conf-libssl`, `conf-gmp`, `conf-gmp-powm-sec`,
+`conf-postgresql` and `conf-pkg-config` versions need matching overlay
+entries. Packages patched to depend directly on vendored libraries need no conf
+package.
 
 ## Pre-built dev tools
 

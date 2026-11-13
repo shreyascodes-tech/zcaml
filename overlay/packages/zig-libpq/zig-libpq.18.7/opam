@@ -1,0 +1,25 @@
+opam-version: "2.0"
+synopsis: "libpq 18.7's generated sources, from zig-libpq"
+description: """
+zig-libpq's checked-in generated headers and manifest for libpq, the
+PostgreSQL 18.7 client library, installed for libpq to build from. The
+manifest is plain text: it lists the sources, flags and include directories
+per platform, so neither meson, ninja nor perl is needed."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: ["zig-libpq contributors"]
+license: "PostgreSQL"
+homepage: "https://github.com/shreyassanthu77/zig-libpq"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+]
+substs: [ "dune" "dune-project" ]
+build: ["dune" "build" "-p" name "-j" jobs "@install"]
+url {
+  src: "https://github.com/shreyassanthu77/zig-libpq/archive/7e5339a165d5127474e208a4383c86d95f778b0b.tar.gz"
+  checksum: [
+    "sha256=e83344423dca442d01cd3b9514f7d48d77f80ad2dc3b26e4d0240a01bbabd1df"
+    "sha512=707c9bcfe48420da16e3ed309db7fc2aaf5c482acdea93752200245f2aeec729a9eb92811c1a64668e366edf23ba773233782b1f40a65028f41daa4a22e015a2"
+  ]
+}

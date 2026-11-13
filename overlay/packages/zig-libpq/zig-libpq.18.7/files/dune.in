@@ -1,0 +1,8 @@
+; The sources libpq builds: zig-libpq's generated tree and the zon that
+; records which PostgreSQL tarball they belong to.
+(install
+ (package zig-libpq)
+ (section lib)
+ (files
+  build.zig.zon
+  (glob_files_rec generated/*)))

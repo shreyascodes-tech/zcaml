@@ -1,0 +1,28 @@
+opam-version: "2.0"
+synopsis: "libpq, the PostgreSQL client library, built by dune"
+description: """
+PostgreSQL 18.7's libpq, compiled from the PostgreSQL tarball zig-libpq pins
+with the context's C compiler and zig-libpq's generated headers, against
+libopenssl, so it cross-compiles without meson, ninja or perl. A library with
+no modules: it installs libpq-fe.h and friends, the static libpq.a, and a
+libpq.pc for conf-postgresql's consumers."""
+maintainer: "Shreyas Mididoddi <me@shreyascodes.tech>"
+authors: "The PostgreSQL Global Development Group"
+license: "PostgreSQL"
+homepage: "https://www.postgresql.org/"
+bug-reports: "https://github.com/shreyascodes-tech/zcaml-overlay/issues"
+depends: [
+  "ocaml"
+  "dune" {>= "3.0"}
+  "zig-libpq" {= "18.7"}
+  "libopenssl"
+]
+substs: [ "dune" "dune-project" ]
+build: ["dune" "build" "-p" name "-j" jobs "@install"]
+url {
+  src: "https://ftp.postgresql.org/pub/source/v18.7/postgresql-18.7.tar.gz"
+  checksum: [
+    "sha256=19c2dc7d8520e10532d082b43c36c4d2dcc6cd9e40506c6f598e7338f84bbde7"
+    "sha512=c10e59489ca77ecdfe6f61043b6d0b894756321ddfcb7c2668c944cd5273f9f392512177097049fa7c74cc79e413185f9abb1e771616c0fe8aaf380c0dd1980a"
+  ]
+}

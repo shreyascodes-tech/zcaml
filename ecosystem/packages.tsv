@@ -394,7 +394,7 @@ prometheus-app					ml-only
 brr				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
 ffmpeg-avutil				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 irmin-pack					ml-only
-postgresql				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
+postgresql					system-libs
 core_bench		-		x86_64-windows-gnu	ml-only
 current_git					ml-only
 gsl					system-libs
