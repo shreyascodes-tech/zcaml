@@ -83,7 +83,7 @@ pub fn main(init: std.process.Init) !void {
 
 /// zcaml's revision of the pinned dune, in its version (`3.24.2+zcaml.4`): one more
 /// for each release of the same dune. The release tag says it (`dune-v3.24.2-zcaml.4`).
-const revision = 4;
+const revision = 5;
 
 /// What `dune subst` does for releases, so `dune --version` isn't `n/a`: the bootstrap
 /// takes the version from `(version <v>)` in `dune-project`. The source is a release
