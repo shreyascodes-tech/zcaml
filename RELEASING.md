@@ -110,8 +110,8 @@ Point what builds with it at the new release:
   `OCAML_TAG` in `devtools.yml`. For a new OCaml version, also its `5.5.1` in
   `scripts/cross-env.sh`, `devtools.yml`'s `OCAML_VERSION`, and `toolchains.yml`'s
   default.
-- **Dune:** `DUNE_TAG` in `devtools.yml`, and the `dune_tag` the ecosystem runs
-  are dispatched with.
+- **Dune:** `DUNE_TAG` in `devtools.yml`, and `dune_tag`'s default and `DUNE_TAG`
+  in `.depot/workflows/ecosystem.yml`.
 - **Any:** the download table in [`README.md`](README.md).
 
 For a developer tool, check the overlay mirror ran, then that a project picks

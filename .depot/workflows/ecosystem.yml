@@ -1,8 +1,8 @@
 name: Ecosystem
 
 # How much of opam cross-compiles with zcaml as it is: ecosystem/run.sh, on a
-# fresh machine, with a released OCaml and this checkout's dune (or a released
-# one). The report is the run's summary; the logs are an artifact.
+# fresh machine, with a released OCaml and dune (or this checkout's dune,
+# `dune_tag=checkout`). The report is the run's summary; the logs are an artifact.
 #
 #   depot ci run --workflow .depot/workflows/ecosystem.yml
 #   depot ci dispatch --repo zcaml/zcaml --workflow ecosystem.yml --ref main \
@@ -30,9 +30,10 @@ on:
         type: string
         default: "ocaml-v5.5.1-13"
       dune_tag:
-        description: "dune release (dune-v*) to build with; default: this checkout's"
+        description: "dune release (dune-v*) to build with, or checkout for this checkout's"
         required: false
         type: string
+        default: "dune-v3.24.2-zcaml.5"
       overlays:
         description: "More opam repositories, ahead of overlay/'s: <name>=<url>s (ecosystem/run.sh's OVERLAYS)"
         required: false
@@ -54,7 +55,7 @@ jobs:
         shard: [1, 2, 3, 4]
     env:
       OCAML_TAG: ${{ inputs.ocaml_tag || 'ocaml-v5.5.1-13' }}
-      DUNE_TAG: ${{ inputs.dune_tag }}
+      DUNE_TAG: ${{ inputs.dune_tag || 'dune-v3.24.2-zcaml.5' }}
       TARGETS: ${{ inputs.targets || 'aarch64-linux-gnu x86_64-windows-gnu' }}
       PACKAGES: ${{ inputs.packages }}
       GROUP: ${{ inputs.group }}
@@ -71,9 +72,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ecosystem/cache
-          key: ecosystem-cache-${{ runner.os }}-${{ env.OCAML_TAG }}-${{ inputs.dune_tag || 'checkout' }}-${{ hashFiles('ecosystem/packages.tsv', 'ecosystem/probe.sh', 'ecosystem/run.sh', 'scripts/cross-env.sh', 'overlay/packages/**', 'build/dune/**', 'build.zig', 'build.zig.zon') }}
+          key: ecosystem-cache-${{ runner.os }}-${{ env.OCAML_TAG }}-${{ env.DUNE_TAG }}-${{ hashFiles('ecosystem/packages.tsv', 'ecosystem/probe.sh', 'ecosystem/run.sh', 'scripts/cross-env.sh', 'overlay/packages/**', 'build/dune/**', 'build.zig', 'build.zig.zon') }}
           restore-keys: |
-            ecosystem-cache-${{ runner.os }}-${{ env.OCAML_TAG }}-${{ inputs.dune_tag || 'checkout' }}-
+            ecosystem-cache-${{ runner.os }}-${{ env.OCAML_TAG }}-${{ env.DUNE_TAG }}-
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -103,7 +104,7 @@ jobs:
       - name: Get dune
         run: |
           set -euo pipefail
-          if [[ -n "$DUNE_TAG" ]]; then
+          if [[ "$DUNE_TAG" != checkout ]]; then
             mkdir -p "$RUNNER_TEMP/dune"
             curl -fsSL "$RELEASES/$DUNE_TAG/dune-${DUNE_TAG#dune-v}-$NATIVE.tar.zst" |
               zstd -d -q | tar -xf - -C "$RUNNER_TEMP/dune"
