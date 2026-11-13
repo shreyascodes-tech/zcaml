@@ -12,7 +12,7 @@ from `main`. For local builds and checks, see [Contributing](CONTRIBUTING.md).
 The revision counts zcaml's builds of one upstream version: `ocaml-v5.5.1` is
 the first of OCaml 5.5.1 and `ocaml-v5.5.1-2` the second, while Dune's and the
 tools' start at `zcaml.1`. Dune's is also in `dune --version`
-(`3.24.2+zcaml.4`, `+` for the tag's `-`).
+(`3.24.2+zcaml.5`, `+` for the tag's `-`).
 
 To release: prepare the component (below), optionally try the workflow on a
 branch, which builds and tests without publishing, then push the tag:

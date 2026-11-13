@@ -76,7 +76,7 @@ it prints its usage.
 
 ```sh
 zig build -Docaml dune -Docaml-host=native
-scripts/test-dune.sh zig-out/dune/x86_64-linux-gnu/bin/dune 3.24.2+zcaml.4
+scripts/test-dune.sh zig-out/dune/x86_64-linux-gnu/bin/dune 3.24.2+zcaml.5
 ```
 
 The version is the pinned Dune's, with the revision in

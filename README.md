@@ -42,7 +42,7 @@ Prebuilt binaries are available in
 | Tool | Release |
 |---|---|
 | OCaml | [5.5.1](https://github.com/zcaml/zcaml/releases/tag/ocaml-v5.5.1-13) |
-| Dune | [3.24.2+zcaml.4](https://github.com/zcaml/zcaml/releases/tag/dune-v3.24.2-zcaml.4) |
+| Dune | [3.24.2+zcaml.5](https://github.com/zcaml/zcaml/releases/tag/dune-v3.24.2-zcaml.5) |
 | OCaml-LSP | [1.28.1, for OCaml 5.5](https://github.com/zcaml/zcaml/releases/tag/ocaml-lsp-server-v1.28.1-zcaml.1) |
 | ocamlformat | [0.29.0](https://github.com/zcaml/zcaml/releases/tag/ocamlformat-v0.29.0-zcaml.1) |
 
