@@ -9,3 +9,10 @@
   (modules vltThread)
  )
  
+--- a/META.vlt.template
++++ b/META.vlt.template
+@@ -1,4 +1 @@
+ # DUNE_GEN
+-archive(byte,mt)="vlt.cma mt/vlt_mt.cma"
+-archive(native,mt)="vlt.cmxa mt/vlt_mt.cmxa"
+-

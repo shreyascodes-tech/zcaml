@@ -8,3 +8,9 @@
    %{lib:gmp:gmp.h})
   (action
    (with-stdout-to
+--- a/dune-project
++++ b/dune-project
+@@ -1,2 +1,3 @@
+ (lang dune 2.8)
+ (name zarith)
++(version 1.14)

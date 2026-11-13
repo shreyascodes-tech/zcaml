@@ -189,13 +189,16 @@ UNLOCKABLE = {
 # Packages we don't probe: builds dune pkg can't handle yet (melange's hidden
 # `__private__` directory target), current-list packages that depend on an
 # `UNLOCKABLE` package, and packages whose win32 lock can't be solved at all.
-# They can't lock until those are ported.
+# They can't lock until those are ported. nocrypto is abandoned upstream (an
+# ocamlbuild/topkg build, for cstruct < 6.1 and lwt < 6), and its opam patches
+# no longer apply.
 SKIP = {
     'async_js',
     'bap-bundle',
     'commons',
     'ldp_tls',
     'melange',
+    'nocrypto',
     'ojs_base',
     'refl',
     'reason-react',
@@ -660,6 +663,8 @@ TARGET_PATCHES = {
     'ezjs_min': 'aarch64-linux-gnu,x86_64-windows-gnu',
     # Platform-specific C stubs.
     'irmin-watcher': 'aarch64-linux-gnu,x86_64-windows-gnu',
+    # Through irmin-watcher, which builds cf (macOS's CoreFoundation) here.
+    'current_git': 'x86_64-windows-gnu',
     'inotify': 'x86_64-windows-gnu',
     'eio_posix': 'x86_64-windows-gnu',
     'mirage-xen': 'aarch64-linux-gnu,x86_64-windows-gnu',
@@ -692,6 +697,10 @@ TARGET_PATCHES = {
     # Upstream `available: os != "win32"`.
     'ocsigenserver': 'x86_64-windows-gnu',
     'bls12-381': 'x86_64-windows-gnu',
+    # They need ocaml-solo5, which isn't available on win32.
+    'mkernel': 'x86_64-windows-gnu',
+    'mnet': 'x86_64-windows-gnu',
+    'mnet-tls': 'x86_64-windows-gnu',
 
     # These build with make/ocamlbuild, which `build/dune/cross_pkg.ml` doesn't
     # redirect: they compile with the build machine's compiler and their target

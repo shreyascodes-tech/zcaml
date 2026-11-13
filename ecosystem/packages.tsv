@@ -252,7 +252,7 @@ ocplib_stuff					ml-only
 bignum					ml-only
 gg					ml-only
 notty-community				x86_64-windows-gnu	c-stubs
-mnet					ml-only
+mnet				x86_64-windows-gnu	ml-only
 camomile					ml-only
 graphics				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 ocp-indent		-		aarch64-linux-gnu,x86_64-windows-gnu	ml-only
@@ -281,9 +281,8 @@ backoff					ml-only
 repr					ml-only
 multicore-magic					c-stubs
 dolmen					ml-only
-mkernel					c-stubs
+mkernel				x86_64-windows-gnu	c-stubs
 rocq-core					c-stubs
-nocrypto					c-stubs
 git-unix					ml-only
 rocq-stdlib					ml-only
 reason-react-ppx					ml-only
@@ -396,7 +395,7 @@ ffmpeg-avutil				aarch64-linux-gnu,x86_64-windows-gnu	system-libs
 irmin-pack					ml-only
 postgresql					system-libs
 core_bench		-		x86_64-windows-gnu	ml-only
-current_git					ml-only
+current_git				x86_64-windows-gnu	ml-only
 gsl					system-libs
 shell				x86_64-windows-gnu	system-libs
 bsdowl				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
@@ -445,7 +444,7 @@ grenier		-			ml-only
 hashcons					ml-only
 httpcats					ml-only
 incr_map					ml-only
-mnet-tls					ml-only
+mnet-tls				x86_64-windows-gnu	ml-only
 ocsigenserver				x86_64-windows-gnu	system-libs
 sendmail					ml-only
 directories					c-stubs
@@ -501,6 +500,7 @@ utcp					ml-only
 xenstore_transport					ml-only
 caps					ml-only
 irmin-watcher				aarch64-linux-gnu,x86_64-windows-gnu	ml-only
+owl-base					ml-only
 odoc-parser					ml-only
 ocamlformat-lib					ml-only
 bisect_ppx_ng			bisect_ppx_ng		ml-only
